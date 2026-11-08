@@ -2,7 +2,7 @@
 
 All notable changes to eeploi-helper. Versions follow [semver](https://semver.org): a removed or changed subcommand is a major release, a new subcommand a minor one.
 
-## 1.0.0 (unreleased)
+## 1.0.0 (2026-11-08)
 
 First public release. The helper moves out of eeploi.com into this repo.
 

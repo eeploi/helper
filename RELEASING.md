@@ -7,7 +7,7 @@ For the owner. Signing always happens on your own machine, never in CI.
 1. Create the key pair:
 
    ```bash
-   minisign -G -p minisign.pub -s ~/.minisign/eeploi-helper.key
+   minisign -G -p minisign.pub -s ~/.minisign/minisign.key
    ```
 
    Use a strong passphrase.
@@ -40,7 +40,7 @@ For the owner. Signing always happens on your own machine, never in CI.
 6. Sign:
 
    ```bash
-   minisign -Sm eeploi-helper -s ~/.minisign/eeploi-helper.key -t "eeploi-helper 1.2.3"
+   minisign -Sm eeploi-helper -s ~/.minisign/minisign.key -t "eeploi-helper 1.2.3"
    minisign -Vm eeploi-helper -p minisign.pub
    ```
 
