@@ -48,7 +48,7 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Content (a vhost, a certif
 | `env-install <from> <to> <owner>` | Copies a `.env` into the caller's home folder, mode `640` |
 | `storage-copy <from> <to> <owner>` | Copies a `storage` folder into the caller's home folder |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
-| `acl-nginx` | Lets the nginx user pass through the deploy user's home folder (`setfacl -m u:<nginx user>:x`). Nothing more: the folder stays `750` |
+| `acl-nginx` | Lets the nginx user pass through the deploy user's home folder (`setfacl -m u:<nginx user>:x`), and installs the `acl` package first when `setfacl` is missing. Nothing more: the folder stays `750` |
 | `self-update <version>` | Installs a signed release (see below) |
 
 Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi` and the deploy user's.

@@ -145,6 +145,16 @@ vhost_file() {
   fi
 }
 
+# acl_package: install the acl package (setfacl) when it is missing, and only that package.
+acl_package() {
+  if [ -n "$DRY" ]; then
+    echo "check: setfacl installed, else apt-get install acl"
+  elif ! command -v setfacl > /dev/null 2>&1; then
+    { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq acl > /dev/null; } < /dev/null \
+      || fail "cannot install the acl package"
+  fi
+}
+
 # nginx_user: set NGINX_USER and NGINX_GROUP from the one `user` line in nginx.conf (www-data without one).
 nginx_user() {
   local line found=0 start_re='^[[:space:]]*user([[:space:]]|;|$)'
@@ -421,6 +431,7 @@ case "$command" in
     if [ -z "$DRY" ]; then
       [[ -d $home && ! -L $home ]] || fail "no home folder: $home"
     fi
+    acl_package
     run setfacl -m "u:$NGINX_USER:x" "$home" ;;
 
   php-pool-write)

@@ -18,7 +18,7 @@ Subcommands:
 - `cron-write`, `cron-remove`, `crontab-backup`, `crontab-restore`, `crontab-remove-lines`
 - `env-install`, `storage-copy`
 - `firewall-close-22`
-- `acl-nginx` (new)
+- `acl-nginx` (new), installs the `acl` package when `setfacl` is missing
 - `self-update` (new)
 
 Changes from the helper built into eeploi.com:

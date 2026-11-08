@@ -212,6 +212,7 @@ NGINX="$WORK/nginx-none.conf" ok "no user line" "run: setfacl -m u:www-data:x /h
 NGINX="$WORK/nginx-tab.conf" ok "user line with a tab" "run: setfacl -m u:www-data:x /home/eeploi" acl-nginx
 NGINX="$WORK/nginx-group.conf" ok "user and group" "check: user nginx and group web exist" acl-nginx
 ok "checks the user exists" "check: user www-data and group www-data exist" acl-nginx
+ok "installs acl when missing" "check: setfacl installed, else apt-get install acl" acl-nginx
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy home" "run: setfacl -m u:www-data:x /home/deploy" acl-nginx
 NGINX="$WORK/nginx-two.conf" refuse "two user lines" "more than one user line" acl-nginx
 NGINX="$WORK/nginx-root.conf" refuse "nginx as root" "nginx runs as root" acl-nginx
