@@ -9,8 +9,8 @@ export TMPDIR=/tmp
 
 VERSION='1.0.0'
 
-# The minisign public key releases are signed with. self-update refuses while this is the placeholder.
-PUBKEY='RWS...REPLACE_WITH_RELEASE_KEY'
+# The minisign public key releases are signed with (minisign.pub, key id A2C97024AB6219A8).
+PUBKEY='RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA'
 RELEASES='https://github.com/eeploi/helper/releases/download'
 INSTALL_PATH=/usr/local/sbin/eeploi-helper
 

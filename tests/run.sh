@@ -256,7 +256,9 @@ refuse "socket domain" "invalid domain" vhost-set-socket 'example.com;id' /run/p
 refuse "socket arguments" "usage" vhost-set-socket example.com /run/php/php8.4-fpm.sock
 
 echo "== self-update"
-refuse "placeholder key" "PUBKEY is the placeholder" self-update 1.2.3
+sed "s#^PUBKEY=.*#PUBKEY='RWS...REPLACE_WITH_RELEASE_KEY'#" "$HELPER" > "$WORK/placeholder-helper"
+BIN="$WORK/placeholder-helper" refuse "placeholder key" "PUBKEY is the placeholder" self-update 1.2.3
+ok "verify with the release key" "run: minisign -V -q -P $(sed -n "s/^PUBKEY='\\(.*\\)'$/\\1/p" "$HELPER")" self-update 1.2.3
 refuse "bad version" "invalid version" self-update 1.2
 refuse "version with v" "invalid version" self-update v1.2.3
 refuse "version with leading zero" "invalid version" self-update 01.2.3
