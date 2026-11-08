@@ -50,6 +50,7 @@ printf 'worker_processes auto;\n# user nobody;\nhttp { userid on; }\n' > "$WORK/
 printf 'user www-data;\nuser ploi;\n' > "$WORK/nginx-two.conf"
 printf 'user root;\n' > "$WORK/nginx-root.conf"
 printf 'user www-data; include /tmp/x;\n' > "$WORK/nginx-junk.conf"
+# shellcheck disable=SC2016 # the literal $(id) is the point: it must never run
 printf 'user $(id);\n' > "$WORK/nginx-inject.conf"
 printf 'user\twww-data;\n' > "$WORK/nginx-tab.conf"
 

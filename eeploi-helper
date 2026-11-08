@@ -61,7 +61,6 @@ trusted() {
   [ -z "$(find "$f" "$d" -maxdepth 0 \( -perm -020 -o -perm -002 \) 2>/dev/null)" ]
 }
 
-USER_RE='^[a-z][a-z0-9_-]{1,31}$'
 
 # The deploy user: eeploi, or DEPLOY_USER from helper.conf. The file is parsed, never sourced.
 DEPLOY_USER=eeploi
