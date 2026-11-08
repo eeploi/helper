@@ -1,0 +1,500 @@
+#!/usr/bin/env bash
+# eeploi-helper: the only command the deploy user may run as root (/etc/sudoers.d/eeploi).
+# Every argument is checked, every action is fixed. Content comes on stdin.
+# Source, releases and signatures: https://github.com/eeploi/helper
+set -euo pipefail
+umask 022
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export TMPDIR=/tmp
+
+VERSION='1.0.0'
+
+# The minisign public key releases are signed with. self-update refuses while this is the placeholder.
+PUBKEY='RWS...REPLACE_WITH_RELEASE_KEY'
+RELEASES='https://github.com/eeploi/helper/releases/download'
+INSTALL_PATH=/usr/local/sbin/eeploi-helper
+
+DRY="${EEPLOI_HELPER_DRY_RUN:-}"
+CALLER="${SUDO_USER:-}"
+
+# Root-owned eeploi state: helper.conf (DEPLOY_USER=...) and the new-server marker.
+# The overrides are for tests and only count in dry-run mode.
+ETC=/etc/eeploi
+NGINX_CONF=/etc/nginx/nginx.conf
+if [ -n "$DRY" ]; then
+  ETC="${EEPLOI_HELPER_ETC:-$ETC}"
+  NGINX_CONF="${EEPLOI_HELPER_NGINX_CONF:-$NGINX_CONF}"
+fi
+
+fail() { echo "eeploi-helper: $*" >&2; exit 64; }
+
+# Temporary files and folders, removed on every exit.
+TMP_PATHS=""
+cleanup() {
+  local p
+  for p in $TMP_PATHS; do rm -rf -- "$p"; done
+}
+trap cleanup EXIT
+
+run() {
+  if [ -n "$DRY" ]; then printf 'run:'; printf ' %s' "$@"; printf '\n'; else "$@"; fi
+}
+
+# put <file> <mode>: write stdin to the file, atomically, owned by root.
+put() {
+  if [ -n "$DRY" ]; then cat > /dev/null; echo "write: $1 ($2)"; return; fi
+  local tmp
+  tmp=$(mktemp "$1.eeploi.XXXXXX")
+  cat > "$tmp"
+  chmod "$2" "$tmp"
+  chown root:root "$tmp"
+  mv -f "$tmp" "$1"
+}
+
+# trusted <path>: a regular file (no link), owned by the user running the helper (root through sudo),
+# in a folder with the same rules, and neither writable by group or others.
+trusted() {
+  local f=$1 d
+  d=$(dirname -- "$f")
+  [[ -f $f && ! -L $f && -O $f ]] || return 1
+  [[ -d $d && ! -L $d && -O $d ]] || return 1
+  [ -z "$(find "$f" "$d" -maxdepth 0 \( -perm -020 -o -perm -002 \) 2>/dev/null)" ]
+}
+
+USER_RE='^[a-z][a-z0-9_-]{1,31}$'
+
+# The deploy user: eeploi, or DEPLOY_USER from helper.conf. The file is parsed, never sourced.
+DEPLOY_USER=eeploi
+CONF="$ETC/helper.conf"
+if [ -e "$CONF" ] || [ -L "$CONF" ]; then
+  trusted "$CONF" || fail "untrusted config: $CONF (must be a root-owned file, not writable by others)"
+  conf_re='^DEPLOY_USER=([a-z][a-z0-9_-]{1,31})$'
+  seen=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    [[ $line =~ $conf_re ]] || fail "invalid line in $CONF: $line"
+    [ $seen -eq 0 ] || fail "DEPLOY_USER is set twice in $CONF"
+    DEPLOY_USER=${BASH_REMATCH[1]}
+    seen=1
+  done < "$CONF"
+  [ "$DEPLOY_USER" != root ] || fail "the deploy user cannot be root"
+fi
+
+HOMES='ploi|forge|eeploi'
+case "|$HOMES|" in *"|$DEPLOY_USER|"*) ;; *) HOMES="$HOMES|$DEPLOY_USER" ;; esac
+
+domain() {
+  local re='^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$'
+  [[ $1 =~ $re ]] || fail "invalid domain: $1"
+}
+
+# A certificate name: the domain, or eeploi-<domain> for one made at a take-over.
+cert_name() { domain "${1#eeploi-}"; }
+
+program() {
+  local re='^eeploi-[a-z0-9.-]+$'
+  [[ $1 =~ $re ]] || fail "invalid program: $1"
+}
+
+php_version() {
+  local re='^[0-9]\.[0-9]$'
+  [[ $1 =~ $re ]] || fail "invalid PHP version: $1"
+}
+
+# A PHP-FPM socket: the default one per version (Ploi and Forge use /var/run/php), or eeploi's own pool.
+socket() {
+  local re='^(/var)?/run/php/php[0-9]+\.[0-9]+-fpm(-eeploi)?\.sock$'
+  [[ $1 =~ $re ]] || fail "invalid PHP-FPM socket: $1"
+}
+
+# home_path <path>: a path inside one of the allowed home folders.
+home_path() {
+  local p=$1 re="^/home/($HOMES)/[A-Za-z0-9._/-]+$"
+  case "$p/" in */../*|*/./*|*//*) fail "invalid path: $p" ;; esac
+  [[ $p =~ $re ]] || fail "outside the allowed home folders: $p"
+  if realpath -m / > /dev/null 2>&1; then
+    local resolved
+    resolved=$(realpath -m -- "$p")
+    [[ $resolved =~ $re ]] || fail "resolves outside the allowed home folders: $p"
+  fi
+}
+
+# caller_path <path>: a path inside the calling user's own home folder.
+caller_path() {
+  home_path "$1"
+  case "$1" in "/home/$CALLER/"*) ;; *) fail "not in /home/$CALLER: $1" ;; esac
+}
+
+owner() { [ "$1" = "$CALLER" ] || fail "owner must be $CALLER: $1"; }
+
+supervisor_file() {
+  local re='^/etc/supervisor/conf\.d/(worker|daemon|eeploi)-[A-Za-z0-9._-]+\.conf$'
+  [[ $1 =~ $re ]] || fail "invalid Supervisor config: $1"
+}
+
+# The vhost a domain uses: the target of sites-enabled/<domain>, else sites-available/<domain>.
+vhost_file() {
+  domain "$1"
+  local enabled="/etc/nginx/sites-enabled/$1" target
+  if [ -L "$enabled" ]; then
+    target=$(readlink -f "$enabled")
+    case "$target" in /etc/nginx/sites-available/*|/etc/nginx/sites-enabled/*) echo "$target" ;; *) fail "vhost link points outside nginx: $enabled" ;; esac
+  elif [ -f "$enabled" ]; then
+    echo "$enabled"
+  else
+    echo "/etc/nginx/sites-available/$1"
+  fi
+}
+
+# nginx_user: set NGINX_USER and NGINX_GROUP from the one `user` line in nginx.conf (www-data without one).
+nginx_user() {
+  local line found=0 start_re='^[[:space:]]*user([[:space:]]|;|$)'
+  local re='^[[:space:]]*user[[:space:]]+([a-z_][a-z0-9_-]{0,31})([[:space:]]+([a-z_][a-z0-9_-]{0,31}))?[[:space:]]*;[[:space:]]*(#.*)?$'
+  [ -f "$NGINX_CONF" ] || fail "nginx config not found: $NGINX_CONF"
+  NGINX_USER=www-data
+  NGINX_GROUP=
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ $line =~ $start_re ]] || continue
+    [ $found -eq 0 ] || fail "more than one user line in $NGINX_CONF"
+    [[ $line =~ $re ]] || fail "cannot read the user line in $NGINX_CONF: $line"
+    NGINX_USER=${BASH_REMATCH[1]}
+    NGINX_GROUP=${BASH_REMATCH[3]:-}
+    found=1
+  done < "$NGINX_CONF"
+  [ -n "$NGINX_GROUP" ] || NGINX_GROUP=$NGINX_USER
+  [[ $NGINX_USER != root && $NGINX_GROUP != root ]] || fail "nginx runs as root, refusing"
+  if [ -n "$DRY" ]; then
+    echo "check: user $NGINX_USER and group $NGINX_GROUP exist"
+  else
+    id -u "$NGINX_USER" > /dev/null 2>&1 || fail "nginx user does not exist: $NGINX_USER"
+    getent group "$NGINX_GROUP" > /dev/null 2>&1 || fail "nginx group does not exist: $NGINX_GROUP"
+  fi
+}
+
+# escape_dots <text>: dots escaped for a sed pattern (the input is already checked: no other special characters).
+escape_dots() { printf '%s' "$1" | sed 's/[.]/\\./g'; }
+
+# pool_conf <version>: eeploi's own PHP-FPM pool, running as the deploy user.
+pool_conf() {
+  cat <<POOL
+; Written by eeploi-helper (php-pool-write). eeploi rewrites this file, do not edit.
+[eeploi]
+user = $DEPLOY_USER
+group = $DEPLOY_USER
+listen = /run/php/php$1-fpm-eeploi.sock
+listen.owner = $NGINX_USER
+listen.group = $NGINX_GROUP
+listen.mode = 0660
+pm = ondemand
+pm.max_children = 10
+pm.process_idle_timeout = 10s
+pm.max_requests = 500
+request_terminate_timeout = 300
+POOL
+}
+
+[[ $CALLER =~ ^($HOMES)$ ]] || fail "run through sudo as the deploy user"
+[ $# -ge 1 ] || fail "usage: eeploi-helper <subcommand> [arguments]"
+
+command=$1
+shift
+
+case "$command" in
+  version)
+    echo "$VERSION" ;;
+
+  nginx-test)
+    run nginx -t ;;
+
+  nginx-reload)
+    run service nginx reload ;;
+
+  php-fpm-reload)
+    [ $# -eq 1 ] || fail "usage: php-fpm-reload <version>"
+    php_version "$1"
+    run service "php$1-fpm" reload ;;
+
+  vhost-write)
+    [ $# -eq 1 ] || fail "usage: vhost-write <domain> < vhost"
+    file=$(vhost_file "$1")
+    put "$file" 644 ;;
+
+  vhost-read)
+    [ $# -eq 1 ] || fail "usage: vhost-read <domain>"
+    file=$(vhost_file "$1")
+    if [ -n "$DRY" ]; then echo "read: $file"; else cat "$file"; fi ;;
+
+  vhost-enable)
+    [ $# -eq 1 ] || fail "usage: vhost-enable <domain>"
+    domain "$1"
+    run ln -sfn "/etc/nginx/sites-available/$1" "/etc/nginx/sites-enabled/$1" ;;
+
+  vhost-disable)
+    [ $# -eq 1 ] || fail "usage: vhost-disable <domain>"
+    domain "$1"
+    run rm -f "/etc/nginx/sites-enabled/$1" ;;
+
+  vhost-remove)
+    [ $# -eq 1 ] || fail "usage: vhost-remove <domain>"
+    domain "$1"
+    run rm -f "/etc/nginx/sites-enabled/$1" "/etc/nginx/sites-available/$1" ;;
+
+  vhost-set-root)
+    [ $# -eq 3 ] || fail "usage: vhost-set-root <domain> <old-root> <new-root>"
+    file=$(vhost_file "$1")
+    home_path "$2"
+    home_path "$3"
+    run sed -i "s#root ${2//./\\.};#root $3;#" "$file" ;;
+
+  vhost-set-socket)
+    [ $# -eq 3 ] || fail "usage: vhost-set-socket <domain> <from-socket> <to-socket>"
+    file=$(vhost_file "$1")
+    socket "$2"
+    socket "$3"
+    [ "$2" != "$3" ] || fail "from and to are the same socket: $2"
+    from=$(escape_dots "$2")
+    line="^[[:space:]]*fastcgi_pass unix:$from;[[:space:]]*\$"
+    if [ -z "$DRY" ]; then
+      [ -f "$file" ] || fail "no vhost for $1: $file"
+      grep -qE "$line" "$file" || fail "no 'fastcgi_pass unix:$2;' line in $file"
+      backup=$(mktemp)
+      TMP_PATHS="$TMP_PATHS $backup"
+      cp -p "$file" "$backup"
+    fi
+    run sed -i -E "s#^([[:space:]]*)fastcgi_pass unix:$from;([[:space:]]*)\$#\\1fastcgi_pass unix:$3;\\2#" "$file"
+    if [ -n "$DRY" ]; then
+      run nginx -t
+    elif ! out=$(nginx -t 2>&1); then
+      cp -p "$backup" "$file"
+      echo "$out" >&2
+      fail "nginx -t failed, vhost restored: $file"
+    fi
+    run service nginx reload ;;
+
+  vhost-set-cert)
+    [ $# -eq 1 ] || fail "usage: vhost-set-cert <domain>"
+    file=$(vhost_file "$1")
+    for f in "$file" "/etc/nginx/ssl/$1"; do
+      [ -f "$f" ] || [ -n "$DRY" ] || continue
+      run sed -i -E "s#^(\s*)ssl_certificate\s+[^;]+;#\1ssl_certificate /etc/nginx/ssl/eeploi-$1.crt;#; s#^(\s*)ssl_certificate_key\s+[^;]+;#\1ssl_certificate_key /etc/nginx/ssl/eeploi-$1.key;#" "$f"
+    done ;;
+
+  ssl-csr)
+    [ $# -eq 1 ] || fail "usage: ssl-csr <name>"
+    cert_name "$1"
+    key="/etc/nginx/ssl/$1.key"
+    run mkdir -p /etc/nginx/ssl
+    if [ ! -f "$key" ]; then
+      run openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "$key"
+    fi
+    run chmod 600 "$key"
+    run openssl req -new -key "$key" -subj "/CN=${1#eeploi-}" ;;
+
+  ssl-write)
+    [ $# -eq 1 ] || fail "usage: ssl-write <name> < certificate"
+    cert_name "$1"
+    put "/etc/nginx/ssl/$1.crt" 644 ;;
+
+  ssl-remove)
+    [ $# -eq 1 ] || fail "usage: ssl-remove <name>"
+    cert_name "$1"
+    run rm -f "/etc/nginx/ssl/$1.crt" "/etc/nginx/ssl/$1.key" ;;
+
+  ssl-read)
+    [ $# -eq 1 ] || fail "usage: ssl-read <domain>"
+    domain "$1"
+    if [ -n "$DRY" ]; then echo "read: /etc/nginx/ssl/$1"; elif [ -f "/etc/nginx/ssl/$1" ]; then cat "/etc/nginx/ssl/$1"; else exit 3; fi ;;
+
+  ssl-include-write)
+    [ $# -eq 1 ] || fail "usage: ssl-include-write <domain> < include"
+    domain "$1"
+    put "/etc/nginx/ssl/$1" 644 ;;
+
+  supervisor-write)
+    [ $# -eq 1 ] || fail "usage: supervisor-write <program> < config"
+    program "$1"
+    config=$(cat)
+    users=0
+    first=1
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if [ $first -eq 1 ]; then
+        [ "$line" = "[program:$1]" ] || fail "config must start with [program:$1]"
+        first=0
+        continue
+      fi
+      [[ $line =~ ^[a-z_]+=.*$ ]] || fail "unexpected config line: $line"
+      case "$line" in user=*) [ "$line" = "user=$CALLER" ] || fail "daemons run as $CALLER"; users=$((users + 1)) ;; esac
+    done <<< "$config"
+    [ $first -eq 0 ] || fail "empty config"
+    [ $users -eq 1 ] || fail "config needs exactly one user=$CALLER"
+    printf '%s\n' "$config" | put "/etc/supervisor/conf.d/$1.conf" 644 ;;
+
+  supervisor-remove)
+    [ $# -eq 1 ] || fail "usage: supervisor-remove <program>"
+    program "$1"
+    run rm -f "/etc/supervisor/conf.d/$1.conf" ;;
+
+  supervisor-remove-site)
+    [ $# -eq 1 ] || fail "usage: supervisor-remove-site <domain>"
+    domain "$1"
+    for f in /etc/supervisor/conf.d/eeploi-"$1"-*.conf; do
+      [ -e "$f" ] && run rm -f "$f"
+    done
+    true ;;
+
+  supervisor-pause)
+    [ $# -eq 1 ] || fail "usage: supervisor-pause <config>"
+    supervisor_file "$1"
+    run mv "$1" "$1.paused" ;;
+
+  supervisor-resume)
+    [ $# -eq 1 ] || fail "usage: supervisor-resume <config>"
+    supervisor_file "$1"
+    if [ -f "$1.paused" ] || [ -n "$DRY" ]; then run mv "$1.paused" "$1"; fi ;;
+
+  supervisor-update)
+    run supervisorctl reread
+    run supervisorctl update ;;
+
+  cron-write)
+    [ $# -eq 1 ] || fail "usage: cron-write <domain> < line"
+    domain "$1"
+    line=$(cat)
+    re="^\* \* \* \* \* $CALLER php([0-9]\.[0-9])? (/[A-Za-z0-9._/-]+)/artisan schedule:run > /dev/null 2>&1$"
+    [[ $line =~ $re ]] || fail "only '* * * * * $CALLER php <site>/artisan schedule:run' is allowed"
+    home_path "${BASH_REMATCH[2]}"
+    printf '%s\n' "$line" | put "/etc/cron.d/eeploi-$1" 644 ;;
+
+  cron-remove)
+    [ $# -eq 1 ] || fail "usage: cron-remove <domain>"
+    domain "$1"
+    run rm -f "/etc/cron.d/eeploi-$1" ;;
+
+  crontab-backup)
+    [ $# -eq 1 ] || fail "usage: crontab-backup <domain>"
+    domain "$1"
+    run mkdir -p /var/lib/eeploi/crontab
+    run cp /etc/crontab "/var/lib/eeploi/crontab/$1" ;;
+
+  crontab-restore)
+    [ $# -eq 1 ] || fail "usage: crontab-restore <domain>"
+    domain "$1"
+    if [ -f "/var/lib/eeploi/crontab/$1" ] || [ -n "$DRY" ]; then run cp "/var/lib/eeploi/crontab/$1" /etc/crontab; fi ;;
+
+  crontab-remove-lines)
+    [ $# -eq 0 ] || fail "usage: crontab-remove-lines < lines"
+    patterns=$(mktemp)
+    TMP_PATHS="$TMP_PATHS $patterns"
+    cat > "$patterns"
+    if [ -n "$DRY" ]; then
+      while IFS= read -r line; do echo "remove from /etc/crontab: $line"; done < "$patterns"
+    else
+      tmp=$(mktemp /etc/crontab.eeploi.XXXXXX)
+      grep -vxF -f "$patterns" /etc/crontab > "$tmp" || true
+      chmod 644 "$tmp"
+      mv -f "$tmp" /etc/crontab
+    fi ;;
+
+  env-install)
+    [ $# -eq 3 ] || fail "usage: env-install <from-file> <to-file> <owner>"
+    home_path "$1"
+    caller_path "$2"
+    owner "$3"
+    run install -o "$3" -g "$3" -m 640 "$1" "$2" ;;
+
+  storage-copy)
+    [ $# -eq 3 ] || fail "usage: storage-copy <from-dir> <to-dir> <owner>"
+    home_path "$1"
+    caller_path "$2"
+    owner "$3"
+    if [ -d "$1" ] || [ -n "$DRY" ]; then run rsync -a "--chown=$3:$3" "$1/" "$2/"; fi ;;
+
+  firewall-close-22)
+    [ $# -eq 0 ] || fail "usage: firewall-close-22"
+    trusted "$ETC/new-server" || fail "firewall-close-22 only runs on a server eeploi created ($ETC/new-server is missing or not root-owned)"
+    run ufw delete allow 22/tcp ;;
+
+  acl-nginx)
+    [ $# -eq 0 ] || fail "usage: acl-nginx"
+    nginx_user
+    home="/home/$DEPLOY_USER"
+    if [ -z "$DRY" ]; then
+      [[ -d $home && ! -L $home ]] || fail "no home folder: $home"
+    fi
+    run setfacl -m "u:$NGINX_USER:x" "$home" ;;
+
+  php-pool-write)
+    [ $# -eq 1 ] || fail "usage: php-pool-write <version>"
+    php_version "$1"
+    nginx_user
+    dir="/etc/php/$1/fpm/pool.d"
+    file="$dir/eeploi.conf"
+    if [ -n "$DRY" ]; then
+      echo "write: $file (644)"
+      pool_conf "$1" | sed 's/^/  /'
+      run "php-fpm$1" -t
+      run service "php$1-fpm" reload
+      exit 0
+    fi
+    [[ -d $dir && ! -L $dir ]] || fail "PHP $1 FPM is not installed: $dir"
+    command -v "php-fpm$1" > /dev/null || fail "php-fpm$1 not found"
+    id -u "$DEPLOY_USER" > /dev/null 2>&1 || fail "deploy user does not exist: $DEPLOY_USER"
+    backup=""
+    if [ -f "$file" ]; then
+      backup=$(mktemp "$dir/.eeploi.conf.backup.XXXXXX")
+      TMP_PATHS="$TMP_PATHS $backup"
+      cp -p "$file" "$backup"
+    fi
+    pool_conf "$1" | put "$file" 644
+    if ! out=$("php-fpm$1" -t 2>&1); then
+      if [ -n "$backup" ]; then mv -f "$backup" "$file"; else rm -f "$file"; fi
+      echo "$out" >&2
+      fail "php-fpm$1 -t failed, previous pool restored"
+    fi
+    service "php$1-fpm" reload ;;
+
+  self-update)
+    [ $# -eq 1 ] || fail "usage: self-update <version>"
+    semver='^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
+    [[ $1 =~ $semver ]] || fail "invalid version: $1"
+    key_re='^RW[A-Za-z0-9+/]{54}$'
+    case "$PUBKEY" in *REPLACE_WITH_RELEASE_KEY*) fail "no release key in this build (PUBKEY is the placeholder), self-update refused" ;; esac
+    [[ $PUBKEY =~ $key_re ]] || fail "invalid release key in this build, self-update refused"
+    url="$RELEASES/v$1/eeploi-helper"
+    if [ -n "$DRY" ]; then
+      echo "download: $url"
+      echo "download: $url.minisig"
+      echo "run: minisign -V -q -P $PUBKEY -m <download>/eeploi-helper -x <download>/eeploi-helper.minisig"
+      echo "run: bash -n <download>/eeploi-helper"
+      echo "check: <download>/eeploi-helper version = $1"
+      echo "install: $INSTALL_PATH (root:root 755)"
+      exit 0
+    fi
+    command -v curl > /dev/null || fail "curl not found"
+    command -v minisign > /dev/null || fail "minisign not found"
+    work=$(mktemp -d)
+    TMP_PATHS="$TMP_PATHS $work"
+    for f in eeploi-helper eeploi-helper.minisig; do
+      curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+        --connect-timeout 10 --max-time 120 --max-filesize 1048576 \
+        -o "$work/$f" "$RELEASES/v$1/$f" || fail "download failed: $RELEASES/v$1/$f"
+    done
+    minisign -V -q -P "$PUBKEY" -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
+      || fail "signature check failed, nothing changed"
+    bash -n "$work/eeploi-helper" || fail "the new helper is not valid bash, nothing changed"
+    got=$(env -i PATH="$PATH" SUDO_USER="$CALLER" bash "$work/eeploi-helper" version 2>&1) \
+      || fail "the new helper does not run, nothing changed"
+    [ "$got" = "$1" ] || fail "the new helper says version $got, expected $1, nothing changed"
+    new=$(mktemp "$INSTALL_PATH.eeploi.XXXXXX")
+    TMP_PATHS="$TMP_PATHS $new"
+    cp "$work/eeploi-helper" "$new"
+    chown root:root "$new"
+    chmod 755 "$new"
+    mv -f "$new" "$INSTALL_PATH"
+    echo "eeploi-helper $VERSION -> $1"
+    exit 0 ;;
+
+  *)
+    fail "unknown subcommand: $command" ;;
+esac
