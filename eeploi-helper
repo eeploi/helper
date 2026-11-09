@@ -301,6 +301,17 @@ POOL
 command=$1
 shift
 
+# Every call that can change something goes to the system log: who, the subcommand and its
+# arguments, never what comes on stdin (a certificate, a command, a file). A dry run says so
+# on stderr instead.
+if [ "$command" != "version" ]; then
+  if [ -n "$DRY" ]; then
+    echo "log: eeploi-helper: $CALLER: $command $*" >&2
+  else
+    logger -t eeploi-helper -- "$CALLER: $command $*" 2> /dev/null || true
+  fi
+fi
+
 case "$command" in
   version)
     echo "$VERSION" ;;

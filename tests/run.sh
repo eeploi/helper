@@ -309,6 +309,11 @@ BIN="$WORK/keyed-helper" refuse "bad version with a key" "invalid version" self-
 sed "s#^PUBKEY=.*#PUBKEY='RWQshort'#" "$HELPER" > "$WORK/badkey-helper"
 BIN="$WORK/badkey-helper" refuse "malformed key" "invalid release key" self-update 1.2.3
 
+echo "== system log"
+ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com
+IN=$'-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n-----END CERTIFICATE-----' ok "logs the arguments, never stdin" $'log: eeploi-helper: eeploi: ssl-write example.com\n' ssl-write example.com
+lacks "not the version" "log:" version
+
 echo
 echo "$PASS passed, $FAILED failed"
 if [ "$FAILED" -gt 0 ]; then
