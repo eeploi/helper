@@ -12,7 +12,7 @@ The helper has a fixed list of subcommands. Each one checks its arguments and do
 
 ## Subcommands
 
-Run as `sudo eeploi-helper <subcommand> [arguments]`. Content (a vhost, a certificate, a config) comes on stdin.
+Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a worker command and cron lines come on stdin, and each is checked. Files a root service reads (vhosts, Supervisor configs) are built by the helper from checked arguments, never taken from the caller. Logs those services open as root go to `/var/log`, never to a folder the caller can write.
 
 | Subcommand | Does |
 |---|---|
@@ -21,8 +21,9 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Content (a vhost, a certif
 | `nginx-reload` | Reloads nginx |
 | `php-fpm-reload <version>` | Reloads PHP-FPM for that version, like `8.4` |
 | `php-pool-write <version>` | Writes eeploi's own PHP-FPM pool (`/etc/php/<version>/fpm/pool.d/eeploi.conf`), runs as the deploy user, socket `/run/php/php<version>-fpm-eeploi.sock`. Tests the config with `php-fpm<version> -t` before the reload; on failure the old pool comes back |
-| `vhost-write <domain>` | Writes the vhost for the domain from stdin |
-| `vhost-read <domain>` | Prints the vhost for the domain |
+| `vhost-write <domain> <socket>` | Writes eeploi's vhost for the domain: HTTPS only, root `/home/<caller>/<domain>/current/public`, certificate `/etc/nginx/ssl/<domain>.crt`, logs in `/var/log/nginx`, PHP through the given PHP-FPM socket |
+| `vhost-backup <domain>` | Copies the vhost and its SSL include to `/var/lib/eeploi/nginx/<domain>` (root only), before a take-over changes them |
+| `vhost-restore <domain>` | Puts that copy back |
 | `vhost-enable <domain>` | Links the vhost into `sites-enabled` |
 | `vhost-disable <domain>` | Removes the link from `sites-enabled` |
 | `vhost-remove <domain>` | Removes the vhost and its link |
@@ -30,11 +31,9 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Content (a vhost, a certif
 | `vhost-set-socket <domain> <from> <to>` | Changes the exact line `fastcgi_pass unix:<from>;` to `unix:<to>;`. Only PHP-FPM sockets in `/run/php` or `/var/run/php`. Runs `nginx -t` before the reload; on failure the old vhost comes back |
 | `vhost-set-cert <domain>` | Points the vhost's certificate lines to `/etc/nginx/ssl/eeploi-<domain>.crt` and `.key` |
 | `ssl-csr <name>` | Makes a private key (once) and prints a certificate request |
-| `ssl-write <name>` | Writes a certificate from stdin |
+| `ssl-write <name>` | Writes a certificate from stdin. Only one PEM certificate is accepted |
 | `ssl-remove <name>` | Removes a certificate and its key |
-| `ssl-read <domain>` | Prints the SSL include for the domain (exit 3 when there is none) |
-| `ssl-include-write <domain>` | Writes the SSL include for the domain from stdin |
-| `supervisor-write <program>` | Writes a Supervisor program `eeploi-*`. It must run as the calling user |
+| `supervisor-write <program> <directory> <processes>` | Writes a Supervisor program `eeploi-*` with the one-line command from stdin. Runs as the calling user, in a folder in their home, 1 to 32 processes, log in `/var/log/supervisor` |
 | `supervisor-remove <program>` | Removes a Supervisor program `eeploi-*` |
 | `supervisor-remove-site <domain>` | Removes all eeploi Supervisor programs of a site |
 | `supervisor-pause <config>` | Renames a Supervisor config to `.paused` |
@@ -42,14 +41,13 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Content (a vhost, a certif
 | `supervisor-update` | `supervisorctl reread` and `update` |
 | `cron-write <domain>` | Writes one `schedule:run` cron line for a site. Nothing else is allowed |
 | `cron-remove <domain>` | Removes that cron file |
-| `crontab-backup <domain>` | Copies `/etc/crontab` to `/var/lib/eeploi/crontab/<domain>` |
-| `crontab-restore <domain>` | Puts that copy back |
-| `crontab-remove-lines` | Removes the exact lines from stdin from `/etc/crontab` |
-| `env-install <from> <to> <owner>` | Copies a `.env` into the caller's home folder, mode `640` |
-| `storage-copy <from> <to> <owner>` | Copies a `storage` folder into the caller's home folder |
+| `crontab-remove-lines <domain>` | Removes the exact lines from stdin from `/etc/crontab` and keeps them in `/var/lib/eeploi/crontab/<domain>`. Only jobs that run as `ploi` or `forge` on a path in their home |
+| `crontab-restore <domain>` | Adds those lines back, once each. Other changes to `/etc/crontab` stay |
+| `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` into the caller's home folder, mode `640`. Root only reads; the caller writes the copy |
+| `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` into the caller's home folder. Root only reads; the caller unpacks it |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
 | `acl-nginx` | Lets the nginx user pass through the deploy user's home folder (`setfacl -m u:<nginx user>:x`), and installs the `acl` package first when `setfacl` is missing. Nothing more: the folder stays `750` |
-| `self-update <version>` | Installs a signed release (see below) |
+| `self-update <version>` | Installs a signed release (see below). Never an older one |
 
 Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi` and the deploy user's.
 
@@ -92,13 +90,13 @@ The release key is also in `eeploi-helper` itself (`PUBKEY`). Check that both ma
 sudo eeploi-helper self-update 1.1.0
 ```
 
-1. Checks the version is a plain `x.y.z`.
+1. Checks the version is a plain `x.y.z`, and not older than the installed one.
 2. Downloads `eeploi-helper` and `eeploi-helper.minisig` of that release from GitHub.
 3. Checks the signature with the key built into the running helper. A bad signature changes nothing.
 4. Checks the new file with `bash -n`, and that its `version` is the one you asked for.
 5. Installs it as root, mode `755`, in one move.
 
-Going back works the same way: `self-update` with an older version. The sudo rule never changes: it names the path, not the content.
+Going back is not possible: an older release may still have a bug a newer one fixed. The sudo rule never changes: it names the path, not the content.
 
 ## Dry run
 

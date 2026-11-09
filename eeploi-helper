@@ -180,6 +180,99 @@ nginx_user() {
   fi
 }
 
+# source_path <path>: a path in another panel's home (/home/ploi, /home/forge), never the caller's own.
+# Sets SRC to where it really is (Ploi's site folder is a link), which must still be in those homes.
+# Root only reads from here.
+source_path() {
+  home_path "$1"
+  local re='^/home/(ploi|forge)/[A-Za-z0-9._/-]+$'
+  [[ $1 =~ $re ]] || fail "source must be in /home/ploi or /home/forge: $1"
+  case "$1" in "/home/$CALLER/"*) fail "source cannot be in /home/$CALLER: $1" ;; esac
+  SRC=$1
+  if [ -z "$DRY" ]; then
+    SRC=$(realpath -e -- "$1") || fail "source not found: $1"
+    [[ $SRC =~ $re ]] || fail "source resolves outside /home/ploi and /home/forge: $1"
+    case "$SRC" in "/home/$CALLER/"*) fail "source resolves into /home/$CALLER: $1" ;; esac
+  fi
+}
+
+# version_lt <a> <b>: true when version a is lower than version b (both checked x.y.z).
+version_lt() {
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<< "$1"
+  IFS=. read -r b1 b2 b3 <<< "$2"
+  (( a1 != b1 )) && { (( a1 < b1 )); return; }
+  (( a2 != b2 )) && { (( a2 < b2 )); return; }
+  (( a3 < b3 ))
+}
+
+# vhost_conf <domain> <socket>: eeploi's one vhost, HTTPS only behind Cloudflare, built here from checked
+# arguments. Root, certificate and log paths are fixed: logs go to /var/log/nginx, never into a folder the
+# caller can write (nginx opens log files as root).
+vhost_conf() {
+  cat <<VHOST
+# Written by eeploi-helper (vhost-write). eeploi rewrites this file, do not edit.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $1;
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name $1;
+    root /home/$CALLER/$1/current/public;
+
+    ssl_certificate /etc/nginx/ssl/$1.crt;
+    ssl_certificate_key /etc/nginx/ssl/$1.key;
+
+    index index.php;
+    charset utf-8;
+
+    access_log /var/log/nginx/eeploi-$1-access.log;
+    error_log /var/log/nginx/eeploi-$1-error.log;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \\.php\$ {
+        fastcgi_pass unix:$2;
+        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\\.(?!well-known).* {
+        deny all;
+    }
+}
+VHOST
+}
+
+# supervisor_conf <program> <directory> <processes> <command>: a worker config built here. Only these keys;
+# the log goes to /var/log/supervisor (supervisord opens it as root).
+supervisor_conf() {
+  cat <<CONF
+[program:$1]
+process_name=%(program_name)s_%(process_num)02d
+command=$4
+directory=$2
+user=$CALLER
+numprocs=$3
+autostart=true
+autorestart=true
+stopwaitsecs=3600
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/$1.log
+CONF
+}
+
+# Where root keeps take-over backups: root-owned, never in a folder the caller can write.
+STATE=/var/lib/eeploi
+
 # escape_dots <text>: dots escaped for a sed pattern (the input is already checked: no other special characters).
 escape_dots() { printf '%s' "$1" | sed 's/[.]/\\./g'; }
 
@@ -224,14 +317,27 @@ case "$command" in
     run service "php$1-fpm" reload ;;
 
   vhost-write)
-    [ $# -eq 1 ] || fail "usage: vhost-write <domain> < vhost"
+    [ $# -eq 2 ] || fail "usage: vhost-write <domain> <php-fpm-socket>"
     file=$(vhost_file "$1")
-    put "$file" 644 ;;
+    socket "$2"
+    if [ -n "$DRY" ]; then vhost_conf "$1" "$2" | sed 's/^/  /'; fi
+    vhost_conf "$1" "$2" | put "$file" 644 ;;
 
-  vhost-read)
-    [ $# -eq 1 ] || fail "usage: vhost-read <domain>"
+  vhost-backup)
+    [ $# -eq 1 ] || fail "usage: vhost-backup <domain>"
     file=$(vhost_file "$1")
-    if [ -n "$DRY" ]; then echo "read: $file"; else cat "$file"; fi ;;
+    dir="$STATE/nginx/$1"
+    run mkdir -p -m 700 "$dir"
+    run cp "$file" "$dir/vhost"
+    if [ -f "/etc/nginx/ssl/$1" ] || [ -n "$DRY" ]; then run cp "/etc/nginx/ssl/$1" "$dir/ssl"; else run rm -f "$dir/ssl"; fi ;;
+
+  vhost-restore)
+    [ $# -eq 1 ] || fail "usage: vhost-restore <domain>"
+    file=$(vhost_file "$1")
+    dir="$STATE/nginx/$1"
+    [ -f "$dir/vhost" ] || [ -n "$DRY" ] || fail "no backup for $1: $dir/vhost"
+    run cp "$dir/vhost" "$file"
+    if [ -f "$dir/ssl" ] || [ -n "$DRY" ]; then run cp "$dir/ssl" "/etc/nginx/ssl/$1"; fi ;;
 
   vhost-enable)
     [ $# -eq 1 ] || fail "usage: vhost-enable <domain>"
@@ -302,42 +408,27 @@ case "$command" in
   ssl-write)
     [ $# -eq 1 ] || fail "usage: ssl-write <name> < certificate"
     cert_name "$1"
-    put "/etc/nginx/ssl/$1.crt" 644 ;;
+    pem=$(cat)
+    pem_re='^-----BEGIN CERTIFICATE-----'$'\n''([A-Za-z0-9+/=]{1,76}'$'\n'')+''-----END CERTIFICATE-----$'
+    [[ $pem =~ $pem_re ]] || fail "not one PEM certificate"
+    printf '%s\n' "$pem" | put "/etc/nginx/ssl/$1.crt" 644 ;;
 
   ssl-remove)
     [ $# -eq 1 ] || fail "usage: ssl-remove <name>"
     cert_name "$1"
     run rm -f "/etc/nginx/ssl/$1.crt" "/etc/nginx/ssl/$1.key" ;;
 
-  ssl-read)
-    [ $# -eq 1 ] || fail "usage: ssl-read <domain>"
-    domain "$1"
-    if [ -n "$DRY" ]; then echo "read: /etc/nginx/ssl/$1"; elif [ -f "/etc/nginx/ssl/$1" ]; then cat "/etc/nginx/ssl/$1"; else exit 3; fi ;;
-
-  ssl-include-write)
-    [ $# -eq 1 ] || fail "usage: ssl-include-write <domain> < include"
-    domain "$1"
-    put "/etc/nginx/ssl/$1" 644 ;;
-
   supervisor-write)
-    [ $# -eq 1 ] || fail "usage: supervisor-write <program> < config"
+    [ $# -eq 3 ] || fail "usage: supervisor-write <program> <directory> <processes> < command"
     program "$1"
-    config=$(cat)
-    users=0
-    first=1
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      if [ $first -eq 1 ]; then
-        [ "$line" = "[program:$1]" ] || fail "config must start with [program:$1]"
-        first=0
-        continue
-      fi
-      [[ $line =~ ^[a-z_]+=.*$ ]] || fail "unexpected config line: $line"
-      case "$line" in user=*) [ "$line" = "user=$CALLER" ] || fail "daemons run as $CALLER"; users=$((users + 1)) ;; esac
-    done <<< "$config"
-    [ $first -eq 0 ] || fail "empty config"
-    [ $users -eq 1 ] || fail "config needs exactly one user=$CALLER"
-    printf '%s\n' "$config" | put "/etc/supervisor/conf.d/$1.conf" 644 ;;
+    caller_path "$2"
+    [[ $3 =~ ^([1-9]|[12][0-9]|3[0-2])$ ]] || fail "processes must be 1 to 32: $3"
+    worker=$(cat)
+    [ -n "$worker" ] || fail "empty command"
+    [[ $worker != *$'\n'* && $worker != *$'\r'* ]] || fail "the command must be one line"
+    [[ $worker =~ ^[[:print:]]+$ ]] || fail "the command has control characters"
+    if [ -n "$DRY" ]; then supervisor_conf "$1" "$2" "$3" "$worker" | sed 's/^/  /'; fi
+    supervisor_conf "$1" "$2" "$3" "$worker" | put "/etc/supervisor/conf.d/$1.conf" 644 ;;
 
   supervisor-remove)
     [ $# -eq 1 ] || fail "usage: supervisor-remove <program>"
@@ -380,44 +471,80 @@ case "$command" in
     domain "$1"
     run rm -f "/etc/cron.d/eeploi-$1" ;;
 
-  crontab-backup)
-    [ $# -eq 1 ] || fail "usage: crontab-backup <domain>"
-    domain "$1"
-    run mkdir -p /var/lib/eeploi/crontab
-    run cp /etc/crontab "/var/lib/eeploi/crontab/$1" ;;
-
-  crontab-restore)
-    [ $# -eq 1 ] || fail "usage: crontab-restore <domain>"
-    domain "$1"
-    if [ -f "/var/lib/eeploi/crontab/$1" ] || [ -n "$DRY" ]; then run cp "/var/lib/eeploi/crontab/$1" /etc/crontab; fi ;;
-
   crontab-remove-lines)
-    [ $# -eq 0 ] || fail "usage: crontab-remove-lines < lines"
+    [ $# -eq 1 ] || fail "usage: crontab-remove-lines <domain> < lines"
+    domain "$1"
     patterns=$(mktemp)
     TMP_PATHS="$TMP_PATHS $patterns"
     cat > "$patterns"
+    # Only a panel's own jobs: run as ploi or forge, on a path in their home. Never system lines.
+    line_re='^[^#[:space:]]+([[:space:]]+[^[:space:]]+){4}[[:space:]]+(ploi|forge)[[:space:]]+.*/home/(ploi|forge)/.*$'
+    count=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -n "$line" ] || continue
+      [[ $line =~ $line_re ]] || fail "only ploi or forge jobs in their home can be removed: $line"
+      count=$((count + 1))
+    done < "$patterns"
+    [ $count -gt 0 ] || fail "no lines given"
+    saved="$STATE/crontab/$1"
     if [ -n "$DRY" ]; then
-      while IFS= read -r line; do echo "remove from /etc/crontab: $line"; done < "$patterns"
+      while IFS= read -r line; do [ -n "$line" ] && echo "remove from /etc/crontab: $line"; done < "$patterns"
+      echo "save: $saved"
     else
+      mkdir -p -m 700 "$STATE/crontab"
+      grep -xF -f "$patterns" /etc/crontab | put "$saved" 600 || true
       tmp=$(mktemp /etc/crontab.eeploi.XXXXXX)
       grep -vxF -f "$patterns" /etc/crontab > "$tmp" || true
       chmod 644 "$tmp"
       mv -f "$tmp" /etc/crontab
     fi ;;
 
+  crontab-restore)
+    [ $# -eq 1 ] || fail "usage: crontab-restore <domain>"
+    domain "$1"
+    saved="$STATE/crontab/$1"
+    if [ -n "$DRY" ]; then
+      echo "add back to /etc/crontab: the lines in $saved"
+    elif [ -f "$saved" ]; then
+      # Only the lines crontab-remove-lines took out, each once; later changes to /etc/crontab stay.
+      tmp=$(mktemp /etc/crontab.eeploi.XXXXXX)
+      cp -p /etc/crontab "$tmp"
+      while IFS= read -r line || [ -n "$line" ]; do
+        [ -n "$line" ] || continue
+        grep -qxF -- "$line" "$tmp" || printf '%s\n' "$line" >> "$tmp"
+      done < "$saved"
+      chmod 644 "$tmp"
+      mv -f "$tmp" /etc/crontab
+      rm -f "$saved"
+    fi ;;
+
   env-install)
     [ $# -eq 3 ] || fail "usage: env-install <from-file> <to-file> <owner>"
-    home_path "$1"
+    source_path "$1"
     caller_path "$2"
     owner "$3"
-    run install -o "$3" -g "$3" -m 640 "$1" "$2" ;;
+    [ -f "$SRC" ] || [ -n "$DRY" ] || fail "no file: $1"
+    # Root only reads the source (no link at the end), the caller writes the copy: a swapped link in the
+    # caller's home can't send root's write elsewhere.
+    # shellcheck disable=SC2016 # $1 is for the inner shell
+    write='umask 027 && cat > "$1" && chmod 640 "$1"'
+    if [ -n "$DRY" ]; then
+      echo "run: dd if=$SRC iflag=nofollow | runuser -u $CALLER -- sh -c '$write' sh $2"
+    else
+      dd if="$SRC" iflag=nofollow status=none | runuser -u "$CALLER" -- sh -c "$write" sh "$2"
+    fi ;;
 
   storage-copy)
     [ $# -eq 3 ] || fail "usage: storage-copy <from-dir> <to-dir> <owner>"
-    home_path "$1"
+    source_path "$1"
     caller_path "$2"
     owner "$3"
-    if [ -d "$1" ] || [ -n "$DRY" ]; then run rsync -a "--chown=$3:$3" "$1/" "$2/"; fi ;;
+    # Root reads the source with tar (links stay links), the caller unpacks it in their own folder.
+    if [ -n "$DRY" ]; then
+      echo "run: tar -C $SRC -cf - . | runuser -u $CALLER -- tar -C $2 -xf - --no-same-owner"
+    elif [ -d "$SRC" ]; then
+      tar -C "$SRC" -cf - . | runuser -u "$CALLER" -- tar -C "$2" -xf - --no-same-owner
+    fi ;;
 
   firewall-close-22)
     [ $# -eq 0 ] || fail "usage: firewall-close-22"
@@ -468,6 +595,7 @@ case "$command" in
     [ $# -eq 1 ] || fail "usage: self-update <version>"
     semver='^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
     [[ $1 =~ $semver ]] || fail "invalid version: $1"
+    ! version_lt "$1" "$VERSION" || fail "no downgrade: $VERSION is installed, $1 is older"
     key_re='^RW[A-Za-z0-9+/]{54}$'
     case "$PUBKEY" in *REPLACE_WITH_RELEASE_KEY*) fail "no release key in this build (PUBKEY is the placeholder), self-update refused" ;; esac
     [[ $PUBKEY =~ $key_re ]] || fail "invalid release key in this build, self-update refused"

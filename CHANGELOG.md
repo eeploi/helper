@@ -11,11 +11,11 @@ Subcommands:
 - `version`
 - `nginx-test`, `nginx-reload`
 - `php-fpm-reload`, `php-pool-write` (new)
-- `vhost-write`, `vhost-read`, `vhost-enable`, `vhost-disable`, `vhost-remove`
+- `vhost-write`, `vhost-backup`, `vhost-restore`, `vhost-enable`, `vhost-disable`, `vhost-remove`
 - `vhost-set-root`, `vhost-set-cert`, `vhost-set-socket` (new)
-- `ssl-csr`, `ssl-write`, `ssl-remove`, `ssl-read`, `ssl-include-write`
+- `ssl-csr`, `ssl-write`, `ssl-remove`
 - `supervisor-write`, `supervisor-remove`, `supervisor-remove-site`, `supervisor-pause`, `supervisor-resume`, `supervisor-update`
-- `cron-write`, `cron-remove`, `crontab-backup`, `crontab-restore`, `crontab-remove-lines`
+- `cron-write`, `cron-remove`, `crontab-remove-lines`, `crontab-restore`
 - `env-install`, `storage-copy`
 - `firewall-close-22`
 - `acl-nginx` (new), installs the `acl` package when `setfacl` is missing
@@ -26,3 +26,13 @@ Changes from the helper built into eeploi.com:
 - `version` prints the release version (`1.0.0`) instead of `1`.
 - One file for every server. The deploy user comes from `/etc/eeploi/helper.conf`, not from a build step.
 - `firewall-close-22` is always in the file, but only runs when `/etc/eeploi/new-server` exists.
+
+Security fixes before release (server-access audit, 2026-11-09):
+
+- `vhost-write <domain> <socket>` builds the vhost itself; it no longer takes a config on stdin. Logs go to `/var/log/nginx`.
+- `vhost-backup` and `vhost-restore` replace `vhost-read`, `ssl-read` and `ssl-include-write` for take-overs. The backup stays root-only.
+- `supervisor-write <program> <directory> <processes>` builds the config itself from a one-line command. Logs go to `/var/log/supervisor`.
+- `env-install` and `storage-copy` only read from `/home/ploi` or `/home/forge`, and the caller writes the copy, never root.
+- `crontab-remove-lines <domain>` only removes `ploi` or `forge` jobs in their home and keeps them; `crontab-restore` adds just those back. `crontab-backup` is gone.
+- `ssl-write` only accepts one PEM certificate.
+- `self-update` refuses an older version.
