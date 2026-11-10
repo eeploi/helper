@@ -45,7 +45,7 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a work
 | `crontab-restore <domain>` | Adds those lines back, once each. Other changes to `/etc/crontab` stay |
 | `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` into the caller's home folder, mode `640`. Root only reads; the caller writes the copy |
 | `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` into the caller's home folder. Root only reads; the caller unpacks it |
-| `db-create <engine> <name> <user>` | Creates a database and its user on the local MySQL, MariaDB or Postgres. No password on stdin: the user logs in over the socket as the Unix user of the same name. A password on stdin: password login. The user gets that one database, nothing else. See [Databases](#databases) |
+| `db-create <engine> <name> <user> <socket\|password>` | Creates a database and its user on the local MySQL, MariaDB or Postgres. `socket`: the user logs in over the socket as the Unix user of the same name, with no password. `password`: password login, with the password from stdin. The user gets that one database, nothing else. See [Databases](#databases) |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
 | `acl-nginx` | Lets the nginx user pass through the deploy user's home folder (`setfacl -m u:<nginx user>:x`), and installs the `acl` package first when `setfacl` is missing. Nothing more: the folder stays `750` |
 | `self-update <version>` | Installs a signed release (see below). Never an older one |
@@ -66,15 +66,15 @@ The nginx user is read from the `user` line in `/etc/nginx/nginx.conf`. Without 
 ## Databases
 
 ```bash
-sudo eeploi-helper db-create pgsql shop_example shop_example < /dev/null    # socket login
-echo "$password" | sudo eeploi-helper db-create pgsql shop_example shop_example    # password login
+sudo eeploi-helper db-create pgsql shop_example shop_example socket
+echo "$password" | sudo eeploi-helper db-create pgsql shop_example shop_example password
 ```
 
 - **Engine:** `mysql`, `mariadb` or `pgsql`. The helper checks the server runs the one you name.
 - **Names:** database and user are a lowercase letter, then `a-z`, `0-9` or `_`, at most 32. No hyphens: a name never needs quoting. eeploi names a site's Unix user after its domain, every other character as `_` (`shop.example` gives `shop_example`), and uses that name for the database user and the database too. `mysql`, `information_schema`, `performance_schema`, `sys`, `postgres`, `template0`, `template1`, `root` and anything starting with `pg_` are refused.
-- **Two ways in:**
-  - **Socket login** (nothing on stdin, or a terminal): the user has no password at all. Only processes running as the Unix user of the same name get in, over the local socket. Postgres: a role without a password (peer auth). MariaDB: `IDENTIFIED VIA unix_socket`. MySQL: `IDENTIFIED WITH auth_socket`. The default for every site eeploi creates; nothing is stored, and the site's `.env` has no `DB_PASSWORD`. Give an empty stdin (`< /dev/null`) when calling from a script, so the helper does not read the script.
-  - **Password login** (a password on stdin): for a site that already has a password, or a database reached over TCP.
+- **Two ways in,** named by the fourth argument, which is required. Anything else is refused.
+  - **`socket`:** the user has no password at all. Only processes running as the Unix user of the same name get in, over the local socket. Postgres: a role without a password (peer auth). MariaDB: `IDENTIFIED VIA unix_socket`. MySQL: `IDENTIFIED WITH auth_socket`. The default for every site eeploi creates; nothing is stored, and the site's `.env` has no `DB_PASSWORD`. Stdin is ignored: it is never read, so an open stdin can't make the helper wait.
+  - **`password`:** the password comes on stdin. For a site that already has a password, or a database reached over TCP. Nothing on stdin, a lone newline, a terminal or an invalid password is refused: it never falls back to socket login.
 - **The Unix user (socket login):** must exist (`id -u`), and must be a site's own user: not a system user (uid below 1000), and not the deploy user, `eeploi`, `ploi` or `forge`, which run more than one site.
 - **The auth_socket plugin (MySQL, socket login):** Ubuntu's MySQL installs it when root has no password. When it is not active, the helper installs it first (`INSTALL PLUGIN auth_socket SONAME 'auth_socket.so'`), the one plugin shipped with MySQL for this. MariaDB has `unix_socket` built in and on; when it is not active, the helper refuses.
 - **Password:** on stdin only, 16 to 128 of `A-Z a-z 0-9 . _ ~ + / = -`. Never an argument, never in the system log, never in a file, never printed. The SQL goes to the client on stdin, so it is on no command line. The session turns off the server's statement logs first (`sql_log_off`; for Postgres `log_statement`, `log_min_error_statement`, `log_min_duration_statement`, `pg_stat_statements.track_utility`). On an error only the error lines are shown, without the password.

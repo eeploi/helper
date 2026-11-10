@@ -337,92 +337,104 @@ pg_state 0 1 1 0 0 1 0 > "$WORK/db-pgsql-taken"
 printf 'db_exists=0\nuser_exists=0\nPATH=/tmp\n' > "$WORK/db-junk"
 printf 'mariadb=0\ndb_exists=0\nuser_exists=0\n' > "$WORK/db-short"
 
-IN=$PW ok "mysql created" "created: mysql database shop for user shop" db-create mysql shop shop
-IN=$PW ok "mysql through the socket as root" "HOME=/root LC_ALL=C mysql --protocol=socket --user=root" db-create mysql shop shop
-IN=$PW ok "mysql with a clean environment" "run: env -i PATH=" db-create mysql shop shop
+IN=$PW ok "mysql created" "created: mysql database shop for user shop" db-create mysql shop shop password
+IN=$PW ok "mysql through the socket as root" "HOME=/root LC_ALL=C mysql --protocol=socket --user=root" db-create mysql shop shop password
+IN=$PW ok "mysql with a clean environment" "run: env -i PATH=" db-create mysql shop shop password
 IN=$PW ok "mysql statement log off first" "(SQL on stdin)
-  SET SESSION sql_log_off = 1;" db-create mysql shop shop
-IN=$PW ok "mysql user on localhost" "CREATE USER 'shop'@'localhost' IDENTIFIED BY '<password>';" db-create mysql shop shop
+  SET SESSION sql_log_off = 1;" db-create mysql shop shop socket
+IN=$PW ok "mysql user on localhost" "CREATE USER 'shop'@'localhost' IDENTIFIED BY '<password>';" db-create mysql shop shop password
 # shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
-IN=$PW ok "mysql database utf8mb4" 'CREATE DATABASE `shop_db` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' db-create mysql shop_db shop
+IN=$PW ok "mysql database utf8mb4" 'CREATE DATABASE `shop_db` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' db-create mysql shop_db shop password
 # shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
-IN=$PW ok "mysql grant on that database only" 'GRANT ALL PRIVILEGES ON `shop\_db`.* TO '"'shop'@'localhost';" db-create mysql shop_db shop
-IN=$PW lacks "mysql no global grant" 'ON *.*' db-create mysql shop_db shop
-IN=$PW ok "mysql checks both grant spellings" "Db IN ('shop_db', 'shop\\\\_db')" db-create mysql shop_db shop
-IN=$PW ok "mariadb client" "LC_ALL=C mariadb --protocol=socket --user=root" db-create mariadb shop shop
-IN=$PW ok "mariadb created" "created: mariadb database shop for user shop" db-create mariadb shop shop
-IN=$PW ok "pgsql as postgres" "runuser -u postgres -- psql -X -q -A -t --no-password -v ON_ERROR_STOP=1 -d postgres" db-create pgsql shop shop
+IN=$PW ok "mysql grant on that database only" 'GRANT ALL PRIVILEGES ON `shop\_db`.* TO '"'shop'@'localhost';" db-create mysql shop_db shop password
+IN=$PW lacks "mysql no global grant" 'ON *.*' db-create mysql shop_db shop password
+IN=$PW ok "mysql checks both grant spellings" "Db IN ('shop_db', 'shop\\\\_db')" db-create mysql shop_db shop password
+IN=$PW ok "mariadb client" "LC_ALL=C mariadb --protocol=socket --user=root" db-create mariadb shop shop password
+IN=$PW ok "mariadb created" "created: mariadb database shop for user shop" db-create mariadb shop shop password
+IN=$PW ok "pgsql as postgres" "runuser -u postgres -- psql -X -q -A -t --no-password -v ON_ERROR_STOP=1 -d postgres" db-create pgsql shop shop password
 IN=$PW ok "pgsql statement logs off" "SET log_statement = 'none';
   SET log_min_duration_statement = -1;
   SET log_min_error_statement = 'panic';
-  SET pg_stat_statements.track_utility = off;" db-create pgsql shop shop
-IN=$PW ok "pgsql role without rights" "CREATE ROLE \"shop\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '<password>';" db-create pgsql shop shop
-IN=$PW ok "pgsql database owned by the user" "CREATE DATABASE \"shop_db\" OWNER \"shop\" ENCODING 'UTF8' TEMPLATE template0;" db-create pgsql shop_db shop
-IN=$PW ok "pgsql closed to others" "REVOKE ALL ON DATABASE \"shop_db\" FROM PUBLIC;" db-create pgsql shop_db shop
-IN=$PW ok "pgsql created" "created: pgsql database shop for user shop" db-create pgsql shop shop
+  SET pg_stat_statements.track_utility = off;" db-create pgsql shop shop socket
+IN=$PW ok "pgsql role without rights" "CREATE ROLE \"shop\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '<password>';" db-create pgsql shop shop password
+IN=$PW ok "pgsql database owned by the user" "CREATE DATABASE \"shop_db\" OWNER \"shop\" ENCODING 'UTF8' TEMPLATE template0;" db-create pgsql shop_db shop password
+IN=$PW ok "pgsql closed to others" "REVOKE ALL ON DATABASE \"shop_db\" FROM PUBLIC;" db-create pgsql shop_db shop password
+IN=$PW ok "pgsql created" "created: pgsql database shop for user shop" db-create pgsql shop shop password
 IN=$PW ok "longest names" "created: mysql database a2345678901234567890123456789012 for user b2345678901234567890123456789012" \
-  db-create mysql a2345678901234567890123456789012 b2345678901234567890123456789012
-IN="$PW"$'\n' ok "password with a trailing newline" "created:" db-create mysql shop shop
-IN='Az09._~+/=-Az09._~+/=-Az09._~+/=-' ok "password with every allowed sign" "created:" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-done" ok "already there" "exists: mysql database shop for user shop, nothing changed" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-done" lacks "already there runs nothing" "run:" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-pgsql-done" ok "pgsql already there" "exists: pgsql database shop for user shop, nothing changed" db-create pgsql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-user" ok "user existed" "(password login, the user existed, its password is unchanged)" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-user" lacks "user existed keeps its password" "CREATE USER" db-create mysql shop shop
+  db-create mysql a2345678901234567890123456789012 b2345678901234567890123456789012 socket
+IN="$PW"$'\n' ok "password with a trailing newline" "created:" db-create mysql shop shop password
+IN='Az09._~+/=-Az09._~+/=-Az09._~+/=-' ok "password with every allowed sign" "created:" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-done" ok "already there" "exists: mysql database shop for user shop, nothing changed" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-done" lacks "already there runs nothing" "run:" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-pgsql-done" ok "pgsql already there" "exists: pgsql database shop for user shop, nothing changed" db-create pgsql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-user" ok "user existed" "(password login, the user existed, its password is unchanged)" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-user" lacks "user existed keeps its password" "CREATE USER" db-create mysql shop shop password
 # shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
-IN=$PW DBSTATE="$WORK/db-mysql-dropped" ok "grant left from a dropped database" 'CREATE DATABASE `shop`' db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-dropped" lacks "grant not given twice" "GRANT ALL" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-grant-only" ok "user missing for a granted database" "CREATE USER 'shop'@'localhost'" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mariadb-fresh" ok "mariadb state" "created: mariadb" db-create mariadb shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-dropped" ok "grant left from a dropped database" 'CREATE DATABASE `shop`' db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-dropped" lacks "grant not given twice" "GRANT ALL" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-grant-only" ok "user missing for a granted database" "CREATE USER 'shop'@'localhost'" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mariadb-fresh" ok "mariadb state" "created: mariadb" db-create mariadb shop shop password
 
 echo "== db-create refusals"
-IN=$PW refuse "db no arguments" "usage: db-create <engine> <name> <user>" db-create
+IN=$PW refuse "db no arguments" "usage: db-create <engine> <name> <user> <socket|password>" db-create
 IN=$PW refuse "db two arguments" "usage" db-create mysql shop
-IN=$PW refuse "db four arguments" "usage" db-create mysql shop shop "$PW"
-IN=$PW refuse "unknown engine" "invalid database engine: sqlite" db-create sqlite shop shop
-IN=$PW refuse "engine uppercase" "invalid database engine" db-create MySQL shop shop
-IN=$PW refuse "engine postgres" "invalid database engine" db-create postgres shop shop
-IN=$PW refuse "engine with a command" "invalid database engine" db-create 'mysql;id' shop shop
+IN=$PW refuse "db three arguments, no login" "usage" db-create mysql shop shop
+refuse "db three arguments, no login, no stdin" "usage" db-create mysql shop shop
+IN=$PW refuse "db five arguments" "usage" db-create mysql shop shop password "$PW"
+for bad in tcp Socket PASSWORD '' 'socket;id' 'socket ' peer none; do
+  IN=$PW refuse "login '$bad'" "invalid login: $bad (socket or password)" db-create mysql shop shop "$bad"
+done
+IN='' refuse "password login with nothing on stdin" "the password on stdin must be 16 to 128 characters" db-create mysql shop shop password
+IN=$'\n' refuse "password login with a lone newline" "16 to 128" db-create pgsql shop shop password
+IN=' ' refuse "password login with a space" "16 to 128" db-create mariadb shop shop password
+for engine in mysql mariadb pgsql; do
+  IN='' call db-create "$engine" shop shop password
+  if [[ $OUT != *"run:"* && $OUT != *"socket login"* ]]; then pass; else failure "$engine lost password never falls back to socket login" "$OUT"; fi
+done
+IN=$PW refuse "unknown engine" "invalid database engine: sqlite" db-create sqlite shop shop password
+IN=$PW refuse "engine uppercase" "invalid database engine" db-create MySQL shop shop password
+IN=$PW refuse "engine postgres" "invalid database engine" db-create postgres shop shop password
+IN=$PW refuse "engine with a command" "invalid database engine" db-create 'mysql;id' shop shop password
 # shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
 for bad in Shop shop-db shop.db 'shop;id' "shop'x" 'shop`x' 'shop"x' 'shop x' 'shop$x' '1shop' '_shop' '' \
   a23456789012345678901234567890123 $'shop\nid' 'shop%' 'sh\op'; do
-  IN=$PW refuse "database name '$bad'" "invalid database name" db-create mysql "$bad" shop
-  IN=$PW refuse "user name '$bad'" "invalid user name" db-create pgsql shop "$bad"
+  IN=$PW refuse "database name '$bad'" "invalid database name" db-create mysql "$bad" shop password
+  IN=$PW refuse "user name '$bad'" "invalid user name" db-create pgsql shop "$bad" password
 done
 for reserved in mysql information_schema performance_schema sys postgres template0 template1 root pg_shop; do
-  IN=$PW refuse "reserved database $reserved" "reserved database name: $reserved" db-create mysql "$reserved" shop
-  IN=$PW refuse "reserved user $reserved" "reserved user name: $reserved" db-create pgsql shop "$reserved"
+  IN=$PW refuse "reserved database $reserved" "reserved database name: $reserved" db-create mysql "$reserved" shop password
+  IN=$PW refuse "reserved user $reserved" "reserved user name: $reserved" db-create pgsql shop "$reserved" password
 done
-IN='short-password1' refuse "password too short" "16 to 128" db-create mysql shop shop
-IN=$(printf '%0129d' 0) refuse "password too long" "16 to 128" db-create mysql shop shop
-IN=$(printf '%0300d' 0) refuse "password far too long" "16 to 128" db-create mysql shop shop
-IN="$PW'; DROP USER root; --" refuse "password with a quote" "16 to 128" db-create mysql shop shop
-IN="$PW\\" refuse "password with a backslash" "16 to 128" db-create mysql shop shop
-IN="$PW x" refuse "password with a space" "16 to 128" db-create mysql shop shop
-IN="$PW\$(id)" refuse "password with a command" "16 to 128" db-create mysql shop shop
-IN="$PW"$'\n'"$PW" refuse "password on two lines" "16 to 128" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-fresh" refuse "mariadb on a MySQL server" "this server runs MySQL, not MariaDB" db-create mariadb shop shop
-IN=$PW DBSTATE="$WORK/db-mariadb-fresh" refuse "mysql on a MariaDB server" "this server runs MariaDB, not MySQL" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-taken" refuse "database of another user" "database shop belongs to another user" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-shared" refuse "database shared with another user" "database shop belongs to another user" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-pgsql-taken" refuse "pgsql database of another owner" "database shop belongs to another user" db-create pgsql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-nobody" refuse "database nobody has" "database shop exists and is not shop's" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-global" refuse "user with global rights" "user shop has rights beyond one database" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-elsewhere" refuse "user on another database" "user shop has rights on another database" db-create mysql shop shop
-IN=$PW DBSTATE="$WORK/db-junk" refuse "checks with another line" "cannot read the pgsql checks: PATH=/tmp" db-create pgsql shop shop
-IN=$PW DBSTATE="$WORK/db-short" refuse "checks with a key missing" "cannot read the mysql checks: no user_global" db-create mysql shop shop
+IN='short-password1' refuse "password too short" "16 to 128" db-create mysql shop shop password
+IN=$(printf '%0129d' 0) refuse "password too long" "16 to 128" db-create mysql shop shop password
+IN=$(printf '%0300d' 0) refuse "password far too long" "16 to 128" db-create mysql shop shop password
+IN="$PW'; DROP USER root; --" refuse "password with a quote" "16 to 128" db-create mysql shop shop password
+IN="$PW\\" refuse "password with a backslash" "16 to 128" db-create mysql shop shop password
+IN="$PW x" refuse "password with a space" "16 to 128" db-create mysql shop shop password
+IN="$PW\$(id)" refuse "password with a command" "16 to 128" db-create mysql shop shop password
+IN="$PW"$'\n'"$PW" refuse "password on two lines" "16 to 128" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-fresh" refuse "mariadb on a MySQL server" "this server runs MySQL, not MariaDB" db-create mariadb shop shop password
+IN=$PW DBSTATE="$WORK/db-mariadb-fresh" refuse "mysql on a MariaDB server" "this server runs MariaDB, not MySQL" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-taken" refuse "database of another user" "database shop belongs to another user" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-shared" refuse "database shared with another user" "database shop belongs to another user" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-pgsql-taken" refuse "pgsql database of another owner" "database shop belongs to another user" db-create pgsql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-nobody" refuse "database nobody has" "database shop exists and is not shop's" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-global" refuse "user with global rights" "user shop has rights beyond one database" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-elsewhere" refuse "user on another database" "user shop has rights on another database" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-junk" refuse "checks with another line" "cannot read the pgsql checks: PATH=/tmp" db-create pgsql shop shop password
+IN=$PW DBSTATE="$WORK/db-short" refuse "checks with a key missing" "cannot read the mysql checks: no user_global" db-create mysql shop shop password
 
 echo "== db-create keeps the password secret"
 for engine in mysql mariadb pgsql; do
-  IN=$PW lacks "$engine password not in the output" "$PW" db-create "$engine" shop shop
-  IN=$PW DBSTATE="$WORK/db-mysql-taken" call db-create "$engine" shop shop
+  IN=$PW lacks "$engine password not in the output" "$PW" db-create "$engine" shop shop password
+  IN=$PW DBSTATE="$WORK/db-mysql-taken" call db-create "$engine" shop shop password
   if [[ $OUT != *"$PW"* ]]; then pass; else failure "$engine password not in a refusal" "$OUT"; fi
 done
-IN=$PW ok "db-create logs engine, name and user" $'log: eeploi-helper: eeploi: db-create pgsql shop_db shop\n' db-create pgsql shop_db shop
-IN="$PW'x" call db-create mysql shop shop
+IN=$PW ok "db-create logs engine, name and user" $'log: eeploi-helper: eeploi: db-create pgsql shop_db shop password\n' db-create pgsql shop_db shop password
+IN="$PW'x" call db-create mysql shop shop password
 if [[ $OUT != *"$PW"* ]]; then pass; else failure "a refused password is not echoed" "$OUT"; fi
 
-echo "== db-create socket login (no password on stdin)"
+echo "== db-create socket login"
 S=shop_example
 db_state 0 0 0 0 0 0 0 0 0 > "$WORK/db-mysql-noplugin"
 db_state 1 0 0 0 0 0 0 0 0 > "$WORK/db-mariadb-noplugin"
@@ -438,85 +450,120 @@ pg_state 0 0 1 0 0 0 0 0 > "$WORK/db-pgsql-password-user"
 { echo 'uid=999'; db_state 0 0 0 0 0 0 0; } > "$WORK/db-uid-999"
 { echo 'uid=1000'; db_state 0 0 0 0 0 0 0; } > "$WORK/db-uid-1000"
 
-ok "mysql socket created" "created: mysql database $S for user $S (socket login)" db-create mysql $S $S
-ok "mysql socket user" "CREATE USER '$S'@'localhost' IDENTIFIED WITH auth_socket;" db-create mysql $S $S
+ok "mysql socket created" "created: mysql database $S for user $S (socket login)" db-create mysql $S $S socket
+ok "mysql socket user" "CREATE USER '$S'@'localhost' IDENTIFIED WITH auth_socket;" db-create mysql $S $S socket
 # shellcheck disable=SC2016 # the backticks are literal SQL
 ok "mysql socket database and grant" '  CREATE DATABASE `shop_example` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-  GRANT ALL PRIVILEGES ON `shop\_example`.* TO '"'$S'@'localhost';" db-create mysql $S $S
-ok "mariadb socket user" "CREATE USER '$S'@'localhost' IDENTIFIED VIA unix_socket;" db-create mariadb $S $S
-ok "mariadb socket created" "created: mariadb database $S for user $S (socket login)" db-create mariadb $S $S
+  GRANT ALL PRIVILEGES ON `shop\_example`.* TO '"'$S'@'localhost';" db-create mysql $S $S socket
+ok "mariadb socket user" "CREATE USER '$S'@'localhost' IDENTIFIED VIA unix_socket;" db-create mariadb $S $S socket
+ok "mariadb socket created" "created: mariadb database $S for user $S (socket login)" db-create mariadb $S $S socket
 ok "pgsql socket role without a password" "  CREATE ROLE \"$S\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
   CREATE DATABASE \"$S\" OWNER \"$S\" ENCODING 'UTF8' TEMPLATE template0;
-  REVOKE ALL ON DATABASE \"$S\" FROM PUBLIC;" db-create pgsql $S $S
-ok "pgsql socket created" "created: pgsql database $S for user $S (socket login)" db-create pgsql $S $S
-IN=$'\n' ok "a lone newline is no password" "(socket login)" db-create mysql $S $S
-IN=$PW ok "password created says so" "created: mysql database $S for user $S (password login)" db-create mysql $S $S
+  REVOKE ALL ON DATABASE \"$S\" FROM PUBLIC;" db-create pgsql $S $S socket
+ok "pgsql socket created" "created: pgsql database $S for user $S (socket login)" db-create pgsql $S $S socket
+IN=$PW ok "socket login ignores stdin" "(socket login)" db-create mysql $S $S socket
+IN=$PW lacks "socket login with stdin makes no password" "IDENTIFIED BY" db-create mysql $S $S socket
+IN=$PW ok "password created says so" "created: mysql database $S for user $S (password login)" db-create mysql $S $S password
 for engine in mysql mariadb pgsql; do
-  ok "$engine socket checks the Unix user" "check: id -u -- $S" db-create "$engine" $S $S
+  ok "$engine socket checks the Unix user" "check: id -u -- $S" db-create "$engine" $S $S socket
   for text in PASSWORD 'IDENTIFIED BY' '<password>' 'mysql_native_password' 'caching_sha2_password'; do
-    lacks "$engine socket has no $text" "$text" db-create "$engine" $S $S
+    lacks "$engine socket has no $text" "$text" db-create "$engine" $S $S socket
   done
-  IN=$PW lacks "$engine password login skips the Unix user" "id -u" db-create "$engine" $S $S
+  IN=$PW lacks "$engine password login skips the Unix user" "id -u" db-create "$engine" $S $S password
 done
-IN=$PW DBSTATE="$WORK/db-no-unix-user" ok "password login needs no Unix user" "created: mysql database $S for user $S (password login)" db-create mysql $S $S
-ok "pgsql socket checks for a password" "FROM pg_authid WHERE rolname = '$S' AND rolpassword IS NULL;" db-create pgsql $S $S
-ok "mysql socket checks the login method" "AND plugin IN ('auth_socket', 'unix_socket');" db-create mysql $S $S
-ok "mysql checks the socket plugin" "WHERE PLUGIN_NAME = IF(VERSION() LIKE '%MariaDB%', 'unix_socket', 'auth_socket') AND PLUGIN_STATUS = 'ACTIVE';" db-create mysql $S $S
-DBSTATE="$WORK/db-uid-1000" ok "uid 1000 is a site user" "(socket login)" db-create mysql $S $S
+IN=$PW DBSTATE="$WORK/db-no-unix-user" ok "password login needs no Unix user" "created: mysql database $S for user $S (password login)" db-create mysql $S $S password
+ok "pgsql socket checks for a password" "FROM pg_authid WHERE rolname = '$S' AND rolpassword IS NULL;" db-create pgsql $S $S socket
+ok "mysql socket checks the login method" "AND plugin IN ('auth_socket', 'unix_socket');" db-create mysql $S $S socket
+ok "mysql checks the socket plugin" "WHERE PLUGIN_NAME = IF(VERSION() LIKE '%MariaDB%', 'unix_socket', 'auth_socket') AND PLUGIN_STATUS = 'ACTIVE';" db-create mysql $S $S socket
+DBSTATE="$WORK/db-uid-1000" ok "uid 1000 is a site user" "(socket login)" db-create mysql $S $S socket
 
 echo "== db-create socket login: the auth_socket plugin"
 DBSTATE="$WORK/db-mysql-noplugin" ok "mysql installs auth_socket before the user" "  SET SESSION sql_log_off = 1;
   INSTALL PLUGIN auth_socket SONAME 'auth_socket.so';
-  CREATE USER '$S'@'localhost' IDENTIFIED WITH auth_socket;" db-create mysql $S $S
-lacks "mysql with auth_socket active installs nothing" "INSTALL PLUGIN" db-create mysql $S $S
-IN=$PW DBSTATE="$WORK/db-mysql-noplugin" lacks "password login needs no plugin" "INSTALL PLUGIN" db-create mysql $S $S
+  CREATE USER '$S'@'localhost' IDENTIFIED WITH auth_socket;" db-create mysql $S $S socket
+lacks "mysql with auth_socket active installs nothing" "INSTALL PLUGIN" db-create mysql $S $S socket
+IN=$PW DBSTATE="$WORK/db-mysql-noplugin" lacks "password login needs no plugin" "INSTALL PLUGIN" db-create mysql $S $S password
 DBSTATE="$WORK/db-mysql-socket-done-noplugin" ok "socket user there, plugin missing: only the plugin" "  INSTALL PLUGIN auth_socket SONAME 'auth_socket.so';
-created:" db-create mysql $S $S
-DBSTATE="$WORK/db-mysql-socket-done-noplugin" lacks "socket user there, plugin missing: no user" "CREATE USER" db-create mysql $S $S
-DBSTATE="$WORK/db-mariadb-noplugin" refuse "mariadb without unix_socket" "the unix_socket plugin is not active on this MariaDB server" db-create mariadb $S $S
-lacks "pgsql has no plugin" "INSTALL" db-create pgsql $S $S
+created:" db-create mysql $S $S socket
+DBSTATE="$WORK/db-mysql-socket-done-noplugin" lacks "socket user there, plugin missing: no user" "CREATE USER" db-create mysql $S $S socket
+DBSTATE="$WORK/db-mariadb-noplugin" refuse "mariadb without unix_socket" "the unix_socket plugin is not active on this MariaDB server" db-create mariadb $S $S socket
+lacks "pgsql has no plugin" "INSTALL" db-create pgsql $S $S socket
 
 echo "== db-create socket login: already there"
-DBSTATE="$WORK/db-mysql-socket-done" ok "mysql socket already there" "exists: mysql database $S for user $S, nothing changed (socket login)" db-create mysql $S $S
-DBSTATE="$WORK/db-mysql-socket-done" lacks "mysql socket already there runs nothing" "run:" db-create mysql $S $S
-DBSTATE="$WORK/db-mariadb-socket-done" ok "mariadb socket already there" "nothing changed (socket login)" db-create mariadb $S $S
-DBSTATE="$WORK/db-pgsql-socket-done" ok "pgsql socket already there" "nothing changed (socket login)" db-create pgsql $S $S
-DBSTATE="$WORK/db-mysql-socket-user" ok "socket user existed" "created: mysql database $S for user $S (socket login, the user existed)" db-create mysql $S $S
-DBSTATE="$WORK/db-mysql-socket-user" lacks "socket user existed is not created again" "CREATE USER" db-create mysql $S $S
-DBSTATE="$WORK/db-pgsql-socket-user" lacks "pgsql socket role existed is not created again" "CREATE ROLE" db-create pgsql $S $S
+DBSTATE="$WORK/db-mysql-socket-done" ok "mysql socket already there" "exists: mysql database $S for user $S, nothing changed (socket login)" db-create mysql $S $S socket
+DBSTATE="$WORK/db-mysql-socket-done" lacks "mysql socket already there runs nothing" "run:" db-create mysql $S $S socket
+DBSTATE="$WORK/db-mariadb-socket-done" ok "mariadb socket already there" "nothing changed (socket login)" db-create mariadb $S $S socket
+DBSTATE="$WORK/db-pgsql-socket-done" ok "pgsql socket already there" "nothing changed (socket login)" db-create pgsql $S $S socket
+DBSTATE="$WORK/db-mysql-socket-user" ok "socket user existed" "created: mysql database $S for user $S (socket login, the user existed)" db-create mysql $S $S socket
+DBSTATE="$WORK/db-mysql-socket-user" lacks "socket user existed is not created again" "CREATE USER" db-create mysql $S $S socket
+DBSTATE="$WORK/db-pgsql-socket-user" lacks "pgsql socket role existed is not created again" "CREATE ROLE" db-create pgsql $S $S socket
 
 echo "== db-create socket login refusals"
-DBSTATE="$WORK/db-no-unix-user" refuse "no Unix user" "no Unix user $S on this server" db-create mysql $S $S
-DBSTATE="$WORK/db-no-unix-user" refuse "pgsql no Unix user" "no Unix user $S on this server" db-create pgsql $S $S
-DBSTATE="$WORK/db-no-unix-user" refuse "mariadb no Unix user" "no Unix user $S on this server" db-create mariadb $S $S
-DBSTATE="$WORK/db-no-unix-user" call db-create mysql $S $S
+DBSTATE="$WORK/db-no-unix-user" refuse "no Unix user" "no Unix user $S on this server" db-create mysql $S $S socket
+DBSTATE="$WORK/db-no-unix-user" refuse "pgsql no Unix user" "no Unix user $S on this server" db-create pgsql $S $S socket
+DBSTATE="$WORK/db-no-unix-user" refuse "mariadb no Unix user" "no Unix user $S on this server" db-create mariadb $S $S socket
+DBSTATE="$WORK/db-no-unix-user" call db-create mysql $S $S socket
 if [[ $OUT != *"run:"* && $OUT != *"check: what"* ]]; then pass; else failure "no Unix user: the database is not asked" "$OUT"; fi
-DBSTATE="$WORK/db-system-user" refuse "system user" "$S is a system user (uid 33)" db-create mysql $S $S
-DBSTATE="$WORK/db-uid-999" refuse "uid 999" "is a system user (uid 999)" db-create pgsql $S $S
+DBSTATE="$WORK/db-system-user" refuse "system user" "$S is a system user (uid 33)" db-create mysql $S $S socket
+DBSTATE="$WORK/db-uid-999" refuse "uid 999" "is a system user (uid 999)" db-create pgsql $S $S socket
 for shared in eeploi ploi forge; do
-  refuse "socket login for $shared" "$shared runs more than one site" db-create mysql "$shared" "$shared"
+  refuse "socket login for $shared" "$shared runs more than one site" db-create mysql "$shared" "$shared" socket
 done
-AS=deploy ETC_DIR="$WORK/etc-conf" refuse "socket login for the deploy user" "deploy runs more than one site" db-create pgsql deploy deploy
-DBSTATE="$WORK/db-mysql-user" refuse "mysql password user, socket asked" "user shop exists with password login, not socket login: refusing, it is not switched" db-create mysql shop shop
+AS=deploy ETC_DIR="$WORK/etc-conf" refuse "socket login for the deploy user" "deploy runs more than one site" db-create pgsql deploy deploy socket
+DBSTATE="$WORK/db-mysql-user" refuse "mysql password user, socket asked" "user shop exists with password login, not socket login: refusing, it is not switched" db-create mysql shop shop socket
 db_state 1 0 1 0 0 0 0 > "$WORK/db-mariadb-user"
-DBSTATE="$WORK/db-mariadb-user" refuse "mariadb password user, socket asked" "exists with password login" db-create mariadb shop shop
-DBSTATE="$WORK/db-pgsql-password-user" refuse "pgsql role with a password, socket asked" "user shop exists with password login" db-create pgsql shop shop
-IN=$PW DBSTATE="$WORK/db-mysql-socket-user" refuse "mysql socket user, password asked" "user $S exists with socket login, not password login: refusing, it is not switched" db-create mysql $S $S
-IN=$PW DBSTATE="$WORK/db-pgsql-socket-user" refuse "pgsql role without a password, password asked" "exists with socket login" db-create pgsql $S $S
-IN=$PW DBSTATE="$WORK/db-mysql-socket-done" refuse "socket done, password asked" "exists with socket login" db-create mysql $S $S
-DBSTATE="$WORK/db-mysql-taken" refuse "socket: database of another user" "database shop belongs to another user" db-create mysql shop shop
-DBSTATE="$WORK/db-mysql-shared" refuse "socket: database shared" "database shop belongs to another user" db-create mysql shop shop
-DBSTATE="$WORK/db-pgsql-taken" refuse "socket: pgsql database of another owner" "belongs to another user" db-create pgsql shop shop
-DBSTATE="$WORK/db-mysql-nobody" refuse "socket: database nobody has" "exists and is not shop's" db-create mysql shop shop
-DBSTATE="$WORK/db-mysql-global" refuse "socket: user with global rights" "rights beyond one database" db-create mysql shop shop
-DBSTATE="$WORK/db-mysql-elsewhere" refuse "socket: user on another database" "rights on another database" db-create mysql shop shop
-DBSTATE="$WORK/db-mysql-fresh" refuse "socket: mariadb on MySQL" "this server runs MySQL, not MariaDB" db-create mariadb shop shop
-DBSTATE="$WORK/db-mariadb-fresh" refuse "socket: mysql on MariaDB" "this server runs MariaDB, not MySQL" db-create mysql shop shop
-refuse "socket: hyphen in the name" "invalid user name: shop-example" db-create mysql shop_example shop-example
-refuse "socket: reserved mysql" "reserved user name: mysql" db-create mysql shop mysql
-refuse "socket: reserved postgres" "reserved user name: postgres" db-create pgsql shop postgres
-IN=' ' refuse "a space is not no password" "or no password, for socket login" db-create mysql $S $S
-ok "socket login logs engine, name and user" $'log: eeploi-helper: eeploi: db-create mysql shop_example shop_example\n' db-create mysql $S $S
+DBSTATE="$WORK/db-mariadb-user" refuse "mariadb password user, socket asked" "exists with password login" db-create mariadb shop shop socket
+DBSTATE="$WORK/db-pgsql-password-user" refuse "pgsql role with a password, socket asked" "user shop exists with password login" db-create pgsql shop shop socket
+IN=$PW DBSTATE="$WORK/db-mysql-socket-user" refuse "mysql socket user, password asked" "user $S exists with socket login, not password login: refusing, it is not switched" db-create mysql $S $S password
+IN=$PW DBSTATE="$WORK/db-pgsql-socket-user" refuse "pgsql role without a password, password asked" "exists with socket login" db-create pgsql $S $S password
+IN=$PW DBSTATE="$WORK/db-mysql-socket-done" refuse "socket done, password asked" "exists with socket login" db-create mysql $S $S password
+DBSTATE="$WORK/db-mysql-taken" refuse "socket: database of another user" "database shop belongs to another user" db-create mysql shop shop socket
+DBSTATE="$WORK/db-mysql-shared" refuse "socket: database shared" "database shop belongs to another user" db-create mysql shop shop socket
+DBSTATE="$WORK/db-pgsql-taken" refuse "socket: pgsql database of another owner" "belongs to another user" db-create pgsql shop shop socket
+DBSTATE="$WORK/db-mysql-nobody" refuse "socket: database nobody has" "exists and is not shop's" db-create mysql shop shop socket
+DBSTATE="$WORK/db-mysql-global" refuse "socket: user with global rights" "rights beyond one database" db-create mysql shop shop socket
+DBSTATE="$WORK/db-mysql-elsewhere" refuse "socket: user on another database" "rights on another database" db-create mysql shop shop socket
+DBSTATE="$WORK/db-mysql-fresh" refuse "socket: mariadb on MySQL" "this server runs MySQL, not MariaDB" db-create mariadb shop shop socket
+DBSTATE="$WORK/db-mariadb-fresh" refuse "socket: mysql on MariaDB" "this server runs MariaDB, not MySQL" db-create mysql shop shop socket
+refuse "socket: hyphen in the name" "invalid user name: shop-example" db-create mysql shop_example shop-example socket
+refuse "socket: reserved mysql" "reserved user name: mysql" db-create mysql shop mysql socket
+refuse "socket: reserved postgres" "reserved user name: postgres" db-create pgsql shop postgres socket
+ok "socket login logs engine, name, user and login" $'log: eeploi-helper: eeploi: db-create mysql shop_example shop_example socket\n' db-create mysql $S $S socket
+
+echo "== db-create stdin: an open pipe and a terminal"
+# helper_cmd <args...>: the dry-run helper as a command line, for timeout and script.
+helper_cmd() { printf '%q ' env -i PATH="$PATH" EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash "$HELPER" "$@"; }
+if command -v timeout > /dev/null; then
+  # A pipe that is open but never written or closed: socket login must not read it, so it ends.
+  mkfifo "$WORK/open-pipe"
+  exec 3<> "$WORK/open-pipe"
+  OUT=$(timeout 10 env -i PATH="$PATH" EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash "$HELPER" db-create mysql $S $S socket <&3 2>&1)
+  CODE=$?
+  if [ "$CODE" -eq 0 ] && [[ $OUT == *"(socket login)"* ]]; then pass; else failure "socket login does not read an open pipe" "exit $CODE
+$OUT"; fi
+  exec 3>&-
+else
+  echo "note: timeout is not installed, open-pipe test skipped (CI runs it)"
+fi
+# tty_call <args...>: run the helper with a terminal on stdin, through script (util-linux or BSD).
+tty_call() {
+  if script --version 2> /dev/null | grep -q util-linux; then
+    OUT=$(timeout 10 script -qec "$(helper_cmd "$@")" /dev/null < /dev/null 2>&1)
+  else
+    OUT=$(timeout 10 script -q /dev/null env -i PATH="$PATH" EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash "$HELPER" "$@" < /dev/null 2>&1)
+  fi
+  CODE=$?
+}
+if command -v script > /dev/null && command -v timeout > /dev/null; then
+  tty_call db-create mysql shop shop password
+  if [ "$CODE" -eq 64 ] && [[ $OUT == *"password login needs the password on stdin, not a terminal"* ]]; then pass; else failure "password login refuses a terminal" "exit $CODE
+$OUT"; fi
+  tty_call db-create mysql $S $S socket
+  if [ "$CODE" -eq 0 ] && [[ $OUT == *"(socket login)"* ]]; then pass; else failure "socket login with a terminal" "exit $CODE
+$OUT"; fi
+else
+  echo "note: script or timeout is not installed, terminal tests skipped (CI runs them)"
+fi
 
 echo "== system log"
 ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com

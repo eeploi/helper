@@ -313,17 +313,22 @@ db_name() {
   case "$2" in pg_*) fail "reserved $1 name: $2" ;; esac
 }
 
-# db_login: how the user logs in, in DB_LOGIN. No password on stdin (empty, or a terminal) is socket
-# login as the Unix user of the same name. A password on stdin is password login; it goes in DB_PASSWORD,
-# only characters that are safe inside an SQL string, and is never printed, logged, written to a file or
-# put on a command line.
+# db_login <socket|password>: how the user logs in, in DB_LOGIN. socket: as the Unix user of the same
+# name, with no password; stdin is never read. password: the password from stdin in DB_PASSWORD, only
+# characters that are safe inside an SQL string, never printed, logged, written to a file or put on a
+# command line. A missing password fails; it never falls back to socket login.
 db_login() {
   local re='^[A-Za-z0-9._~+/=-]{16,128}$'
   DB_PASSWORD=
-  [ -t 0 ] || DB_PASSWORD=$(head -c 256)
-  if [ -z "$DB_PASSWORD" ]; then DB_LOGIN=socket; return; fi
-  [[ $DB_PASSWORD =~ $re ]] || fail "the password on stdin must be 16 to 128 characters: A-Z a-z 0-9 . _ ~ + / = - (or no password, for socket login)"
-  DB_LOGIN=password
+  DB_LOGIN=$1
+  case "$1" in
+    socket) return ;;
+    password) ;;
+    *) fail "invalid login: $1 (socket or password)" ;;
+  esac
+  [ ! -t 0 ] || fail "password login needs the password on stdin, not a terminal"
+  DB_PASSWORD=$(head -c 256)
+  [[ $DB_PASSWORD =~ $re ]] || fail "the password on stdin must be 16 to 128 characters: A-Z a-z 0-9 . _ ~ + / = -"
 }
 
 # db_unix_user <user>: socket login trusts every process of that Unix user, so it must exist and be a
@@ -728,11 +733,11 @@ case "$command" in
     fi ;;
 
   db-create)
-    [ $# -eq 3 ] || fail "usage: db-create <engine> <name> <user> [< password]"
+    [ $# -eq 4 ] || fail "usage: db-create <engine> <name> <user> <socket|password> [< password]"
     db_engine "$1"
     db_name database "$2"
     db_name user "$3"
-    db_login
+    db_login "$4"
     [ "$DB_LOGIN" != socket ] || db_unix_user "$3"
     cd / || fail "cannot change to /"
     db_client "$1"
