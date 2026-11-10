@@ -4,6 +4,7 @@ All notable changes to eeploi-helper. Versions follow [semver](https://semver.or
 
 ## Unreleased
 
+- New subcommand `db-create <engine> <name> <user>` (a minor release): creates a MySQL, MariaDB or Postgres database and its user for a new site, with the password on stdin only. The user gets that one database and no global rights. Both already there is a no-op; a database or user someone else has is refused. The system log gets the engine, name and user, never the password.
 - Every call except `version` goes to the system log (`logger -t eeploi-helper`): the caller, the subcommand and its arguments, never stdin. A dry run prints the line on stderr. Not yet: the timeline event id.
 
 ## 1.0.0 (2026-11-08)

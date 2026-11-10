@@ -12,7 +12,7 @@ The helper has a fixed list of subcommands. Each one checks its arguments and do
 
 ## Subcommands
 
-Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a worker command and cron lines come on stdin, and each is checked. Files a root service reads (vhosts, Supervisor configs) are built by the helper from checked arguments, never taken from the caller. Logs those services open as root go to `/var/log`, never to a folder the caller can write.
+Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a worker command, cron lines and a database password come on stdin, and each is checked. Files a root service reads (vhosts, Supervisor configs) are built by the helper from checked arguments, never taken from the caller. Logs those services open as root go to `/var/log`, never to a folder the caller can write.
 
 | Subcommand | Does |
 |---|---|
@@ -45,6 +45,7 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a work
 | `crontab-restore <domain>` | Adds those lines back, once each. Other changes to `/etc/crontab` stay |
 | `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` into the caller's home folder, mode `640`. Root only reads; the caller writes the copy |
 | `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` into the caller's home folder. Root only reads; the caller unpacks it |
+| `db-create <engine> <name> <user>` | Creates a database and its user on the local MySQL, MariaDB or Postgres, with the password from stdin. The user gets that one database, nothing else. See [Databases](#databases) |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
 | `acl-nginx` | Lets the nginx user pass through the deploy user's home folder (`setfacl -m u:<nginx user>:x`), and installs the `acl` package first when `setfacl` is missing. Nothing more: the folder stays `750` |
 | `self-update <version>` | Installs a signed release (see below). Never an older one |
@@ -61,6 +62,22 @@ Two optional files, both owned by root and not writable by anyone else. The help
 | `/etc/eeploi/new-server` | Marker written when eeploi created the server. Without it, `firewall-close-22` refuses. On a server you bring yourself, eeploi never touches the SSH port or the firewall |
 
 The nginx user is read from the `user` line in `/etc/nginx/nginx.conf`. Without one it is `www-data`. A line the helper cannot read, two `user` lines or `root` are refused.
+
+## Databases
+
+```bash
+echo "$password" | sudo eeploi-helper db-create pgsql shop shop
+```
+
+- **Engine:** `mysql`, `mariadb` or `pgsql`. The helper checks the server runs the one you name.
+- **Names:** database and user are a lowercase letter, then `a-z`, `0-9` or `_`, at most 32. `mysql`, `information_schema`, `performance_schema`, `sys`, `postgres`, `template0`, `template1`, `root` and anything starting with `pg_` are refused.
+- **Password:** on stdin only, 16 to 128 of `A-Z a-z 0-9 . _ ~ + / = -`. Never an argument, never in the system log, never in a file, never printed. The SQL goes to the client on stdin, so it is on no command line. The session turns off the server's statement logs first (`sql_log_off`; for Postgres `log_statement`, `log_min_error_statement`, `log_min_duration_statement`, `pg_stat_statements.track_utility`). On an error only the error lines are shown, without the password.
+- **How:** MySQL and MariaDB as root through the local socket. Postgres as the `postgres` user (`runuser -u postgres -- psql`). Both with a clean environment, so no option file or variable from the caller counts.
+- **What it makes:** MySQL and MariaDB: the user `'<user>'@'localhost'`, the database (`utf8mb4`, `utf8mb4_unicode_ci`) and `ALL PRIVILEGES` on that database only. Postgres: a login role without any other rights (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`), the database owned by it (`UTF8`), closed to `PUBLIC`.
+- **Already there:** both there with that grant (Postgres: that owner) is a success that changes nothing: `exists: …, nothing changed`. A user that exists keeps its password: `created: … (the user existed, its password is unchanged)`.
+- **Refused:** a database another user has rights on, a database that exists but is not the user's, a user with global rights (Postgres: role attributes or role memberships) and a user with rights on another database.
+
+Every refusal and error exits with `64` and one line on stderr, like the other subcommands.
 
 ## Install by hand
 
@@ -106,7 +123,7 @@ Going back is not possible: an older release may still have a bug a newer one fi
 EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash eeploi-helper php-pool-write 8.4
 ```
 
-In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point to test copies of `/etc/eeploi` and `nginx.conf`.
+In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point to test copies of `/etc/eeploi` and `nginx.conf`, and `EEPLOI_HELPER_DB_STATE` to a file with what `db-create`'s checks would find (`key=count` lines). A dry run of `db-create` prints the SQL with `<password>` in place of the password.
 
 ## Tests
 

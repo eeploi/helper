@@ -59,13 +59,15 @@ FAKE_KEY='RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
 
 # call <args...>: run the helper in dry-run mode. Settings (temporary per call):
-#   IN (stdin), AS (SUDO_USER, default eeploi), ETC_DIR, NGINX (nginx.conf), BIN (helper file), DRYRUN (1 or empty)
+#   IN (stdin), AS (SUDO_USER, default eeploi), ETC_DIR, NGINX (nginx.conf), BIN (helper file), DRYRUN (1 or empty),
+#   DBSTATE (what db-create's checks find)
 call() {
   local dry=${DRYRUN-1}
   OUT=$(printf '%s' "${IN:-}" | env -i PATH="$PATH" \
     EEPLOI_HELPER_DRY_RUN="$dry" SUDO_USER="${AS-eeploi}" \
     EEPLOI_HELPER_ETC="${ETC_DIR:-$WORK/etc-empty}" \
     EEPLOI_HELPER_NGINX_CONF="${NGINX:-$WORK/nginx-default.conf}" \
+    EEPLOI_HELPER_DB_STATE="${DBSTATE:-}" \
     bash "${BIN:-$HELPER}" "$@" 2>&1)
   CODE=$?
 }
@@ -308,6 +310,108 @@ BIN="$WORK/keyed-helper" ok "install" "install: /usr/local/sbin/eeploi-helper (r
 BIN="$WORK/keyed-helper" refuse "bad version with a key" "invalid version" self-update 1.2.3.4
 sed "s#^PUBKEY=.*#PUBKEY='RWQshort'#" "$HELPER" > "$WORK/badkey-helper"
 BIN="$WORK/badkey-helper" refuse "malformed key" "invalid release key" self-update 1.2.3
+
+echo "== db-create"
+PW='test-password-1234567890'
+# What the checks find on the database server, one file per case (key=count, as the helper reads it).
+db_state() { printf 'mariadb=%s\ndb_exists=%s\nuser_exists=%s\nuser_global=%s\nuser_elsewhere=%s\ndb_others=%s\ngranted=%s\n' "$@"; }
+db_state 0 0 0 0 0 0 0 > "$WORK/db-mysql-fresh"
+db_state 1 0 0 0 0 0 0 > "$WORK/db-mariadb-fresh"
+db_state 0 1 1 0 0 0 1 > "$WORK/db-mysql-done"
+db_state 0 0 1 0 0 0 0 > "$WORK/db-mysql-user"
+db_state 0 0 1 0 0 0 1 > "$WORK/db-mysql-dropped"
+db_state 0 1 0 0 0 0 1 > "$WORK/db-mysql-grant-only"
+db_state 0 1 1 0 0 1 0 > "$WORK/db-mysql-taken"
+db_state 0 1 1 0 0 1 1 > "$WORK/db-mysql-shared"
+db_state 0 1 0 0 0 0 0 > "$WORK/db-mysql-nobody"
+db_state 0 0 1 1 0 0 0 > "$WORK/db-mysql-global"
+db_state 0 0 1 0 1 0 0 > "$WORK/db-mysql-elsewhere"
+db_state 0 1 1 0 0 0 1 | sed 1d > "$WORK/db-pgsql-done"
+db_state 0 1 1 0 0 1 0 | sed 1d > "$WORK/db-pgsql-taken"
+printf 'db_exists=0\nuser_exists=0\nPATH=/tmp\n' > "$WORK/db-junk"
+printf 'mariadb=0\ndb_exists=0\nuser_exists=0\n' > "$WORK/db-short"
+
+IN=$PW ok "mysql created" "created: mysql database shop for user shop" db-create mysql shop shop
+IN=$PW ok "mysql through the socket as root" "HOME=/root LC_ALL=C mysql --protocol=socket --user=root" db-create mysql shop shop
+IN=$PW ok "mysql with a clean environment" "run: env -i PATH=" db-create mysql shop shop
+IN=$PW ok "mysql statement log off first" "(SQL on stdin)
+  SET SESSION sql_log_off = 1;" db-create mysql shop shop
+IN=$PW ok "mysql user on localhost" "CREATE USER 'shop'@'localhost' IDENTIFIED BY '<password>';" db-create mysql shop shop
+IN=$PW ok "mysql database utf8mb4" 'CREATE DATABASE `shop_db` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' db-create mysql shop_db shop
+IN=$PW ok "mysql grant on that database only" 'GRANT ALL PRIVILEGES ON `shop\_db`.* TO '"'shop'@'localhost';" db-create mysql shop_db shop
+IN=$PW lacks "mysql no global grant" 'ON *.*' db-create mysql shop_db shop
+IN=$PW ok "mysql checks both grant spellings" "Db IN ('shop_db', 'shop\\\\_db')" db-create mysql shop_db shop
+IN=$PW ok "mariadb client" "LC_ALL=C mariadb --protocol=socket --user=root" db-create mariadb shop shop
+IN=$PW ok "mariadb created" "created: mariadb database shop for user shop" db-create mariadb shop shop
+IN=$PW ok "pgsql as postgres" "runuser -u postgres -- psql -X -q -A -t --no-password -v ON_ERROR_STOP=1 -d postgres" db-create pgsql shop shop
+IN=$PW ok "pgsql statement logs off" "SET log_statement = 'none';
+  SET log_min_duration_statement = -1;
+  SET log_min_error_statement = 'panic';
+  SET pg_stat_statements.track_utility = off;" db-create pgsql shop shop
+IN=$PW ok "pgsql role without rights" "CREATE ROLE \"shop\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '<password>';" db-create pgsql shop shop
+IN=$PW ok "pgsql database owned by the user" "CREATE DATABASE \"shop_db\" OWNER \"shop\" ENCODING 'UTF8' TEMPLATE template0;" db-create pgsql shop_db shop
+IN=$PW ok "pgsql closed to others" "REVOKE ALL ON DATABASE \"shop_db\" FROM PUBLIC;" db-create pgsql shop_db shop
+IN=$PW ok "pgsql created" "created: pgsql database shop for user shop" db-create pgsql shop shop
+IN=$PW ok "longest names" "created: mysql database a2345678901234567890123456789012 for user b2345678901234567890123456789012" \
+  db-create mysql a2345678901234567890123456789012 b2345678901234567890123456789012
+IN="$PW"$'\n' ok "password with a trailing newline" "created:" db-create mysql shop shop
+IN='Az09._~+/=-Az09._~+/=-Az09._~+/=-' ok "password with every allowed sign" "created:" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-done" ok "already there" "exists: mysql database shop for user shop, nothing changed" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-done" lacks "already there runs nothing" "run:" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-pgsql-done" ok "pgsql already there" "exists: pgsql database shop for user shop, nothing changed" db-create pgsql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-user" ok "user existed" "(the user existed, its password is unchanged)" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-user" lacks "user existed keeps its password" "CREATE USER" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-dropped" ok "grant left from a dropped database" 'CREATE DATABASE `shop`' db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-dropped" lacks "grant not given twice" "GRANT ALL" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-grant-only" ok "user missing for a granted database" "CREATE USER 'shop'@'localhost'" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mariadb-fresh" ok "mariadb state" "created: mariadb" db-create mariadb shop shop
+
+echo "== db-create refusals"
+IN=$PW refuse "db no arguments" "usage: db-create <engine> <name> <user>" db-create
+IN=$PW refuse "db two arguments" "usage" db-create mysql shop
+IN=$PW refuse "db four arguments" "usage" db-create mysql shop shop "$PW"
+IN=$PW refuse "unknown engine" "invalid database engine: sqlite" db-create sqlite shop shop
+IN=$PW refuse "engine uppercase" "invalid database engine" db-create MySQL shop shop
+IN=$PW refuse "engine postgres" "invalid database engine" db-create postgres shop shop
+IN=$PW refuse "engine with a command" "invalid database engine" db-create 'mysql;id' shop shop
+for bad in Shop shop-db shop.db 'shop;id' "shop'x" 'shop`x' 'shop"x' 'shop x' 'shop$x' '1shop' '_shop' '' \
+  a23456789012345678901234567890123 $'shop\nid' 'shop%' 'sh\op'; do
+  IN=$PW refuse "database name '$bad'" "invalid database name" db-create mysql "$bad" shop
+  IN=$PW refuse "user name '$bad'" "invalid user name" db-create pgsql shop "$bad"
+done
+for reserved in mysql information_schema performance_schema sys postgres template0 template1 root pg_shop; do
+  IN=$PW refuse "reserved database $reserved" "reserved database name: $reserved" db-create mysql "$reserved" shop
+  IN=$PW refuse "reserved user $reserved" "reserved user name: $reserved" db-create pgsql shop "$reserved"
+done
+IN='' refuse "no password" "the password on stdin must be 16 to 128 characters" db-create mysql shop shop
+IN='short-password1' refuse "password too short" "16 to 128" db-create mysql shop shop
+IN=$(printf '%0129d' 0) refuse "password too long" "16 to 128" db-create mysql shop shop
+IN=$(printf '%0300d' 0) refuse "password far too long" "16 to 128" db-create mysql shop shop
+IN="$PW'; DROP USER root; --" refuse "password with a quote" "16 to 128" db-create mysql shop shop
+IN="$PW\\" refuse "password with a backslash" "16 to 128" db-create mysql shop shop
+IN="$PW x" refuse "password with a space" "16 to 128" db-create mysql shop shop
+IN="$PW\$(id)" refuse "password with a command" "16 to 128" db-create mysql shop shop
+IN="$PW"$'\n'"$PW" refuse "password on two lines" "16 to 128" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-fresh" refuse "mariadb on a MySQL server" "this server runs MySQL, not MariaDB" db-create mariadb shop shop
+IN=$PW DBSTATE="$WORK/db-mariadb-fresh" refuse "mysql on a MariaDB server" "this server runs MariaDB, not MySQL" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-taken" refuse "database of another user" "database shop belongs to another user" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-shared" refuse "database shared with another user" "database shop belongs to another user" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-pgsql-taken" refuse "pgsql database of another owner" "database shop belongs to another user" db-create pgsql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-nobody" refuse "database nobody has" "database shop exists and is not shop's" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-global" refuse "user with global rights" "user shop has rights beyond one database" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-mysql-elsewhere" refuse "user on another database" "user shop has rights on another database" db-create mysql shop shop
+IN=$PW DBSTATE="$WORK/db-junk" refuse "checks with another line" "cannot read the pgsql checks: PATH=/tmp" db-create pgsql shop shop
+IN=$PW DBSTATE="$WORK/db-short" refuse "checks with a key missing" "cannot read the mysql checks: no user_global" db-create mysql shop shop
+
+echo "== db-create keeps the password secret"
+for engine in mysql mariadb pgsql; do
+  IN=$PW lacks "$engine password not in the output" "$PW" db-create "$engine" shop shop
+  IN=$PW DBSTATE="$WORK/db-mysql-taken" call db-create "$engine" shop shop
+  if [[ $OUT != *"$PW"* ]]; then pass; else failure "$engine password not in a refusal" "$OUT"; fi
+done
+IN=$PW ok "db-create logs engine, name and user" $'log: eeploi-helper: eeploi: db-create pgsql shop_db shop\n' db-create pgsql shop_db shop
+IN="$PW'x" call db-create mysql shop shop
+if [[ $OUT != *"$PW"* ]]; then pass; else failure "a refused password is not echoed" "$OUT"; fi
 
 echo "== system log"
 ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com
