@@ -20,34 +20,19 @@ For the owner. Signing always happens on your own machine, never in CI.
 
 ## Each release
 
-1. Update `VERSION` in `eeploi-helper` and add the entry in `CHANGELOG.md` (with the date).
-2. Run the tests: `bash tests/run.sh`.
-3. Commit, then tag and push:
+1. Update `VERSION` in `eeploi-helper` and add the entry in `CHANGELOG.md` (with the date). While eeploi is in dev mode, `VERSION` stays `1.0.0` and a release replaces the files of `v1.0.0`.
+2. Merge to `main` and wait for CI to pass.
+3. In your own terminal, on an up-to-date `main`:
 
    ```bash
-   git tag -s v1.2.3 -m v1.2.3
-   git push origin main v1.2.3
+   bin/release
    ```
 
-4. Wait for CI to pass on the tag.
-5. Build: the release file is `eeploi-helper` from the tag, as is.
+   It checks that you're on `main`, nothing is uncommitted, `main` matches GitHub, shellcheck and the tests pass, and CI on that commit is green. Then minisign asks for your key password and signs `eeploi-helper` with the trusted comment `eeploi-helper <version>`, and the signature is checked against `minisign.pub`. After you confirm, it creates the `v<version>` tag (or moves it, after saying so, when the same version is released again), uploads `eeploi-helper` and `eeploi-helper.minisig` to the GitHub release, downloads them again and checks both against this file and `minisign.pub`.
 
-   ```bash
-   git checkout v1.2.3
-   EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash eeploi-helper version   # prints 1.2.3
-   ```
-
-6. Sign:
-
-   ```bash
-   minisign -Sm eeploi-helper -s ~/.minisign/minisign.key -t "eeploi-helper 1.2.3"
-   minisign -Vm eeploi-helper -p minisign.pub
-   ```
-
-7. Create the GitHub release for the tag and upload both files, with these exact names:
-   - `eeploi-helper`
-   - `eeploi-helper.minisig`
-8. Check on a test server: `sudo eeploi-helper self-update 1.2.3`, then `sudo eeploi-helper version`.
+   `bin/release --check` runs only the checks: no key, no signing, nothing published.
+4. Vendor the release into eeploi.com (`resources/helper/`); its pinned SHA-256 follows the file.
+5. Check on a test server: `sudo eeploi-helper self-update <version>`, then `sudo eeploi-helper version`. A server already on the same version reinstalls instead: `self-update` only takes a newer one.
 
 ## A new key
 

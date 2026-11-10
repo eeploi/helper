@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# bin/release: sign eeploi-helper and publish it as the GitHub release of its VERSION.
+# Run it yourself, in your own terminal: minisign asks for the key password, which is never
+# stored, passed in or logged. Every step after signing is checked against minisign.pub.
+# bin/release --check runs only the checks: no key, no signing, nothing published.
+# See RELEASING.md.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+REPO=eeploi/helper
+KEY="$HOME/.minisign/minisign.key"
+CHECK_ONLY=
+[ "${1:-}" != --check ] || CHECK_ONLY=1
+[ $# -eq 0 ] || [ -n "$CHECK_ONLY" ] || { echo "usage: bin/release [--check]" >&2; exit 64; }
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+say() { printf '\n== %s\n' "$*"; }
+fail() { printf 'release: %s\n' "$*" >&2; exit 1; }
+confirm() {
+  local answer
+  read -r -p "$1 [y/N] " answer
+  [ "$answer" = y ] || fail "stopped, nothing changed after this point"
+}
+sha256() { if command -v sha256sum > /dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+
+for cmd in git gh minisign shellcheck; do
+  command -v "$cmd" > /dev/null || fail "$cmd is not installed"
+done
+
+say "Checks"
+[ "$(git branch --show-current)" = main ] || fail "not on main"
+[ -z "$(git status --porcelain)" ] || fail "uncommitted changes"
+git fetch -q origin main
+git fetch -q --force origin 'refs/tags/*:refs/tags/*'
+head=$(git rev-parse HEAD)
+[ "$head" = "$(git rev-parse origin/main)" ] || fail "main is not the same as GitHub's main: pull or push first"
+commit=$(git rev-parse --short HEAD)
+
+version=$(sed -n "s/^VERSION='\(.*\)'\$/\1/p" eeploi-helper)
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "cannot read VERSION from eeploi-helper"
+tag="v$version"
+
+shellcheck eeploi-helper tests/run.sh bin/release || fail "shellcheck found problems"
+out=$(bash tests/run.sh 2>&1) || { printf '%s\n' "$out" | tail -20 >&2; fail "tests fail: bash tests/run.sh"; }
+ci=$(gh run list -R "$REPO" --commit "$head" --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"')
+[ "$ci" = "completed success" ] || fail "CI on $commit is not green yet (${ci:-no run})"
+
+tagged=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)
+move=
+if [ -n "$tagged" ] && [ "$tagged" != "$head" ]; then move=1; fi
+
+echo "eeploi-helper $version at $commit: shellcheck clean, tests and CI green."
+if [ -z "$tagged" ]; then
+  echo "$tag is new."
+elif [ -n "$move" ]; then
+  echo "$tag points at $(git rev-parse --short "$tagged"): it moves to $commit (same version, a new file)."
+else
+  echo "$tag already points at $commit: the release files are signed and replaced."
+fi
+[ -z "$CHECK_ONLY" ] || exit 0
+
+[ -t 0 ] || fail "run this in your own terminal: minisign asks for the key password"
+[ -f "$KEY" ] || fail "no secret key at $KEY"
+
+say "Sign"
+rm -f eeploi-helper.minisig
+minisign -S -s "$KEY" -m eeploi-helper -t "eeploi-helper $version"
+verified=$(minisign -V -p minisign.pub -m eeploi-helper) || fail "the signature does not verify against minisign.pub"
+grep -qxF "Trusted comment: eeploi-helper $version" <<< "$verified" || fail "the signature's trusted comment is not eeploi-helper $version"
+
+say "Publish"
+confirm "Publish eeploi-helper $version ($commit) as $REPO $tag?"
+if [ -z "$tagged" ]; then
+  git tag -a "$tag" -m "$tag"
+  git push -q origin "refs/tags/$tag"
+elif [ -n "$move" ]; then
+  git tag -f -a "$tag" -m "$tag" > /dev/null
+  git push -q --force origin "refs/tags/$tag"
+fi
+if gh release view "$tag" -R "$REPO" > /dev/null 2>&1; then
+  gh release upload "$tag" eeploi-helper eeploi-helper.minisig --clobber -R "$REPO"
+else
+  gh release create "$tag" eeploi-helper eeploi-helper.minisig -R "$REPO" --verify-tag \
+    --title "eeploi-helper $version" --notes "See CHANGELOG.md."
+fi
+
+say "Verify the published files"
+gh release download "$tag" -R "$REPO" -D "$work" -p eeploi-helper -p eeploi-helper.minisig
+cmp -s "$work/eeploi-helper" eeploi-helper || fail "the published eeploi-helper is not this file"
+minisign -V -q -p minisign.pub -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
+  || fail "the published signature does not verify"
+[ "$(git ls-remote origin "refs/tags/$tag^{}" | cut -f1)" = "$head" ] || fail "$tag on GitHub is not $commit"
+
+say "Done"
+echo "eeploi-helper $version, $tag at $commit, SHA-256 $(sha256 eeploi-helper)."
+echo "Next: vendor it into eeploi.com (resources/helper/)."
