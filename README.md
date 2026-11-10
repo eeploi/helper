@@ -45,7 +45,7 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a work
 | `crontab-restore <domain>` | Adds those lines back, once each. Other changes to `/etc/crontab` stay |
 | `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` into the caller's home folder, mode `640`. Root only reads; the caller writes the copy |
 | `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` into the caller's home folder. Root only reads; the caller unpacks it |
-| `db-create <engine> <name> <user>` | Creates a database and its user on the local MySQL, MariaDB or Postgres, with the password from stdin. The user gets that one database, nothing else. See [Databases](#databases) |
+| `db-create <engine> <name> <user>` | Creates a database and its user on the local MySQL, MariaDB or Postgres. No password on stdin: the user logs in over the socket as the Unix user of the same name. A password on stdin: password login. The user gets that one database, nothing else. See [Databases](#databases) |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
 | `acl-nginx` | Lets the nginx user pass through the deploy user's home folder (`setfacl -m u:<nginx user>:x`), and installs the `acl` package first when `setfacl` is missing. Nothing more: the folder stays `750` |
 | `self-update <version>` | Installs a signed release (see below). Never an older one |
@@ -66,16 +66,22 @@ The nginx user is read from the `user` line in `/etc/nginx/nginx.conf`. Without 
 ## Databases
 
 ```bash
-echo "$password" | sudo eeploi-helper db-create pgsql shop shop
+sudo eeploi-helper db-create pgsql shop_example shop_example < /dev/null    # socket login
+echo "$password" | sudo eeploi-helper db-create pgsql shop_example shop_example    # password login
 ```
 
 - **Engine:** `mysql`, `mariadb` or `pgsql`. The helper checks the server runs the one you name.
-- **Names:** database and user are a lowercase letter, then `a-z`, `0-9` or `_`, at most 32. `mysql`, `information_schema`, `performance_schema`, `sys`, `postgres`, `template0`, `template1`, `root` and anything starting with `pg_` are refused.
+- **Names:** database and user are a lowercase letter, then `a-z`, `0-9` or `_`, at most 32. No hyphens: a name never needs quoting. eeploi names a site's Unix user after its domain, every other character as `_` (`shop.example` gives `shop_example`), and uses that name for the database user and the database too. `mysql`, `information_schema`, `performance_schema`, `sys`, `postgres`, `template0`, `template1`, `root` and anything starting with `pg_` are refused.
+- **Two ways in:**
+  - **Socket login** (nothing on stdin, or a terminal): the user has no password at all. Only processes running as the Unix user of the same name get in, over the local socket. Postgres: a role without a password (peer auth). MariaDB: `IDENTIFIED VIA unix_socket`. MySQL: `IDENTIFIED WITH auth_socket`. The default for every site eeploi creates; nothing is stored, and the site's `.env` has no `DB_PASSWORD`. Give an empty stdin (`< /dev/null`) when calling from a script, so the helper does not read the script.
+  - **Password login** (a password on stdin): for a site that already has a password, or a database reached over TCP.
+- **The Unix user (socket login):** must exist (`id -u`), and must be a site's own user: not a system user (uid below 1000), and not the deploy user, `eeploi`, `ploi` or `forge`, which run more than one site.
+- **The auth_socket plugin (MySQL, socket login):** Ubuntu's MySQL installs it when root has no password. When it is not active, the helper installs it first (`INSTALL PLUGIN auth_socket SONAME 'auth_socket.so'`), the one plugin shipped with MySQL for this. MariaDB has `unix_socket` built in and on; when it is not active, the helper refuses.
 - **Password:** on stdin only, 16 to 128 of `A-Z a-z 0-9 . _ ~ + / = -`. Never an argument, never in the system log, never in a file, never printed. The SQL goes to the client on stdin, so it is on no command line. The session turns off the server's statement logs first (`sql_log_off`; for Postgres `log_statement`, `log_min_error_statement`, `log_min_duration_statement`, `pg_stat_statements.track_utility`). On an error only the error lines are shown, without the password.
 - **How:** MySQL and MariaDB as root through the local socket. Postgres as the `postgres` user (`runuser -u postgres -- psql`). Both with a clean environment, so no option file or variable from the caller counts.
 - **What it makes:** MySQL and MariaDB: the user `'<user>'@'localhost'`, the database (`utf8mb4`, `utf8mb4_unicode_ci`) and `ALL PRIVILEGES` on that database only. Postgres: a login role without any other rights (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`), the database owned by it (`UTF8`), closed to `PUBLIC`.
-- **Already there:** both there with that grant (Postgres: that owner) is a success that changes nothing: `exists: …, nothing changed`. A user that exists keeps its password: `created: … (the user existed, its password is unchanged)`.
-- **Refused:** a database another user has rights on, a database that exists but is not the user's, a user with global rights (Postgres: role attributes or role memberships) and a user with rights on another database.
+- **Already there:** both there with that grant (Postgres: that owner) and the same way in is a success that changes nothing: `exists: …, nothing changed (socket login)`. A user that exists keeps its password: `created: … (password login, the user existed, its password is unchanged)`.
+- **Refused:** a database another user has rights on, a database that exists but is not the user's, a user with global rights (Postgres: role attributes or role memberships), a user with rights on another database, and a user that exists with the other way in (`user … exists with password login, not socket login`): it is never switched.
 
 Every refusal and error exits with `64` and one line on stderr, like the other subcommands.
 
@@ -123,7 +129,7 @@ Going back is not possible: an older release may still have a bug a newer one fi
 EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash eeploi-helper php-pool-write 8.4
 ```
 
-In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point to test copies of `/etc/eeploi` and `nginx.conf`, and `EEPLOI_HELPER_DB_STATE` to a file with what `db-create`'s checks would find (`key=count` lines). A dry run of `db-create` prints the SQL with `<password>` in place of the password.
+In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point to test copies of `/etc/eeploi` and `nginx.conf`, and `EEPLOI_HELPER_DB_STATE` to a file with what `db-create`'s checks would find (`key=count` lines). A dry run of `db-create` prints the SQL with `<password>` in place of the password. A `uid=<n>` or `uid=none` line in that file stands in for `id -u <user>` (without one: `1001`).
 
 ## Tests
 
