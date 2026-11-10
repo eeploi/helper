@@ -5,7 +5,7 @@
 set -euo pipefail
 umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
-export TMPDIR=/tmp
+export TMPDIR=/tmp HOME=/root LC_ALL=C
 
 VERSION='1.0.0'
 
@@ -183,19 +183,21 @@ nginx_user() {
   fi
 }
 
-# source_path <path>: a path in another panel's home (/home/ploi, /home/forge), never the caller's own.
-# Sets SRC to where it really is (Ploi's site folder is a link), which must still be in those homes.
-# Root only reads from here.
+# source_path <path> <name>: a path named <name> (.env, storage) in another panel's home (/home/ploi,
+# /home/forge), never the caller's own. Sets SRC to where it really is (Ploi's site folder is a link),
+# which must still be in those homes and still be named <name>. Root only reads from here.
 source_path() {
   home_path "$1"
   local re='^/home/(ploi|forge)/[A-Za-z0-9._/-]+$'
   [[ $1 =~ $re ]] || fail "source must be in /home/ploi or /home/forge: $1"
   case "$1" in "/home/$CALLER/"*) fail "source cannot be in /home/$CALLER: $1" ;; esac
+  [ "${1##*/}" = "$2" ] || fail "source must end in /$2: $1"
   SRC=$1
   if [ -z "$DRY" ]; then
     SRC=$(realpath -e -- "$1") || fail "source not found: $1"
     [[ $SRC =~ $re ]] || fail "source resolves outside /home/ploi and /home/forge: $1"
     case "$SRC" in "/home/$CALLER/"*) fail "source resolves into /home/$CALLER: $1" ;; esac
+    [ "${SRC##*/}" = "$2" ] || fail "source resolves to a path not ending in /$2: $1"
   fi
 }
 
@@ -586,7 +588,9 @@ case "$command" in
     key="/etc/nginx/ssl/$1.key"
     run mkdir -p /etc/nginx/ssl
     if [ ! -f "$key" ]; then
-      run openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "$key"
+      # The key is private from the first byte: umask 077 while it is made.
+      # shellcheck disable=SC2016 # $1 is for the inner shell
+      run sh -c 'umask 077 && exec openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "$1"' sh "$key"
     fi
     run chmod 600 "$key"
     run openssl req -new -key "$key" -subj "/CN=${1#eeploi-}" ;;
@@ -706,7 +710,7 @@ case "$command" in
 
   env-install)
     [ $# -eq 3 ] || fail "usage: env-install <from-file> <to-file> <owner>"
-    source_path "$1"
+    source_path "$1" .env
     caller_path "$2"
     owner "$3"
     [ -f "$SRC" ] || [ -n "$DRY" ] || fail "no file: $1"
@@ -722,7 +726,7 @@ case "$command" in
 
   storage-copy)
     [ $# -eq 3 ] || fail "usage: storage-copy <from-dir> <to-dir> <owner>"
-    source_path "$1"
+    source_path "$1" storage
     caller_path "$2"
     owner "$3"
     # Root reads the source with tar (links stay links), the caller unpacks it in their own folder.
@@ -842,14 +846,18 @@ case "$command" in
     [ $# -eq 1 ] || fail "usage: self-update <version>"
     semver='^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
     [[ $1 =~ $semver ]] || fail "invalid version: $1"
-    ! version_lt "$1" "$VERSION" || fail "no downgrade: $VERSION is installed, $1 is older"
+    version_lt "$VERSION" "$1" || fail "only a newer version: $VERSION is installed, $1 is not newer"
     key_re='^RW[A-Za-z0-9+/]{54}$'
     case "$PUBKEY" in *REPLACE_WITH_RELEASE_KEY*) fail "no release key in this build (PUBKEY is the placeholder), self-update refused" ;; esac
     [[ $PUBKEY =~ $key_re ]] || fail "invalid release key in this build, self-update refused"
     url="$RELEASES/v$1/eeploi-helper"
+    # -q first: curl reads no curlrc.
+    fetch=(curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https'
+      --connect-timeout 10 --max-time 120 --max-filesize 1048576)
     if [ -n "$DRY" ]; then
       echo "download: $url"
       echo "download: $url.minisig"
+      echo "run: ${fetch[*]} -o <download>/<file> <url>"
       echo "run: minisign -V -q -P $PUBKEY -m <download>/eeploi-helper -x <download>/eeploi-helper.minisig"
       echo "run: bash -n <download>/eeploi-helper"
       echo "check: <download>/eeploi-helper version = $1"
@@ -861,9 +869,7 @@ case "$command" in
     work=$(mktemp -d)
     TMP_PATHS="$TMP_PATHS $work"
     for f in eeploi-helper eeploi-helper.minisig; do
-      curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-        --connect-timeout 10 --max-time 120 --max-filesize 1048576 \
-        -o "$work/$f" "$RELEASES/v$1/$f" || fail "download failed: $RELEASES/v$1/$f"
+      "${fetch[@]}" -o "$work/$f" "$RELEASES/v$1/$f" || fail "download failed: $RELEASES/v$1/$f"
     done
     minisign -V -q -P "$PUBKEY" -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
       || fail "signature check failed, nothing changed"
