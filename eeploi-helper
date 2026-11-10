@@ -18,12 +18,15 @@ DRY="${EEPLOI_HELPER_DRY_RUN:-}"
 CALLER="${SUDO_USER:-}"
 
 # Root-owned eeploi state: helper.conf (DEPLOY_USER=...) and the new-server marker.
-# The overrides are for tests and only count in dry-run mode.
+# The overrides are for tests and only count in dry-run mode. EEPLOI_HELPER_DB_STATE stands in for
+# what db-create's checks would find on the database server.
 ETC=/etc/eeploi
 NGINX_CONF=/etc/nginx/nginx.conf
+DB_STATE=
 if [ -n "$DRY" ]; then
   ETC="${EEPLOI_HELPER_ETC:-$ETC}"
   NGINX_CONF="${EEPLOI_HELPER_NGINX_CONF:-$NGINX_CONF}"
+  DB_STATE="${EEPLOI_HELPER_DB_STATE:-}"
 fi
 
 fail() { echo "eeploi-helper: $*" >&2; exit 64; }
@@ -295,6 +298,178 @@ request_terminate_timeout = 300
 POOL
 }
 
+# db_engine <engine>: mysql, mariadb or pgsql.
+db_engine() {
+  case "$1" in mysql|mariadb|pgsql) ;; *) fail "invalid database engine: $1 (mysql, mariadb or pgsql)" ;; esac
+}
+
+# db_name <database|user> <name>: a lowercase letter, then a-z, 0-9 or _, at most 32 in all. Names the
+# engines keep for themselves are refused, and so is Postgres' pg_ prefix.
+DB_RESERVED='mysql|information_schema|performance_schema|sys|postgres|template0|template1|root'
+db_name() {
+  local re='^[a-z][a-z0-9_]{0,31}$'
+  [[ $2 =~ $re ]] || fail "invalid $1 name: $2 (a-z, 0-9 and _, starting with a letter, at most 32)"
+  case "|$DB_RESERVED|" in *"|$2|"*) fail "reserved $1 name: $2" ;; esac
+  case "$2" in pg_*) fail "reserved $1 name: $2" ;; esac
+}
+
+# db_login <socket|password>: how the user logs in, in DB_LOGIN. socket: as the Unix user of the same
+# name, with no password; stdin is never read. password: the password from stdin in DB_PASSWORD, only
+# characters that are safe inside an SQL string, never printed, logged, written to a file or put on a
+# command line. A missing password fails; it never falls back to socket login.
+db_login() {
+  local re='^[A-Za-z0-9._~+/=-]{16,128}$'
+  DB_PASSWORD=
+  DB_LOGIN=$1
+  case "$1" in
+    socket) return ;;
+    password) ;;
+    *) fail "invalid login: $1 (socket or password)" ;;
+  esac
+  [ ! -t 0 ] || fail "password login needs the password on stdin, not a terminal"
+  DB_PASSWORD=$(head -c 256)
+  [[ $DB_PASSWORD =~ $re ]] || fail "the password on stdin must be 16 to 128 characters: A-Z a-z 0-9 . _ ~ + / = -"
+}
+
+# db_unix_user <user>: socket login trusts every process of that Unix user, so it must exist and be a
+# site's own user: not a system user (uid below 1000) and not a user that runs more than one site
+# (the deploy user, ploi, forge). In a dry run the uid comes from a uid=<n|none> line in
+# EEPLOI_HELPER_DB_STATE, else 1001.
+db_unix_user() {
+  local uid=
+  if [ -n "$DRY" ]; then
+    echo "check: id -u -- $1"
+    [ -z "$DB_STATE" ] || uid=$(sed -n 's/^uid=//p' "$DB_STATE")
+    uid=${uid:-1001}
+    [ "$uid" != none ] || uid=
+  else
+    uid=$(id -u -- "$1" 2> /dev/null) || uid=
+  fi
+  [ -n "$uid" ] || fail "no Unix user $1 on this server: socket login needs the site's own user"
+  [[ $uid =~ ^[0-9]+$ ]] || fail "cannot read the uid of $1: $uid"
+  [ "$uid" -ge 1000 ] || fail "$1 is a system user (uid $uid): socket login needs the site's own user"
+  case "|$HOMES|" in *"|$1|"*) fail "$1 runs more than one site: socket login needs the site's own user" ;; esac
+}
+
+# db_client <engine>: the client command in DB_CLIENT. Through the local socket only, with a clean
+# environment: no option file, history or plugin from the caller's home, no PG* or MYSQL_* variables.
+# MySQL and MariaDB log in as root (socket auth), Postgres as the postgres user (peer auth).
+db_client() {
+  case "$1" in
+    mysql|mariadb)
+      DB_BIN=mysql
+      if [ "$1" = mariadb ] && { [ -n "$DRY" ] || command -v mariadb > /dev/null; }; then DB_BIN=mariadb; fi
+      DB_CLIENT=(env -i PATH="$PATH" HOME=/root LC_ALL=C "$DB_BIN" --protocol=socket --user=root --batch --skip-column-names) ;;
+    pgsql)
+      DB_BIN=psql
+      DB_CLIENT=(env -i PATH="$PATH" LC_ALL=C runuser -u postgres -- psql -X -q -A -t --no-password -v ON_ERROR_STOP=1 -d postgres) ;;
+  esac
+  [ -z "$DRY" ] || return 0
+  command -v "$DB_BIN" > /dev/null || fail "$DB_BIN not found: is $1 installed?"
+  [ "$1" != pgsql ] || id -u postgres > /dev/null 2>&1 || fail "no postgres user: is Postgres installed?"
+}
+
+# db_check_sql <engine> <name> <user>: what the server has, as key=count lines (see db_state).
+# MySQL keeps a grant on `a\_b` for the database a_b, so both spellings are looked up.
+db_check_sql() {
+  local esc
+  if [ "$1" = pgsql ]; then
+    cat <<SQL
+SELECT 'db_exists=' || count(*) FROM pg_database WHERE datname = '$2';
+SELECT 'user_exists=' || count(*) FROM pg_roles WHERE rolname = '$3';
+SELECT 'user_global=' || count(*) FROM pg_roles r WHERE r.rolname = '$3' AND (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls OR EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.member = r.oid));
+SELECT 'user_elsewhere=' || count(*) FROM pg_database d, pg_roles r WHERE r.rolname = '$3' AND d.datname <> '$2' AND (d.datdba = r.oid OR EXISTS (SELECT 1 FROM aclexplode(d.datacl) a WHERE a.grantee = r.oid));
+SELECT 'db_others=' || count(*) FROM pg_database d WHERE d.datname = '$2' AND (d.datdba IS DISTINCT FROM (SELECT oid FROM pg_roles WHERE rolname = '$3') OR EXISTS (SELECT 1 FROM aclexplode(d.datacl) a WHERE a.grantee NOT IN (0, d.datdba)));
+SELECT 'granted=' || count(*) FROM pg_database d, pg_roles r WHERE d.datname = '$2' AND r.rolname = '$3' AND d.datdba = r.oid;
+SELECT 'user_socket=' || count(*) FROM pg_authid WHERE rolname = '$3' AND rolpassword IS NULL;
+SQL
+    return
+  fi
+  esc=$(printf '%s' "$2" | sed 's/_/\\\\_/g')
+  cat <<SQL
+SET SESSION sql_mode = '';
+SELECT CONCAT('mariadb=', IF(VERSION() LIKE '%MariaDB%', 1, 0));
+SELECT CONCAT('db_exists=', COUNT(*)) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '$2';
+SELECT CONCAT('user_exists=', COUNT(*)) FROM mysql.user WHERE User = '$3' AND Host = 'localhost';
+SELECT CONCAT('user_global=', COUNT(*)) FROM information_schema.USER_PRIVILEGES WHERE SUBSTRING_INDEX(GRANTEE, '@', 1) = '''$3''' AND PRIVILEGE_TYPE <> 'USAGE';
+SELECT CONCAT('user_elsewhere=', (SELECT COUNT(*) FROM mysql.db WHERE User = '$3' AND Db NOT IN ('$2', '$esc')) + (SELECT COUNT(*) FROM mysql.tables_priv WHERE User = '$3' AND Db <> '$2'));
+SELECT CONCAT('db_others=', (SELECT COUNT(*) FROM mysql.db WHERE Db IN ('$2', '$esc') AND NOT (User = '$3' AND Host = 'localhost')) + (SELECT COUNT(*) FROM mysql.tables_priv WHERE Db = '$2' AND NOT (User = '$3' AND Host = 'localhost')));
+SELECT CONCAT('granted=', COUNT(*)) FROM mysql.db WHERE Db IN ('$2', '$esc') AND User = '$3' AND Host = 'localhost';
+SELECT CONCAT('user_socket=', COUNT(*)) FROM mysql.user WHERE User = '$3' AND Host = 'localhost' AND plugin IN ('auth_socket', 'unix_socket');
+SELECT CONCAT('socket_plugin=', COUNT(*)) FROM information_schema.PLUGINS WHERE PLUGIN_NAME = IF(VERSION() LIKE '%MariaDB%', 'unix_socket', 'auth_socket') AND PLUGIN_STATUS = 'ACTIVE';
+SQL
+}
+
+# db_state <engine> <name> <user>: run the checks and set S_<key>. Only known key=count lines are read.
+# user_socket: the user logs in over the socket (no password); socket_plugin: MySQL's auth_socket or
+# MariaDB's unix_socket is active. In a dry run the state comes from EEPLOI_HELPER_DB_STATE (its uid=
+# line is db_unix_user's), or is a server with neither and the socket plugin active.
+db_state() {
+  local out line key var keys='db_exists user_exists user_global user_elsewhere db_others granted user_socket'
+  local re='^(mariadb|db_exists|user_exists|user_global|user_elsewhere|db_others|granted|user_socket|socket_plugin)=([0-9]+)$'
+  [ "$1" = pgsql ] || keys="mariadb $keys socket_plugin"
+  S_mariadb='' S_db_exists='' S_user_exists='' S_user_global='' S_user_elsewhere='' S_db_others='' S_granted=''
+  S_user_socket='' S_socket_plugin=''
+  if [ -n "$DRY" ]; then
+    echo "check: what the $1 server has (on stdin of: ${DB_CLIENT[*]})"
+    db_check_sql "$@" | sed 's/^/  /'
+    if [ -n "$DB_STATE" ]; then
+      out=$(grep -v '^uid=' "$DB_STATE" || true)
+    else
+      out=$(for key in $keys; do echo "$key=0"; done)
+      [ "$1" != mariadb ] || out=${out/mariadb=0/mariadb=1}
+      out=${out/socket_plugin=0/socket_plugin=1}
+    fi
+  else
+    out=$(db_check_sql "$@" | "${DB_CLIENT[@]}") || fail "$1 failed: cannot read what the server has"
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [[ $line =~ $re ]] || fail "cannot read the $1 checks: $line"
+    printf -v "S_${BASH_REMATCH[1]}" '%s' "${BASH_REMATCH[2]}"
+  done <<< "$out"
+  for key in $keys; do
+    var="S_$key"
+    [ -n "${!var}" ] || fail "cannot read the $1 checks: no $key"
+  done
+}
+
+# db_create_sql <engine> <name> <user> <password>: only what is missing (DB_PLUGIN, DB_NEW_USER,
+# DB_NEW_DB, DB_GRANT). With DB_LOGIN=socket the user gets no password: Postgres peer auth, MariaDB
+# unix_socket, MySQL auth_socket. The session first turns off the server's statement logs, so a
+# password stays out of them.
+db_create_sql() {
+  local esc
+  if [ "$1" = pgsql ]; then
+    echo "SET log_statement = 'none';"
+    echo "SET log_min_duration_statement = -1;"
+    echo "SET log_min_error_statement = 'panic';"
+    echo "SET pg_stat_statements.track_utility = off;"
+    if [ -n "$DB_NEW_USER" ] && [ "$DB_LOGIN" = socket ]; then
+      echo "CREATE ROLE \"$3\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;"
+    elif [ -n "$DB_NEW_USER" ]; then
+      printf '%s\n' "CREATE ROLE \"$3\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '$4';"
+    fi
+    if [ -n "$DB_NEW_DB" ]; then
+      echo "CREATE DATABASE \"$2\" OWNER \"$3\" ENCODING 'UTF8' TEMPLATE template0;"
+      echo "REVOKE ALL ON DATABASE \"$2\" FROM PUBLIC;"
+    fi
+    return
+  fi
+  esc=$(printf '%s' "$2" | sed 's/_/\\_/g')
+  echo "SET SESSION sql_log_off = 1;"
+  [ -z "$DB_PLUGIN" ] || echo "INSTALL PLUGIN auth_socket SONAME 'auth_socket.so';"
+  if [ -n "$DB_NEW_USER" ] && [ "$DB_LOGIN" = socket ] && [ "$1" = mariadb ]; then
+    echo "CREATE USER '$3'@'localhost' IDENTIFIED VIA unix_socket;"
+  elif [ -n "$DB_NEW_USER" ] && [ "$DB_LOGIN" = socket ]; then
+    echo "CREATE USER '$3'@'localhost' IDENTIFIED WITH auth_socket;"
+  elif [ -n "$DB_NEW_USER" ]; then
+    printf '%s\n' "CREATE USER '$3'@'localhost' IDENTIFIED BY '$4';"
+  fi
+  [ -z "$DB_NEW_DB" ] || echo "CREATE DATABASE \`$2\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+  [ -z "$DB_GRANT" ] || echo "GRANT ALL PRIVILEGES ON \`$esc\`.* TO '$3'@'localhost';"
+}
+
 [[ $CALLER =~ ^($HOMES)$ ]] || fail "run through sudo as the deploy user"
 [ $# -ge 1 ] || fail "usage: eeploi-helper <subcommand> [arguments]"
 
@@ -555,6 +730,67 @@ case "$command" in
       echo "run: tar -C $SRC -cf - . | runuser -u $CALLER -- tar -C $2 -xf - --no-same-owner"
     elif [ -d "$SRC" ]; then
       tar -C "$SRC" -cf - . | runuser -u "$CALLER" -- tar -C "$2" -xf - --no-same-owner
+    fi ;;
+
+  db-create)
+    [ $# -eq 4 ] || fail "usage: db-create <engine> <name> <user> <socket|password> [< password]"
+    db_engine "$1"
+    db_name database "$2"
+    db_name user "$3"
+    db_login "$4"
+    [ "$DB_LOGIN" != socket ] || db_unix_user "$3"
+    cd / || fail "cannot change to /"
+    db_client "$1"
+    db_state "$1" "$2" "$3"
+    case "$1" in
+      mysql) [ "$S_mariadb" = 0 ] || fail "this server runs MariaDB, not MySQL" ;;
+      mariadb) [ "$S_mariadb" = 1 ] || fail "this server runs MySQL, not MariaDB" ;;
+    esac
+    # The user gets that one database and nothing else; a database someone else can use is not taken.
+    [ "$S_user_global" = 0 ] || fail "user $3 has rights beyond one database, refusing"
+    [ "$S_user_elsewhere" = 0 ] || fail "user $3 has rights on another database, refusing"
+    [ "$S_db_others" = 0 ] || fail "database $2 belongs to another user, refusing"
+    [ "$S_db_exists" = 0 ] || [ "$S_granted" != 0 ] || fail "database $2 exists and is not $3's, refusing"
+    # An existing user keeps its way in: never switched between socket and password login.
+    if [ "$S_user_exists" != 0 ] && [ "$DB_LOGIN" = socket ] && [ "$S_user_socket" = 0 ]; then
+      fail "user $3 exists with password login, not socket login: refusing, it is not switched"
+    fi
+    if [ "$S_user_exists" != 0 ] && [ "$DB_LOGIN" = password ] && [ "$S_user_socket" != 0 ]; then
+      fail "user $3 exists with socket login, not password login: refusing, it is not switched"
+    fi
+    # MySQL's auth_socket is a plugin; Ubuntu installs it unless root got a password. MariaDB has
+    # unix_socket built in and on since 10.4.
+    DB_PLUGIN=
+    if [ "$DB_LOGIN" = socket ] && [ "$1" = mysql ] && [ "$S_socket_plugin" = 0 ]; then DB_PLUGIN=1; fi
+    if [ "$DB_LOGIN" = socket ] && [ "$1" = mariadb ] && [ "$S_socket_plugin" = 0 ]; then
+      fail "the unix_socket plugin is not active on this MariaDB server, refusing"
+    fi
+    DB_NEW_USER=
+    DB_NEW_DB=
+    DB_GRANT=
+    [ "$S_user_exists" != 0 ] || DB_NEW_USER=1
+    [ "$S_db_exists" != 0 ] || DB_NEW_DB=1
+    [ "$S_granted" != 0 ] || DB_GRANT=1
+    if [ -z "$DB_PLUGIN$DB_NEW_USER$DB_NEW_DB$DB_GRANT" ]; then
+      echo "exists: $1 database $2 for user $3, nothing changed ($DB_LOGIN login)"
+      exit 0
+    fi
+    # The SQL goes on the client's stdin (printf is a shell builtin), so the password is on no command line.
+    if [ -n "$DRY" ]; then
+      echo "run: ${DB_CLIENT[*]} (SQL on stdin)"
+      db_create_sql "$1" "$2" "$3" '<password>' | sed 's/^/  /'
+    elif ! out=$(db_create_sql "$1" "$2" "$3" "$DB_PASSWORD" | "${DB_CLIENT[@]}" 2>&1); then
+      # Only the error lines, without the password: psql repeats the failing statement.
+      [ -z "$DB_PASSWORD" ] || out=${out//"$DB_PASSWORD"/<password>}
+      printf '%s\n' "$out" | grep -E 'ERROR|FATAL' >&2 || true
+      fail "$1 failed: database $2 for user $3 not created"
+    fi
+    if [ -n "$DB_NEW_USER" ]; then
+      echo "created: $1 database $2 for user $3 ($DB_LOGIN login)"
+    elif [ "$DB_LOGIN" = socket ]; then
+      echo "created: $1 database $2 for user $3 (socket login, the user existed)"
+    else
+      echo "created: $1 database $2 for user $3 (password login, the user existed, its password is unchanged)"
     fi ;;
 
   firewall-close-22)
