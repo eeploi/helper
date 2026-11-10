@@ -373,7 +373,7 @@ db_state() {
   local out line key var keys='db_exists user_exists user_global user_elsewhere db_others granted'
   local re='^(mariadb|db_exists|user_exists|user_global|user_elsewhere|db_others|granted)=([0-9]+)$'
   [ "$1" = pgsql ] || keys="mariadb $keys"
-  for key in mariadb $keys; do printf -v "S_$key" '%s' ''; done
+  S_mariadb='' S_db_exists='' S_user_exists='' S_user_global='' S_user_elsewhere='' S_db_others='' S_granted=''
   if [ -n "$DRY" ]; then
     echo "check: what the $1 server has (on stdin of: ${DB_CLIENT[*]})"
     db_check_sql "$@" | sed 's/^/  /'

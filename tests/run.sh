@@ -337,7 +337,9 @@ IN=$PW ok "mysql with a clean environment" "run: env -i PATH=" db-create mysql s
 IN=$PW ok "mysql statement log off first" "(SQL on stdin)
   SET SESSION sql_log_off = 1;" db-create mysql shop shop
 IN=$PW ok "mysql user on localhost" "CREATE USER 'shop'@'localhost' IDENTIFIED BY '<password>';" db-create mysql shop shop
+# shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
 IN=$PW ok "mysql database utf8mb4" 'CREATE DATABASE `shop_db` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' db-create mysql shop_db shop
+# shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
 IN=$PW ok "mysql grant on that database only" 'GRANT ALL PRIVILEGES ON `shop\_db`.* TO '"'shop'@'localhost';" db-create mysql shop_db shop
 IN=$PW lacks "mysql no global grant" 'ON *.*' db-create mysql shop_db shop
 IN=$PW ok "mysql checks both grant spellings" "Db IN ('shop_db', 'shop\\\\_db')" db-create mysql shop_db shop
@@ -361,6 +363,7 @@ IN=$PW DBSTATE="$WORK/db-mysql-done" lacks "already there runs nothing" "run:" d
 IN=$PW DBSTATE="$WORK/db-pgsql-done" ok "pgsql already there" "exists: pgsql database shop for user shop, nothing changed" db-create pgsql shop shop
 IN=$PW DBSTATE="$WORK/db-mysql-user" ok "user existed" "(the user existed, its password is unchanged)" db-create mysql shop shop
 IN=$PW DBSTATE="$WORK/db-mysql-user" lacks "user existed keeps its password" "CREATE USER" db-create mysql shop shop
+# shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
 IN=$PW DBSTATE="$WORK/db-mysql-dropped" ok "grant left from a dropped database" 'CREATE DATABASE `shop`' db-create mysql shop shop
 IN=$PW DBSTATE="$WORK/db-mysql-dropped" lacks "grant not given twice" "GRANT ALL" db-create mysql shop shop
 IN=$PW DBSTATE="$WORK/db-mysql-grant-only" ok "user missing for a granted database" "CREATE USER 'shop'@'localhost'" db-create mysql shop shop
@@ -374,6 +377,7 @@ IN=$PW refuse "unknown engine" "invalid database engine: sqlite" db-create sqlit
 IN=$PW refuse "engine uppercase" "invalid database engine" db-create MySQL shop shop
 IN=$PW refuse "engine postgres" "invalid database engine" db-create postgres shop shop
 IN=$PW refuse "engine with a command" "invalid database engine" db-create 'mysql;id' shop shop
+# shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
 for bad in Shop shop-db shop.db 'shop;id' "shop'x" 'shop`x' 'shop"x' 'shop x' 'shop$x' '1shop' '_shop' '' \
   a23456789012345678901234567890123 $'shop\nid' 'shop%' 'sh\op'; do
   IN=$PW refuse "database name '$bad'" "invalid database name" db-create mysql "$bad" shop
