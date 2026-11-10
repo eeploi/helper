@@ -200,9 +200,8 @@ refuse "storage from own home" "source must be in /home/ploi or /home/forge" sto
 refuse "env from own home" "source must be in /home/ploi or /home/forge" env-install /home/eeploi/a/.env /home/eeploi/b/.env eeploi
 lacks "env not written by root" "install -o" env-install /home/ploi/a/.env /home/eeploi/a/.env eeploi
 lacks "storage not written by root" "rsync" storage-copy /home/ploi/a/storage /home/eeploi/a/storage eeploi
-# self-update: no downgrade below the installed version.
-BIN="$WORK/keyed-helper" refuse "downgrade" "no downgrade" self-update 0.9.9
-BIN="$WORK/keyed-helper" ok "same version" "download:" self-update 1.0.0
+# self-update: only a newer version than the installed one.
+BIN="$WORK/keyed-helper" refuse "downgrade" "only a newer version" self-update 0.9.9
 # crontab: only ploi or forge jobs in their home; restore adds back only those lines.
 IN=$'17 * * * * root cd / && run-parts --report /etc/cron.hourly\n' refuse "system cron line" "only ploi or forge jobs" crontab-remove-lines example.com
 IN=$'* * * * * ploi php /etc/x/artisan schedule:run\n' refuse "ploi job outside home" "only ploi or forge jobs" crontab-remove-lines example.com
@@ -210,6 +209,36 @@ IN='' refuse "no cron lines" "no lines given" crontab-remove-lines example.com
 refuse "crontab-backup gone" "unknown subcommand" crontab-backup example.com
 # ssl-write: only a PEM certificate.
 IN=$'access_log /etc/cron.d/x;\n' refuse "ssl-write not a certificate" "not one PEM certificate" ssl-write example.com
+
+echo "== second helper audit (2026-11-10)"
+# env-install and storage-copy: only a .env file and a storage folder.
+refuse "env source not a .env" "source must end in /.env" env-install /home/ploi/.ssh/id_ed25519 /home/eeploi/a/.env eeploi
+refuse "env source .env in the middle" "source must end in /.env" env-install /home/ploi/a/.env/x /home/eeploi/a/.env eeploi
+refuse "env source like .env" "source must end in /.env" env-install /home/forge/a/.env.backup /home/eeploi/a/.env eeploi
+refuse "env source a storage folder" "source must end in /.env" env-install /home/ploi/a/storage /home/eeploi/a/.env eeploi
+refuse "storage source not storage" "source must end in /storage" storage-copy /home/ploi/.ssh /home/eeploi/a/storage eeploi
+refuse "storage source the home" "source must end in /storage" storage-copy /home/forge/a /home/eeploi/a/storage eeploi
+refuse "storage source in storage" "source must end in /storage" storage-copy /home/ploi/a/storage/app /home/eeploi/a/storage eeploi
+refuse "storage source like storage" "source must end in /storage" storage-copy /home/ploi/a/old-storage /home/eeploi/a/storage eeploi
+ok "env from forge" "run: dd if=/home/forge/example.com/.env iflag=nofollow" env-install /home/forge/example.com/.env /home/eeploi/example.com/.env eeploi
+ok "storage from a deploy folder" "run: tar -C /home/ploi/a-deploy/storage -cf -" storage-copy /home/ploi/a-deploy/storage /home/eeploi/a/storage eeploi
+# self-update: strictly newer, compared by number.
+BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.0
+BIN="$WORK/keyed-helper" refuse "older version" "only a newer version" self-update 0.99.99
+BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.1
+BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.1.0
+BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
+BIN="$WORK/keyed-helper" ok "numbers, not text" "download:" self-update 1.0.10
+sed "s#^VERSION=.*#VERSION='1.2.10'#" "$WORK/keyed-helper" > "$WORK/v1210-helper"
+BIN="$WORK/v1210-helper" refuse "numbers, not text (older)" "only a newer version" self-update 1.2.9
+BIN="$WORK/v1210-helper" ok "numbers, not text (newer)" "download:" self-update 1.2.11
+BIN="$WORK/v1210-helper" refuse "numbers, not text (minor)" "only a newer version" self-update 1.1.99
+# ssl-csr: the key is made under umask 077.
+ok "ssl-csr key private from the start" "run: sh -c umask 077 && exec openssl genpkey" ssl-csr eeploi-example.com
+ok "ssl-csr key mode" "run: chmod 600 /etc/nginx/ssl/eeploi-example.com.key" ssl-csr eeploi-example.com
+# HOME and locale pinned; curl reads no curlrc.
+check "HOME and LC_ALL pinned" grep -qx 'export TMPDIR=/tmp HOME=/root LC_ALL=C' "$HELPER"
+BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-update 1.2.3
 
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version

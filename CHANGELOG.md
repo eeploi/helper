@@ -9,6 +9,11 @@ All notable changes to eeploi-helper. Versions follow [semver](https://semver.or
   - `password`: password login, with the password on stdin. A missing or invalid password, or a terminal, is refused; it never falls back to socket login. The password is never printed, logged or on a command line.
   - Names are `a-z`, `0-9` and `_` only, so a site user like `shop_example` needs no quoting.
   - Both already there with the same way in is a no-op. A database or user someone else has, and a user with the other way in, are refused. The system log gets the engine, name, user and login, never the password.
+- Fixes from the second helper audit (2026-11-10):
+  - `env-install` only copies a file named `.env`, and `storage-copy` only a folder named `storage`: the source must end in `/.env` or `/storage`, also after resolving links. Anything else is refused.
+  - `self-update` only installs a strictly newer version. The same version is now refused too.
+  - `ssl-csr` makes the private key with mode `600` from the start.
+  - The helper sets `HOME=/root` and `LC_ALL=C` itself, and `self-update` runs `curl -q`, so no curlrc is read.
 - Every call except `version` goes to the system log (`logger -t eeploi-helper`): the caller, the subcommand and its arguments, never stdin. A dry run prints the line on stderr. Not yet: the timeline event id.
 
 ## 1.0.0 (2026-11-08)

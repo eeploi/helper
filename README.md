@@ -30,7 +30,7 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a work
 | `vhost-set-root <domain> <old> <new>` | Changes `root <old>;` to `root <new>;`. Both must be inside an allowed home folder |
 | `vhost-set-socket <domain> <from> <to>` | Changes the exact line `fastcgi_pass unix:<from>;` to `unix:<to>;`. Only PHP-FPM sockets in `/run/php` or `/var/run/php`. Runs `nginx -t` before the reload; on failure the old vhost comes back |
 | `vhost-set-cert <domain>` | Points the vhost's certificate lines to `/etc/nginx/ssl/eeploi-<domain>.crt` and `.key` |
-| `ssl-csr <name>` | Makes a private key (once) and prints a certificate request |
+| `ssl-csr <name>` | Makes a private key (once, mode `600` from the start) and prints a certificate request |
 | `ssl-write <name>` | Writes a certificate from stdin. Only one PEM certificate is accepted |
 | `ssl-remove <name>` | Removes a certificate and its key |
 | `supervisor-write <program> <directory> <processes>` | Writes a Supervisor program `eeploi-*` with the one-line command from stdin. Runs as the calling user, in a folder in their home, 1 to 32 processes, log in `/var/log/supervisor` |
@@ -43,12 +43,12 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a work
 | `cron-remove <domain>` | Removes that cron file |
 | `crontab-remove-lines <domain>` | Removes the exact lines from stdin from `/etc/crontab` and keeps them in `/var/lib/eeploi/crontab/<domain>`. Only jobs that run as `ploi` or `forge` on a path in their home |
 | `crontab-restore <domain>` | Adds those lines back, once each. Other changes to `/etc/crontab` stay |
-| `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` into the caller's home folder, mode `640`. Root only reads; the caller writes the copy |
-| `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` into the caller's home folder. Root only reads; the caller unpacks it |
+| `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` (the source must end in `/.env`, also after resolving links) into the caller's home folder, mode `640`. Root only reads; the caller writes the copy |
+| `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` (the source must end in `/storage`, also after resolving links) into the caller's home folder. Root only reads; the caller unpacks it |
 | `db-create <engine> <name> <user> <socket\|password>` | Creates a database and its user on the local MySQL, MariaDB or Postgres. `socket`: the user logs in over the socket as the Unix user of the same name, with no password. `password`: password login, with the password from stdin. The user gets that one database, nothing else. See [Databases](#databases) |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
 | `acl-nginx` | Lets the nginx user pass through the deploy user's home folder (`setfacl -m u:<nginx user>:x`), and installs the `acl` package first when `setfacl` is missing. Nothing more: the folder stays `750` |
-| `self-update <version>` | Installs a signed release (see below). Never an older one |
+| `self-update <version>` | Installs a signed release (see below). Only a newer one |
 
 Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi` and the deploy user's.
 
@@ -113,13 +113,13 @@ The release key is also in `eeploi-helper` itself (`PUBKEY`). Check that both ma
 sudo eeploi-helper self-update 1.1.0
 ```
 
-1. Checks the version is a plain `x.y.z`, and not older than the installed one.
+1. Checks the version is a plain `x.y.z`, and newer than the installed one (compared by number: `1.0.10` is newer than `1.0.9`). The same or an older version is refused.
 2. Downloads `eeploi-helper` and `eeploi-helper.minisig` of that release from GitHub.
 3. Checks the signature with the key built into the running helper. A bad signature changes nothing.
 4. Checks the new file with `bash -n`, and that its `version` is the one you asked for.
 5. Installs it as root, mode `755`, in one move.
 
-Going back is not possible: an older release may still have a bug a newer one fixed. The sudo rule never changes: it names the path, not the content.
+Going back, or installing the same version again, is not possible: an older release may still have a bug a newer one fixed. The sudo rule never changes: it names the path, not the content.
 
 ## Dry run
 
@@ -144,6 +144,7 @@ Plain bash, no extra tools. Runs `bash -n`, `shellcheck` when installed, and the
 - **Fixed actions.** Each subcommand does one thing. There is no way to pass a command.
 - **Checked input.** Domains, paths, versions, sockets and configs are checked against strict patterns. Paths must stay inside the allowed home folders, also after resolving links.
 - **Called through sudo.** The helper refuses to run unless `SUDO_USER` is an allowed user.
+- **Fixed environment.** `PATH`, `TMPDIR`, `HOME` (`/root`), the locale (`LC_ALL=C`) and the umask are set by the helper, not taken from the caller. `curl` reads no curlrc.
 - **Signed releases.** Every release is signed with minisign. The helper only installs a release signed with the key built into it.
 - **The signing key is offline.** It never touches GitHub or eeploi.com. A hacked eeploi.com or GitHub account still cannot ship a helper your server accepts.
 
