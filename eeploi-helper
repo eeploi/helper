@@ -502,7 +502,7 @@ case "$command" in
       while IFS= read -r line; do [ -n "$line" ] && echo "remove from /etc/crontab: $line"; done < "$patterns"
       echo "save: $saved"
     else
-      mkdir -p -m 700 "$STATE/crontab"
+      install -d -m 700 "$STATE/crontab"
       grep -xF -f "$patterns" /etc/crontab | put "$saved" 600 || true
       tmp=$(mktemp /etc/crontab.eeploi.XXXXXX)
       grep -vxF -f "$patterns" /etc/crontab > "$tmp" || true
