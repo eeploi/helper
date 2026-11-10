@@ -15,8 +15,8 @@ jobs:
       - name: Install shellcheck
         run: command -v shellcheck || (sudo apt-get update && sudo apt-get install -y shellcheck)
       - name: shellcheck
-        run: shellcheck eeploi-helper tests/run.sh
+        run: shellcheck eeploi-helper tests/run.sh bin/release
       - name: bash -n
-        run: bash -n eeploi-helper && bash -n tests/run.sh
+        run: bash -n eeploi-helper && bash -n tests/run.sh && bash -n bin/release
       - name: Tests
         run: bash tests/run.sh
