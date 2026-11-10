@@ -2,6 +2,10 @@
 
 All notable changes to eeploi-helper. Versions follow [semver](https://semver.org): a removed or changed subcommand is a major release, a new subcommand a minor one.
 
+## Unreleased
+
+- Every call except `version` goes to the system log (`logger -t eeploi-helper`): the caller, the subcommand and its arguments, never stdin. A dry run prints the line on stderr. Not yet: the timeline event id.
+
 ## 1.0.0 (2026-11-08)
 
 First public release. The helper moves out of eeploi.com into this repo.
