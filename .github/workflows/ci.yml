@@ -1,7 +1,9 @@
 name: CI
 
+# Once per pull request; on main too, since bin/release needs a green run on the released commit.
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
