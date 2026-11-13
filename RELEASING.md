@@ -20,7 +20,7 @@ For the owner. Signing always happens on your own machine, never in CI.
 
 ## Each release
 
-1. Update `VERSION` in `eeploi-helper` and add the entry in `CHANGELOG.md` (with the date). While eeploi is in dev mode, `VERSION` stays `1.0.0` and a release replaces the files of `v1.0.0`.
+1. Update `VERSION` in `eeploi-helper` and add the entry in `CHANGELOG.md` (with the date). While eeploi is in dev mode, a fix is a patch release (`1.0.1`, `1.0.2`…), so every version works.
 2. Merge to `main` and wait for CI to pass.
 3. In your own terminal, on an up-to-date `main`:
 
