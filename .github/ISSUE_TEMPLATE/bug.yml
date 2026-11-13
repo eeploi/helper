@@ -1,0 +1,45 @@
+name: Bug report
+description: Something in eeploi-helper doesn't work as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: A security problem never goes here. Report it privately, as SECURITY.md says.
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: What you saw, in plain words. Copy the command and any error message as they were shown, without passwords or `.env` values.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `sudo eeploi-helper …`
+        2. See …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Helper version
+      description: The output of `sudo eeploi-helper version`, or the release tag.
+      placeholder: 1.0.1
+    validations:
+      required: true
+  - type: input
+    id: ubuntu
+    attributes:
+      label: Ubuntu version
+      description: The output of `lsb_release -ds`.
+      placeholder: Ubuntu 24.04.3 LTS
+    validations:
+      required: true
