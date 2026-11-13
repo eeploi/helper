@@ -28,7 +28,7 @@ For the owner. Signing always happens on your own machine, never in CI.
    bin/release
    ```
 
-   It checks that you're on `main`, nothing is uncommitted, `main` matches GitHub, shellcheck and the tests pass, and CI on that commit is green. Then minisign asks for your key password and signs `eeploi-helper` with the trusted comment `eeploi-helper <version>`, and the signature is checked against `minisign.pub`. After you confirm, it creates the `v<version>` tag (or moves it, after saying so, when the same version is released again), uploads `eeploi-helper` and `eeploi-helper.minisig` to the GitHub release, downloads them again and checks both against this file and `minisign.pub`.
+   It checks that you're on `main`, nothing is uncommitted, `main` matches GitHub, shellcheck and the tests pass, and CI on that commit is green. Then minisign asks for your key password and signs `eeploi-helper` with the trusted comment `eeploi-helper <version>`, and the signature is checked against `minisign.pub`. Right before publishing it stops, with nothing pushed, if the folder moved off the checked commit or `eeploi-helper` is no longer the signed file (another session pulling `main`, say). After you confirm, it creates the `v<version>` tag on the checked commit (or moves it there, after saying so, when the same version is released again), uploads `eeploi-helper` and `eeploi-helper.minisig` to the GitHub release, downloads them again and checks both against this file and `minisign.pub`.
 
    `bin/release --check` runs only the checks: no key, no signing, nothing published.
 4. Vendor the release into eeploi.com (`resources/helper/`); its pinned SHA-256 follows the file.
