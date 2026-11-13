@@ -115,7 +115,7 @@ else
 fi
 
 echo "== existing subcommands"
-ok "version" "1.0.0" version
+ok "version" "1.0.1" version
 ok "nginx-test" "run: nginx -t" nginx-test
 ok "nginx-reload" "run: service nginx reload" nginx-reload
 ok "php-fpm" "run: service php8.4-fpm reload" php-fpm-reload 8.4
@@ -223,9 +223,9 @@ refuse "storage source like storage" "source must end in /storage" storage-copy 
 ok "env from forge" "run: dd if=/home/forge/example.com/.env iflag=nofollow" env-install /home/forge/example.com/.env /home/eeploi/example.com/.env eeploi
 ok "storage from a deploy folder" "run: tar -C /home/ploi/a-deploy/storage -cf -" storage-copy /home/ploi/a-deploy/storage /home/eeploi/a/storage eeploi
 # self-update: strictly newer, compared by number.
-BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.0
+BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.1
 BIN="$WORK/keyed-helper" refuse "older version" "only a newer version" self-update 0.99.99
-BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.1
+BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.2
 BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.1.0
 BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
 BIN="$WORK/keyed-helper" ok "numbers, not text" "download:" self-update 1.0.10
@@ -243,9 +243,9 @@ BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-upd
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version
 AS=deploy refuse "deploy without config" "run through sudo" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.0" version
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.1" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy home allowed" "runuser -u deploy -- sh -c" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
-ETC_DIR="$WORK/etc-conf" ok "eeploi still allowed with config" "1.0.0" version
+ETC_DIR="$WORK/etc-conf" ok "eeploi still allowed with config" "1.0.1" version
 ETC_DIR="$WORK/etc-badline" refuse "config with another line" "invalid line" version
 ETC_DIR="$WORK/etc-root" refuse "config with root" "cannot be root" version
 ETC_DIR="$WORK/etc-twice" refuse "config set twice" "set twice" version
@@ -343,18 +343,24 @@ BIN="$WORK/badkey-helper" refuse "malformed key" "invalid release key" self-upda
 echo "== db-create"
 PW='test-password-1234567890'
 # What the checks find on the database server, one file per case (key=count, as the helper reads it):
-# mariadb db_exists user_exists user_global user_elsewhere db_others granted [user_socket=0] [socket_plugin=1].
+# mariadb db_exists user_exists user_global user_elsewhere db_others granted [user_socket=0] [socket_plugin=1]
+# [tcp_user_exists=0] [tcp_granted=0].
 db_state() {
   printf 'mariadb=%s\ndb_exists=%s\nuser_exists=%s\nuser_global=%s\nuser_elsewhere=%s\ndb_others=%s\ngranted=%s\n' "${@:1:7}"
-  printf 'user_socket=%s\nsocket_plugin=%s\n' "${8:-0}" "${9:-1}"
+  printf 'user_socket=%s\nsocket_plugin=%s\ntcp_user_exists=%s\ntcp_granted=%s\n' "${8:-0}" "${9:-1}" "${10:-0}" "${11:-0}"
 }
-# Postgres has no mariadb or socket_plugin line.
-pg_state() { db_state "$@" | sed '1d;/^socket_plugin=/d'; }
+# Postgres has no mariadb, socket_plugin or tcp_ line.
+pg_state() { db_state "$@" | sed '1d;/^socket_plugin=/d;/^tcp_/d'; }
 db_state 0 0 0 0 0 0 0 > "$WORK/db-mysql-fresh"
 db_state 1 0 0 0 0 0 0 > "$WORK/db-mariadb-fresh"
-db_state 0 1 1 0 0 0 1 > "$WORK/db-mysql-done"
-db_state 0 0 1 0 0 0 0 > "$WORK/db-mysql-user"
-db_state 0 0 1 0 0 0 1 > "$WORK/db-mysql-dropped"
+db_state 0 1 1 0 0 0 1 0 1 1 1 > "$WORK/db-mysql-done"
+db_state 0 0 1 0 0 0 0 0 1 1 0 > "$WORK/db-mysql-user"
+db_state 0 0 1 0 0 0 1 0 1 1 1 > "$WORK/db-mysql-dropped"
+# A 1.0.0 user: on localhost only. Then a user on 127.0.0.1 without its grant, and one there alone.
+db_state 0 1 1 0 0 0 1 > "$WORK/db-mysql-localhost-only"
+db_state 1 1 1 0 0 0 1 > "$WORK/db-mariadb-localhost-only"
+db_state 0 1 1 0 0 0 1 0 1 1 0 > "$WORK/db-mysql-tcp-nogrant"
+db_state 0 0 0 0 0 0 0 0 1 1 0 > "$WORK/db-mysql-tcp-only"
 db_state 0 1 0 0 0 0 1 > "$WORK/db-mysql-grant-only"
 db_state 0 1 1 0 0 1 0 > "$WORK/db-mysql-taken"
 db_state 0 1 1 0 0 1 1 > "$WORK/db-mysql-shared"
@@ -403,6 +409,26 @@ IN=$PW DBSTATE="$WORK/db-mysql-dropped" ok "grant left from a dropped database" 
 IN=$PW DBSTATE="$WORK/db-mysql-dropped" lacks "grant not given twice" "GRANT ALL" db-create mysql shop shop password
 IN=$PW DBSTATE="$WORK/db-mysql-grant-only" ok "user missing for a granted database" "CREATE USER 'shop'@'localhost'" db-create mysql shop shop password
 IN=$PW DBSTATE="$WORK/db-mariadb-fresh" ok "mariadb state" "created: mariadb" db-create mariadb shop shop password
+
+echo "== db-create password login on localhost and 127.0.0.1"
+IN=$PW ok "mysql user on 127.0.0.1" "CREATE USER 'shop'@'127.0.0.1' IDENTIFIED BY '<password>';" db-create mysql shop shop password
+# shellcheck disable=SC2016 # the backticks are literal SQL
+IN=$PW ok "mysql grant on 127.0.0.1" 'GRANT ALL PRIVILEGES ON `shop\_db`.* TO '"'shop'@'127.0.0.1';" db-create mysql shop_db shop password
+IN=$PW DBSTATE="$WORK/db-mariadb-fresh" ok "mariadb user on 127.0.0.1" "CREATE USER 'shop'@'127.0.0.1' IDENTIFIED BY '<password>';" db-create mariadb shop shop password
+IN=$PW DBSTATE="$WORK/db-mariadb-fresh" ok "mariadb grant on 127.0.0.1" "TO 'shop'@'127.0.0.1';" db-create mariadb shop shop password
+IN=$PW ok "mysql checks the user on 127.0.0.1" "FROM mysql.user WHERE User = 'shop' AND Host = '127.0.0.1';" db-create mysql shop shop password
+IN=$PW ok "mysql: the user's own hosts are not others" "NOT (User = 'shop' AND Host IN ('localhost', '127.0.0.1'))" db-create mysql shop shop password
+IN=$PW lacks "pgsql has no host" "127.0.0.1" db-create pgsql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-localhost-only" ok "1.0.0 user gets the 127.0.0.1 user" "  SET SESSION sql_log_off = 1;
+  CREATE USER 'shop'@'127.0.0.1' IDENTIFIED BY '<password>';
+  GRANT ALL PRIVILEGES ON \`shop\`.* TO 'shop'@'127.0.0.1';
+created: mysql database shop for user shop (password login, the user existed, its password is unchanged; added on 127.0.0.1 with the password on stdin)" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-localhost-only" lacks "1.0.0 user keeps its localhost user" "'shop'@'localhost'" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mariadb-localhost-only" ok "1.0.0 mariadb user gets the 127.0.0.1 user" "CREATE USER 'shop'@'127.0.0.1'" db-create mariadb shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-tcp-nogrant" ok "127.0.0.1 user without its grant: only the grant" "  SET SESSION sql_log_off = 1;
+  GRANT ALL PRIVILEGES ON \`shop\`.* TO 'shop'@'127.0.0.1';
+created:" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-tcp-only" refuse "user on 127.0.0.1 only" "user shop exists on 127.0.0.1 only, refusing" db-create mysql shop shop password
 
 echo "== db-create refusals"
 IN=$PW refuse "db no arguments" "usage: db-create <engine> <name> <user> <socket|password>" db-create
@@ -546,6 +572,10 @@ DBSTATE="$WORK/db-pgsql-password-user" refuse "pgsql role with a password, socke
 IN=$PW DBSTATE="$WORK/db-mysql-socket-user" refuse "mysql socket user, password asked" "user $S exists with socket login, not password login: refusing, it is not switched" db-create mysql $S $S password
 IN=$PW DBSTATE="$WORK/db-pgsql-socket-user" refuse "pgsql role without a password, password asked" "exists with socket login" db-create pgsql $S $S password
 IN=$PW DBSTATE="$WORK/db-mysql-socket-done" refuse "socket done, password asked" "exists with socket login" db-create mysql $S $S password
+db_state 0 1 1 0 0 0 1 1 1 1 1 > "$WORK/db-mysql-socket-and-tcp"
+DBSTATE="$WORK/db-mysql-socket-and-tcp" refuse "socket asked, a user on 127.0.0.1" "user shop exists on 127.0.0.1 with password login, not socket login" db-create mysql shop shop socket
+DBSTATE="$WORK/db-mysql-tcp-only" refuse "socket asked, a user on 127.0.0.1 only" "exists on 127.0.0.1 with password login" db-create mysql shop shop socket
+lacks "socket login has no 127.0.0.1 user" "'@'127.0.0.1' IDENTIFIED" db-create mysql $S $S socket
 DBSTATE="$WORK/db-mysql-taken" refuse "socket: database of another user" "database shop belongs to another user" db-create mysql shop shop socket
 DBSTATE="$WORK/db-mysql-shared" refuse "socket: database shared" "database shop belongs to another user" db-create mysql shop shop socket
 DBSTATE="$WORK/db-pgsql-taken" refuse "socket: pgsql database of another owner" "belongs to another user" db-create pgsql shop shop socket

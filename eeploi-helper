@@ -7,7 +7,7 @@ umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export TMPDIR=/tmp HOME=/root LC_ALL=C
 
-VERSION='1.0.0'
+VERSION='1.0.1'
 
 # The minisign public key releases are signed with (minisign.pub, key id A2C97024AB6219A8).
 PUBKEY='RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA'
@@ -395,8 +395,10 @@ SELECT CONCAT('db_exists=', COUNT(*)) FROM information_schema.SCHEMATA WHERE SCH
 SELECT CONCAT('user_exists=', COUNT(*)) FROM mysql.user WHERE User = '$3' AND Host = 'localhost';
 SELECT CONCAT('user_global=', COUNT(*)) FROM information_schema.USER_PRIVILEGES WHERE SUBSTRING_INDEX(GRANTEE, '@', 1) = '''$3''' AND PRIVILEGE_TYPE <> 'USAGE';
 SELECT CONCAT('user_elsewhere=', (SELECT COUNT(*) FROM mysql.db WHERE User = '$3' AND Db NOT IN ('$2', '$esc')) + (SELECT COUNT(*) FROM mysql.tables_priv WHERE User = '$3' AND Db <> '$2'));
-SELECT CONCAT('db_others=', (SELECT COUNT(*) FROM mysql.db WHERE Db IN ('$2', '$esc') AND NOT (User = '$3' AND Host = 'localhost')) + (SELECT COUNT(*) FROM mysql.tables_priv WHERE Db = '$2' AND NOT (User = '$3' AND Host = 'localhost')));
+SELECT CONCAT('db_others=', (SELECT COUNT(*) FROM mysql.db WHERE Db IN ('$2', '$esc') AND NOT (User = '$3' AND Host IN ('localhost', '127.0.0.1'))) + (SELECT COUNT(*) FROM mysql.tables_priv WHERE Db = '$2' AND NOT (User = '$3' AND Host IN ('localhost', '127.0.0.1'))));
 SELECT CONCAT('granted=', COUNT(*)) FROM mysql.db WHERE Db IN ('$2', '$esc') AND User = '$3' AND Host = 'localhost';
+SELECT CONCAT('tcp_user_exists=', COUNT(*)) FROM mysql.user WHERE User = '$3' AND Host = '127.0.0.1';
+SELECT CONCAT('tcp_granted=', COUNT(*)) FROM mysql.db WHERE Db IN ('$2', '$esc') AND User = '$3' AND Host = '127.0.0.1';
 SELECT CONCAT('user_socket=', COUNT(*)) FROM mysql.user WHERE User = '$3' AND Host = 'localhost' AND plugin IN ('auth_socket', 'unix_socket');
 SELECT CONCAT('socket_plugin=', COUNT(*)) FROM information_schema.PLUGINS WHERE PLUGIN_NAME = IF(VERSION() LIKE '%MariaDB%', 'unix_socket', 'auth_socket') AND PLUGIN_STATUS = 'ACTIVE';
 SQL
@@ -404,14 +406,15 @@ SQL
 
 # db_state <engine> <name> <user>: run the checks and set S_<key>. Only known key=count lines are read.
 # user_socket: the user logs in over the socket (no password); socket_plugin: MySQL's auth_socket or
-# MariaDB's unix_socket is active. In a dry run the state comes from EEPLOI_HELPER_DB_STATE (its uid=
-# line is db_unix_user's), or is a server with neither and the socket plugin active.
+# MariaDB's unix_socket is active; tcp_user_exists, tcp_granted: the user and its grant on 127.0.0.1.
+# In a dry run the state comes from EEPLOI_HELPER_DB_STATE (its uid= line is db_unix_user's), or is a
+# server with neither and the socket plugin active.
 db_state() {
   local out line key var keys='db_exists user_exists user_global user_elsewhere db_others granted user_socket'
-  local re='^(mariadb|db_exists|user_exists|user_global|user_elsewhere|db_others|granted|user_socket|socket_plugin)=([0-9]+)$'
-  [ "$1" = pgsql ] || keys="mariadb $keys socket_plugin"
+  local re='^(mariadb|db_exists|user_exists|user_global|user_elsewhere|db_others|granted|user_socket|socket_plugin|tcp_user_exists|tcp_granted)=([0-9]+)$'
+  [ "$1" = pgsql ] || keys="mariadb $keys socket_plugin tcp_user_exists tcp_granted"
   S_mariadb='' S_db_exists='' S_user_exists='' S_user_global='' S_user_elsewhere='' S_db_others='' S_granted=''
-  S_user_socket='' S_socket_plugin=''
+  S_user_socket='' S_socket_plugin='' S_tcp_user_exists='' S_tcp_granted=''
   if [ -n "$DRY" ]; then
     echo "check: what the $1 server has (on stdin of: ${DB_CLIENT[*]})"
     db_check_sql "$@" | sed 's/^/  /'
@@ -437,8 +440,8 @@ db_state() {
 }
 
 # db_create_sql <engine> <name> <user> <password>: only what is missing (DB_PLUGIN, DB_NEW_USER,
-# DB_NEW_DB, DB_GRANT). With DB_LOGIN=socket the user gets no password: Postgres peer auth, MariaDB
-# unix_socket, MySQL auth_socket. The session first turns off the server's statement logs, so a
+# DB_NEW_DB, DB_GRANT, DB_NEW_TCP_USER, DB_TCP_GRANT). With DB_LOGIN=socket the user gets no password:
+# Postgres peer auth, MariaDB unix_socket, MySQL auth_socket. The session first turns off the server's statement logs, so a
 # password stays out of them.
 db_create_sql() {
   local esc
@@ -468,8 +471,11 @@ db_create_sql() {
   elif [ -n "$DB_NEW_USER" ]; then
     printf '%s\n' "CREATE USER '$3'@'localhost' IDENTIFIED BY '$4';"
   fi
+  # Laravel's default DB_HOST is 127.0.0.1, which matches 'localhost' only through a name lookup.
+  [ -z "$DB_NEW_TCP_USER" ] || printf '%s\n' "CREATE USER '$3'@'127.0.0.1' IDENTIFIED BY '$4';"
   [ -z "$DB_NEW_DB" ] || echo "CREATE DATABASE \`$2\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
   [ -z "$DB_GRANT" ] || echo "GRANT ALL PRIVILEGES ON \`$esc\`.* TO '$3'@'localhost';"
+  [ -z "$DB_TCP_GRANT" ] || echo "GRANT ALL PRIVILEGES ON \`$esc\`.* TO '$3'@'127.0.0.1';"
 }
 
 [[ $CALLER =~ ^($HOMES)$ ]] || fail "run through sudo as the deploy user"
@@ -762,6 +768,14 @@ case "$command" in
     if [ "$S_user_exists" != 0 ] && [ "$DB_LOGIN" = password ] && [ "$S_user_socket" != 0 ]; then
       fail "user $3 exists with socket login, not password login: refusing, it is not switched"
     fi
+    # A socket has no IP, so socket login never has a 127.0.0.1 user. A user there alone has a
+    # password the caller can't know.
+    if [ "$DB_LOGIN" = socket ] && [ "$S_tcp_user_exists$S_tcp_granted" != 00 ] && [ "$1" != pgsql ]; then
+      fail "user $3 exists on 127.0.0.1 with password login, not socket login: refusing, it is not switched"
+    fi
+    if [ "$DB_LOGIN" = password ] && [ "$1" != pgsql ] && [ "$S_user_exists" = 0 ] && [ "$S_tcp_user_exists" != 0 ]; then
+      fail "user $3 exists on 127.0.0.1 only, refusing"
+    fi
     # MySQL's auth_socket is a plugin; Ubuntu installs it unless root got a password. MariaDB has
     # unix_socket built in and on since 10.4.
     DB_PLUGIN=
@@ -775,7 +789,15 @@ case "$command" in
     [ "$S_user_exists" != 0 ] || DB_NEW_USER=1
     [ "$S_db_exists" != 0 ] || DB_NEW_DB=1
     [ "$S_granted" != 0 ] || DB_GRANT=1
-    if [ -z "$DB_PLUGIN$DB_NEW_USER$DB_NEW_DB$DB_GRANT" ]; then
+    # Password login on MySQL and MariaDB: the same user on 127.0.0.1 too, with the same password and
+    # grant. A 1.0.0 user gets it on the next run, with the password on stdin.
+    DB_NEW_TCP_USER=
+    DB_TCP_GRANT=
+    if [ "$DB_LOGIN" = password ] && [ "$1" != pgsql ]; then
+      [ "$S_tcp_user_exists" != 0 ] || DB_NEW_TCP_USER=1
+      [ "$S_tcp_granted" != 0 ] || DB_TCP_GRANT=1
+    fi
+    if [ -z "$DB_PLUGIN$DB_NEW_USER$DB_NEW_DB$DB_GRANT$DB_NEW_TCP_USER$DB_TCP_GRANT" ]; then
       echo "exists: $1 database $2 for user $3, nothing changed ($DB_LOGIN login)"
       exit 0
     fi
@@ -793,6 +815,8 @@ case "$command" in
       echo "created: $1 database $2 for user $3 ($DB_LOGIN login)"
     elif [ "$DB_LOGIN" = socket ]; then
       echo "created: $1 database $2 for user $3 (socket login, the user existed)"
+    elif [ -n "$DB_NEW_TCP_USER" ]; then
+      echo "created: $1 database $2 for user $3 (password login, the user existed, its password is unchanged; added on 127.0.0.1 with the password on stdin)"
     else
       echo "created: $1 database $2 for user $3 (password login, the user existed, its password is unchanged)"
     fi ;;

@@ -79,9 +79,9 @@ echo "$password" | sudo eeploi-helper db-create pgsql shop_example shop_example 
 - **The auth_socket plugin (MySQL, socket login):** Ubuntu's MySQL installs it when root has no password. When it is not active, the helper installs it first (`INSTALL PLUGIN auth_socket SONAME 'auth_socket.so'`), the one plugin shipped with MySQL for this. MariaDB has `unix_socket` built in and on; when it is not active, the helper refuses.
 - **Password:** on stdin only, 16 to 128 of `A-Z a-z 0-9 . _ ~ + / = -`. Never an argument, never in the system log, never in a file, never printed. The SQL goes to the client on stdin, so it is on no command line. The session turns off the server's statement logs first (`sql_log_off`; for Postgres `log_statement`, `log_min_error_statement`, `log_min_duration_statement`, `pg_stat_statements.track_utility`). On an error only the error lines are shown, without the password.
 - **How:** MySQL and MariaDB as root through the local socket. Postgres as the `postgres` user (`runuser -u postgres -- psql`). Both with a clean environment, so no option file or variable from the caller counts.
-- **What it makes:** MySQL and MariaDB: the user `'<user>'@'localhost'`, the database (`utf8mb4`, `utf8mb4_unicode_ci`) and `ALL PRIVILEGES` on that database only. Postgres: a login role without any other rights (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`), the database owned by it (`UTF8`), closed to `PUBLIC`.
-- **Already there:** both there with that grant (Postgres: that owner) and the same way in is a success that changes nothing: `exists: …, nothing changed (socket login)`. A user that exists keeps its password: `created: … (password login, the user existed, its password is unchanged)`.
-- **Refused:** a database another user has rights on, a database that exists but is not the user's, a user with global rights (Postgres: role attributes or role memberships), a user with rights on another database, and a user that exists with the other way in (`user … exists with password login, not socket login`): it is never switched.
+- **What it makes:** MySQL and MariaDB: the user `'<user>'@'localhost'`, the database (`utf8mb4`, `utf8mb4_unicode_ci`) and `ALL PRIVILEGES` on that database only. With password login the same user on `127.0.0.1` too, with the same password and grant, so Laravel's default `DB_HOST=127.0.0.1` works without a name lookup. Socket login stays on `localhost` only: a socket has no IP. Postgres: a login role without any other rights (`NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`), the database owned by it (`UTF8`), closed to `PUBLIC`.
+- **Already there:** both there with that grant (Postgres: that owner) and the same way in is a success that changes nothing: `exists: …, nothing changed (socket login)`. A user that exists keeps its password: `created: … (password login, the user existed, its password is unchanged)`. A password user from 1.0.0, on `localhost` only, gets its `127.0.0.1` user on the next run, with the password on stdin; pass the password it has.
+- **Refused:** a database another user has rights on, a database that exists but is not the user's, a user with global rights (Postgres: role attributes or role memberships), a user with rights on another database, a user that exists with the other way in (`user … exists with password login, not socket login`): it is never switched, a user on `127.0.0.1` for socket login, and a user on `127.0.0.1` without one on `localhost`.
 
 Every refusal and error exits with `64` and one line on stderr, like the other subcommands.
 
@@ -90,7 +90,7 @@ Every refusal and error exits with `64` and one line on stderr, like the other s
 You need `curl` and `minisign` (`apt install minisign`).
 
 ```bash
-VERSION=1.0.0
+VERSION=1.0.1
 curl -fLO https://github.com/eeploi/helper/releases/download/v$VERSION/eeploi-helper
 curl -fLO https://github.com/eeploi/helper/releases/download/v$VERSION/eeploi-helper.minisig
 minisign -Vm eeploi-helper -P RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA
