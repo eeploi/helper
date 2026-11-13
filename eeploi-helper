@@ -770,10 +770,10 @@ case "$command" in
     fi
     # A socket has no IP, so socket login never has a 127.0.0.1 user. A user there alone has a
     # password the caller can't know.
-    if [ "$DB_LOGIN" = socket ] && [ "$S_tcp_user_exists$S_tcp_granted" != 00 ] && [ "$1" != pgsql ]; then
+    if [ "$1" != pgsql ] && [ "$DB_LOGIN" = socket ] && [ "$S_tcp_user_exists$S_tcp_granted" != 00 ]; then
       fail "user $3 exists on 127.0.0.1 with password login, not socket login: refusing, it is not switched"
     fi
-    if [ "$DB_LOGIN" = password ] && [ "$1" != pgsql ] && [ "$S_user_exists" = 0 ] && [ "$S_tcp_user_exists" != 0 ]; then
+    if [ "$1" != pgsql ] && [ "$DB_LOGIN" = password ] && [ "$S_user_exists" = 0 ] && [ "$S_tcp_user_exists" != 0 ]; then
       fail "user $3 exists on 127.0.0.1 only, refusing"
     fi
     # MySQL's auth_socket is a plugin; Ubuntu installs it unless root got a password. MariaDB has
@@ -789,13 +789,16 @@ case "$command" in
     [ "$S_user_exists" != 0 ] || DB_NEW_USER=1
     [ "$S_db_exists" != 0 ] || DB_NEW_DB=1
     [ "$S_granted" != 0 ] || DB_GRANT=1
-    # Password login on MySQL and MariaDB: the same user on 127.0.0.1 too, with the same password and
-    # grant. A 1.0.0 user gets it on the next run, with the password on stdin.
+    # Password login on MySQL and MariaDB: a new user gets the same user on 127.0.0.1, with the same
+    # password and grant. Never for a user that exists: the password on stdin could be anyone's, so a
+    # 1.0.0 user stays on localhost only.
     DB_NEW_TCP_USER=
     DB_TCP_GRANT=
-    if [ "$DB_LOGIN" = password ] && [ "$1" != pgsql ]; then
-      [ "$S_tcp_user_exists" != 0 ] || DB_NEW_TCP_USER=1
-      [ "$S_tcp_granted" != 0 ] || DB_TCP_GRANT=1
+    if [ "$1" != pgsql ] && [ "$DB_LOGIN" = password ]; then
+      [ -z "$DB_NEW_USER" ] || DB_NEW_TCP_USER=1
+      if [ -n "$DB_NEW_TCP_USER" ] || [ "$S_tcp_user_exists" != 0 ]; then
+        [ "$S_tcp_granted" != 0 ] || DB_TCP_GRANT=1
+      fi
     fi
     if [ -z "$DB_PLUGIN$DB_NEW_USER$DB_NEW_DB$DB_GRANT$DB_NEW_TCP_USER$DB_TCP_GRANT" ]; then
       echo "exists: $1 database $2 for user $3, nothing changed ($DB_LOGIN login)"
@@ -815,8 +818,8 @@ case "$command" in
       echo "created: $1 database $2 for user $3 ($DB_LOGIN login)"
     elif [ "$DB_LOGIN" = socket ]; then
       echo "created: $1 database $2 for user $3 (socket login, the user existed)"
-    elif [ -n "$DB_NEW_TCP_USER" ]; then
-      echo "created: $1 database $2 for user $3 (password login, the user existed, its password is unchanged; added on 127.0.0.1 with the password on stdin)"
+    elif [ "$1" != pgsql ] && [ "$S_tcp_user_exists" = 0 ]; then
+      echo "created: $1 database $2 for user $3 (password login, the user existed on localhost only, its password is unchanged)"
     else
       echo "created: $1 database $2 for user $3 (password login, the user existed, its password is unchanged)"
     fi ;;

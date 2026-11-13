@@ -4,7 +4,7 @@ All notable changes to eeploi-helper. Versions follow [semver](https://semver.or
 
 ## 1.0.1 (2026-11-13)
 
-- `db-create` with password login on MySQL and MariaDB makes the user on `127.0.0.1` too, with the same password and grant, so Laravel's default `DB_HOST=127.0.0.1` works without a name lookup. A 1.0.0 user on `localhost` only gets its `127.0.0.1` user on the next run, with the password on stdin. Socket login and Postgres are unchanged. Refused: a user on `127.0.0.1` for socket login, and one on `127.0.0.1` without one on `localhost`.
+- `db-create` with password login on MySQL and MariaDB makes the user on `127.0.0.1` too, with the same password and grant, so Laravel's default `DB_HOST=127.0.0.1` works without a name lookup. Only for a new user: a user that exists, such as one from 1.0.0, stays on `localhost` only, since the password on stdin could be anyone's. Socket login and Postgres are unchanged. Refused: a user on `127.0.0.1` for socket login, and one on `127.0.0.1` without one on `localhost`.
 
 ## 1.0.0, files replaced (2026-11-10)
 

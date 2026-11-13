@@ -360,6 +360,7 @@ db_state 0 0 1 0 0 0 1 0 1 1 1 > "$WORK/db-mysql-dropped"
 db_state 0 1 1 0 0 0 1 > "$WORK/db-mysql-localhost-only"
 db_state 1 1 1 0 0 0 1 > "$WORK/db-mariadb-localhost-only"
 db_state 0 1 1 0 0 0 1 0 1 1 0 > "$WORK/db-mysql-tcp-nogrant"
+db_state 0 0 1 0 0 0 0 > "$WORK/db-mysql-user-localhost-nodb"
 db_state 0 0 0 0 0 0 0 0 1 1 0 > "$WORK/db-mysql-tcp-only"
 db_state 0 1 0 0 0 0 1 > "$WORK/db-mysql-grant-only"
 db_state 0 1 1 0 0 1 0 > "$WORK/db-mysql-taken"
@@ -419,12 +420,12 @@ IN=$PW DBSTATE="$WORK/db-mariadb-fresh" ok "mariadb grant on 127.0.0.1" "TO 'sho
 IN=$PW ok "mysql checks the user on 127.0.0.1" "FROM mysql.user WHERE User = 'shop' AND Host = '127.0.0.1';" db-create mysql shop shop password
 IN=$PW ok "mysql: the user's own hosts are not others" "NOT (User = 'shop' AND Host IN ('localhost', '127.0.0.1'))" db-create mysql shop shop password
 IN=$PW lacks "pgsql has no host" "127.0.0.1" db-create pgsql shop shop password
-IN=$PW DBSTATE="$WORK/db-mysql-localhost-only" ok "1.0.0 user gets the 127.0.0.1 user" "  SET SESSION sql_log_off = 1;
-  CREATE USER 'shop'@'127.0.0.1' IDENTIFIED BY '<password>';
-  GRANT ALL PRIVILEGES ON \`shop\`.* TO 'shop'@'127.0.0.1';
-created: mysql database shop for user shop (password login, the user existed, its password is unchanged; added on 127.0.0.1 with the password on stdin)" db-create mysql shop shop password
-IN=$PW DBSTATE="$WORK/db-mysql-localhost-only" lacks "1.0.0 user keeps its localhost user" "'shop'@'localhost'" db-create mysql shop shop password
-IN=$PW DBSTATE="$WORK/db-mariadb-localhost-only" ok "1.0.0 mariadb user gets the 127.0.0.1 user" "CREATE USER 'shop'@'127.0.0.1'" db-create mariadb shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-localhost-only" ok "1.0.0 user stays on localhost" "exists: mysql database shop for user shop, nothing changed (password login)" db-create mysql shop shop password
+IN=$PW DBSTATE="$WORK/db-mariadb-localhost-only" lacks "1.0.0 mariadb user gets no 127.0.0.1 user" "127.0.0.1' IDENTIFIED" db-create mariadb shop shop password
+IN=$PW DBSTATE="$WORK/db-mysql-user-localhost-nodb" ok "1.0.0 user, new database: no 127.0.0.1 user" "  SET SESSION sql_log_off = 1;
+  CREATE DATABASE \`shop\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  GRANT ALL PRIVILEGES ON \`shop\`.* TO 'shop'@'localhost';
+created: mysql database shop for user shop (password login, the user existed on localhost only, its password is unchanged)" db-create mysql shop shop password
 IN=$PW DBSTATE="$WORK/db-mysql-tcp-nogrant" ok "127.0.0.1 user without its grant: only the grant" "  SET SESSION sql_log_off = 1;
   GRANT ALL PRIVILEGES ON \`shop\`.* TO 'shop'@'127.0.0.1';
 created:" db-create mysql shop shop password
