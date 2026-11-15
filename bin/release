@@ -14,9 +14,38 @@ CHECK_ONLY=
 [ $# -eq 0 ] || [ -n "$CHECK_ONLY" ] || { echo "usage: bin/release [--check]" >&2; exit 64; }
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+tests_pid=
+# A background job ignores Ctrl-C: stop the tests too.
+trap '[ -z "$tests_pid" ] || kill "$tests_pid" 2> /dev/null || true; rm -rf "$work"' EXIT
 
 say() { printf '\n== %s\n' "$*"; }
+step() { printf '%s…\n' "$*"; }
+# run_tests: tests/run.sh with its counts as it goes, on one line in a terminal, a line every 5 s otherwise.
+# Its output stays in $work/tests for a failure.
+run_tests() {
+  local spin="|/-\\" n=0 counts=starting now status=0
+  TESTS_PROGRESS="$work/progress" bash tests/run.sh > "$work/tests" 2>&1 &
+  tests_pid=$!
+  while kill -0 "$tests_pid" 2> /dev/null; do
+    now=
+    [ ! -f "$work/progress" ] || read -r now < "$work/progress" || true
+    # Read while run.sh rewrites it, the file can be empty for a moment.
+    [ -z "$now" ] || counts=$now
+    if [ -t 1 ]; then
+      printf '\r  %s %s\033[K' "${spin:n%4:1}" "$counts"
+    elif [ $((n % 25)) -eq 0 ]; then
+      printf '  %s\n' "$counts"
+    fi
+    n=$((n + 1))
+    sleep 0.2
+  done
+  wait "$tests_pid" || status=$?
+  tests_pid=
+  [ ! -t 1 ] || printf '\r\033[K'
+  [ ! -f "$work/progress" ] || read -r counts < "$work/progress" || true
+  printf '  %s\n' "$counts"
+  return "$status"
+}
 fail() { printf 'release: %s\n' "$*" >&2; exit 1; }
 confirm() {
   local answer
@@ -32,6 +61,7 @@ done
 say "Checks"
 [ "$(git branch --show-current)" = main ] || fail "not on main"
 [ -z "$(git status --porcelain)" ] || fail "uncommitted changes"
+step "fetching main and the tags from GitHub"
 git fetch -q origin main
 git fetch -q --force origin 'refs/tags/*:refs/tags/*'
 head=$(git rev-parse HEAD)
@@ -42,8 +72,12 @@ version=$(sed -n "s/^VERSION='\(.*\)'\$/\1/p" eeploi-helper)
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "cannot read VERSION from eeploi-helper"
 tag="v$version"
 
+step "shellcheck"
 shellcheck eeploi-helper tests/run.sh bin/release || fail "shellcheck found problems"
-out=$(bash tests/run.sh 2>&1) || { printf '%s\n' "$out" | tail -20 >&2; fail "tests fail: bash tests/run.sh"; }
+step "running the tests"
+# On a failure: what failed and why (cut short when much fails), then the end, also when run.sh itself broke.
+run_tests || { { sed -n '/^FAIL /,/^$/p' "$work/tests" | head -40; tail -20 "$work/tests"; } >&2; fail "tests fail: bash tests/run.sh"; }
+step "checking CI on $commit"
 ci=$(gh run list -R "$REPO" --commit "$head" --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"')
 [ "$ci" = "completed success" ] || fail "CI on $commit is not green yet (${ci:-no run})"
 
@@ -79,12 +113,15 @@ git show "$head:eeploi-helper" > "$work/checked"
 cmp -s "$work/signed" "$work/checked" || fail "the signed eeploi-helper is not the one in $commit: nothing was published"
 cmp -s eeploi-helper "$work/signed" || fail "eeploi-helper changed since it was signed: nothing was published"
 if [ -z "$tagged" ]; then
+  step "pushing $tag"
   git tag -a "$tag" -m "$tag" "$head"
   git push -q origin "refs/tags/$tag"
 elif [ -n "$move" ]; then
+  step "moving $tag to $commit"
   git tag -f -a "$tag" -m "$tag" "$head" > /dev/null
   git push -q --force origin "refs/tags/$tag"
 fi
+step "uploading the release files"
 if gh release view "$tag" -R "$REPO" > /dev/null 2>&1; then
   gh release upload "$tag" eeploi-helper eeploi-helper.minisig --clobber -R "$REPO"
 else
@@ -93,6 +130,7 @@ else
 fi
 
 say "Verify the published files"
+step "downloading them again"
 gh release download "$tag" -R "$REPO" -D "$work" -p eeploi-helper -p eeploi-helper.minisig
 cmp -s "$work/eeploi-helper" eeploi-helper || fail "the published eeploi-helper is not this file"
 minisign -V -q -p minisign.pub -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
