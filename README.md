@@ -33,18 +33,18 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 | `vhost-restore <domain>` | Puts that copy back |
 | `vhost-enable <domain>` | Links the vhost into `sites-enabled` |
 | `vhost-disable <domain>` | Removes the link from `sites-enabled` |
-| `vhost-remove <domain>` | Removes the vhost and its link. For a site's domain, deploy user only; every check runs before anything is removed |
-| `vhost-set-root <domain> <old> <new>` | Changes the vhost's one `root <old>;` line to `root <new>;`. Both must be inside an allowed home folder. A root in a site user's home must be in the folder of that user's own domain, `/srv/eeploi/<user>/<domain>/`, and gets `disable_symlinks if_not_owner from=/srv/eeploi/<user>;` right after it, once. That root line must be in a server block that listens on 443, and the vhost may have no `disable_symlinks` line of its own; otherwise it is refused. Moved back to a panel home, eeploi's `disable_symlinks` line goes. Runs `nginx -t`; on failure the old vhost comes back |
+| `vhost-remove <domain>` | Removes the vhost and its link. Every check runs before anything is removed |
+| `vhost-set-root <domain> <old> <new>` | Changes the vhost's one `root <old>;` line to `root <new>;`. Both must be inside an allowed home folder. A root in a site user's home must be in the folder of that user's own domain, `/srv/eeploi/<user>/<domain>/`, and gets `disable_symlinks if_not_owner from=/srv/eeploi/<user>;` right after it, once. That root line must sit at the top level of a server block that listens on port 443 (not inside a `location` or `if`), the vhost may have no `disable_symlinks` line of its own, and no line may combine a quote with `{`, `}` or `#`; otherwise it is refused. Moved back to a panel home, eeploi's `disable_symlinks` line goes. Runs `nginx -t`; on failure the old vhost comes back |
 | `vhost-set-socket <domain> <from> <to>` | Changes the exact line `fastcgi_pass unix:<from>;` to `unix:<to>;`. Only PHP-FPM sockets in `/run/php` or `/var/run/php`. `<to>` is the pool of the site user listed for that domain. `<from>` may also be a socket the vhost still uses: the default one per version, `php<version>-fpm-eeploi.sock` from 1.0.1, or a panel's pool per user; never another site user's. Runs `nginx -t` before the reload; on failure the old vhost comes back. Going back to a panel's socket is `vhost-restore` |
 | `vhost-set-cert <domain>` | Points the vhost's certificate lines to `/etc/nginx/ssl/eeploi-<domain>.crt` and `.key` |
 | `ssl-csr <name>` | Makes a private key (once, mode `600` from the start) and prints a certificate request |
 | `ssl-write <name>` | Writes a certificate from stdin. Only one PEM certificate is accepted |
 | `ssl-remove <name>` | Removes a certificate and its key |
-| `supervisor-write <program> <user> <directory> <processes>` | Writes a Supervisor program `eeploi-<domain>-<name>` with the one-line command from stdin. `<name>` is `a-z`, `0-9` and `-`, so no dot; a name that also fits another listed domain is refused. Runs as the site user, in a folder under `/srv/eeploi/<user>/<domain>/`, 1 to 32 processes. The log goes to `/var/log/supervisor/eeploi/<user>/`, a folder owned by root with group `<user>` (`750`), so a site reads only its own worker logs |
+| `supervisor-write <program> <user> <directory> <processes>` | Writes a Supervisor program `eeploi-<domain>-<name>` with the one-line command from stdin. `<name>` is `a-z`, `0-9` and `-`, so no dot; a name that also fits another listed domain is refused. Runs as the site user, in a folder under `/srv/eeploi/<user>/<domain>/`, 1 to 32 processes. The log goes to `/var/log/supervisor/eeploi/<user>/`, a folder owned by root with group `<user>` (`750`), so a site reads only its own worker logs. A `%` in the command is refused |
 | `supervisor-remove <program>` | Removes a Supervisor program `eeploi-*` |
 | `supervisor-remove-site <domain>` | Removes the Supervisor programs the site's registry lists, and their `.paused` copies |
-| `supervisor-pause <config>` | Renames a Supervisor config to `.paused`. An `eeploi-*` program: deploy user only |
-| `supervisor-resume <config>` | Renames it back. An `eeploi-*` program: deploy user only |
+| `supervisor-pause <config>` | Renames a Supervisor config to `.paused` |
+| `supervisor-resume <config>` | Renames it back |
 | `supervisor-update` | `supervisorctl reread` and `update` |
 | `cron-write <user>` | Writes one line to `/etc/cron.d/eeploi-<user>`: `* * * * * <user> php[<version>] /srv/eeploi/<user>/<domain>/current/artisan schedule:run > /dev/null 2>&1`. Nothing else is allowed |
 | `cron-remove <user>` | Removes that cron file |
@@ -58,7 +58,7 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 
 Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi`, the deploy user's, and `/srv/eeploi/<user>` of a site user.
 
-Every subcommand that takes a site user, writes a site's registry or removes its Supervisor programs runs only for the deploy user itself, not for `ploi` or `forge`.
+Only the deploy user may call the helper, through sudo. `ploi`, `forge` and every other user are refused, for every subcommand. Since 1.0.2; before, `ploi` and `forge` could call the subcommands that take no site user.
 
 ## Site users
 
