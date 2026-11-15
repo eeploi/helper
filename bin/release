@@ -69,14 +69,20 @@ rm -f eeploi-helper.minisig
 minisign -S -s "$KEY" -m eeploi-helper -t "eeploi-helper $version"
 verified=$(minisign -V -p minisign.pub -m eeploi-helper) || fail "the signature does not verify against minisign.pub"
 grep -qxF "Trusted comment: eeploi-helper $version" <<< "$verified" || fail "the signature's trusted comment is not eeploi-helper $version"
+cp eeploi-helper "$work/signed"
 
 say "Publish"
 confirm "Publish eeploi-helper $version ($commit) as $REPO $tag?"
+# The folder can move while this runs, also during the question above (another session pulls main): stop before anything is pushed.
+[ "$(git rev-parse HEAD)" = "$head" ] || fail "the folder moved off $commit since the checks: nothing was published, run it again"
+git show "$head:eeploi-helper" > "$work/checked"
+cmp -s "$work/signed" "$work/checked" || fail "the signed eeploi-helper is not the one in $commit: nothing was published"
+cmp -s eeploi-helper "$work/signed" || fail "eeploi-helper changed since it was signed: nothing was published"
 if [ -z "$tagged" ]; then
-  git tag -a "$tag" -m "$tag"
+  git tag -a "$tag" -m "$tag" "$head"
   git push -q origin "refs/tags/$tag"
 elif [ -n "$move" ]; then
-  git tag -f -a "$tag" -m "$tag" > /dev/null
+  git tag -f -a "$tag" -m "$tag" "$head" > /dev/null
   git push -q --force origin "refs/tags/$tag"
 fi
 if gh release view "$tag" -R "$REPO" > /dev/null 2>&1; then
