@@ -18,9 +18,15 @@ FAILURES=""
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-pass() { PASS=$((PASS + 1)); }
+# With TESTS_PROGRESS set, that file holds the counts so far: bin/release shows them while the tests run.
+progress() { [ -z "${TESTS_PROGRESS:-}" ] || printf '%s passed, %s failed\n' "$PASS" "$FAILED" > "$TESTS_PROGRESS"; }
+pass() {
+  PASS=$((PASS + 1))
+  progress
+}
 failure() {
   FAILED=$((FAILED + 1))
+  progress
   FAILURES="$FAILURES
   - $1"
   printf 'FAIL %s\n%s\n\n' "$1" "$2"
