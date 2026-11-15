@@ -54,6 +54,9 @@ printf 'user www-data; include /tmp/x;\n' > "$WORK/nginx-junk.conf"
 printf 'user $(id);\n' > "$WORK/nginx-inject.conf"
 printf 'user\twww-data;\n' > "$WORK/nginx-tab.conf"
 
+# A literal $, for checks that look for the helper's own lines.
+D='$'
+
 # Site users: registries in <etc>/sites, one file per user. etc-sites is the default /etc/eeploi.
 add_sites() {
   mkdir -p "$1/sites"
@@ -63,7 +66,7 @@ add_sites() {
   # Listed, and there, but without an _: refused all the same.
   printf 'DOMAIN=plain.example\n' > "$1/sites/shopexample"
   local user
-  for user in shop_other shop_sudo shop_low shop_away shop_group shop_half; do
+  for user in shop_other shop_sudo shop_low shop_away shop_group shop_half shop_first; do
     printf 'DOMAIN=%s.example\n' "${user#shop_}" > "$1/sites/$user"
   done
 }
@@ -101,6 +104,7 @@ account() {
   account shop_other 1003 /srv/eeploi/shop_other 1003
   account shop_sudo 1004 /srv/eeploi/shop_sudo '1004 27'
   account shop_low 999 /srv/eeploi/shop_low 999
+  account shop_first 1000 /srv/eeploi/shop_first 1000
   account shop_away 1005 /home/shop_away 1005
   echo 'passwd shop_group:x:1006:1010::/srv/eeploi/shop_group:/usr/sbin/nologin'
   echo 'group shop_group:x:1006:'
@@ -121,7 +125,8 @@ sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
 
 # call <args...>: run the helper in dry-run mode. Settings (temporary per call):
 #   IN (stdin), AS (SUDO_USER, default eeploi), ETC_DIR (default etc-sites), NGINX (nginx.conf), BIN (helper file),
-#   DRYRUN (1 or empty), DBSTATE (what db-create's checks find), SYS (what the server has, default system)
+#   DRYRUN (1 or empty), DBSTATE (what db-create's checks find), SYS (what the server has, default system),
+#   VHOST (the vhost vhost-set-root rewrites)
 call() {
   local dry=${DRYRUN-1}
   OUT=$(printf '%s' "${IN:-}" | env -i PATH="$PATH" \
@@ -130,6 +135,7 @@ call() {
     EEPLOI_HELPER_NGINX_CONF="${NGINX:-$WORK/nginx-default.conf}" \
     EEPLOI_HELPER_DB_STATE="${DBSTATE:-}" \
     EEPLOI_HELPER_SYSTEM="${SYS-$WORK/system}" \
+    EEPLOI_HELPER_VHOST="${VHOST:-}" \
     bash "${BIN:-$HELPER}" "$@" 2>&1)
   CODE=$?
 }
@@ -400,9 +406,24 @@ ok "to the site's socket" "fastcgi_pass unix:$SOCK;" vhost-set-socket shop.examp
 ok "only the exact line" 'fastcgi_pass unix:/var/run/php/php8\.4-fpm\.sock;' vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
 ok "nginx -t then reload" "run: nginx -t
 run: service nginx reload" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
-ok "rollback" "fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;" vhost-set-socket shop.example $SOCK /var/run/php/php8.4-fpm.sock
+refuse "no switch back to a panel socket" "invalid PHP-FPM socket: /var/run/php/php8.4-fpm.sock (the new socket is the pool of the site user of shop.example)" \
+  vhost-set-socket shop.example $SOCK /var/run/php/php8.4-fpm.sock
 ok "run/php default" "unix:/run/php/php8.3-fpm-shop_example.sock;" vhost-set-socket shop.example /run/php/php8.3-fpm.sock /run/php/php8.3-fpm-shop_example.sock
-ok "default sockets for any domain" "fastcgi_pass unix:/run/php/php8.4-fpm.sock;" vhost-set-socket example.com /var/run/php/php8.4-fpm.sock /run/php/php8.4-fpm.sock
+refuse "no default socket as the new one, for any domain" "the new socket is the pool of the site user of example.com" \
+  vhost-set-socket example.com /var/run/php/php8.4-fpm.sock /run/php/php8.4-fpm.sock
+# From-sockets a takeover switches away from: the default, eeploi 1.0.1's pool, a panel's pool per user,
+# and the site's own pool of another PHP version. None of them is ever a new socket.
+for from in /run/php/php8.4-fpm.sock /var/run/php/php8.3-fpm.sock /run/php/php8.4-fpm-eeploi.sock \
+  /run/php/php8.4-fpm-forge.sock /run/php/php8.3-fpm-shop-user.sock; do
+  ok "from-socket $from" "fastcgi_pass unix:$SOCK;" vhost-set-socket shop.example "$from" $SOCK
+  refuse "never a new socket: $from" "invalid PHP-FPM socket: $from" vhost-set-socket shop.example $SOCK "$from"
+done
+ok "from the site's own pool of another PHP version" "fastcgi_pass unix:$SOCK;" vhost-set-socket shop.example /run/php/php8.3-fpm-shop_example.sock $SOCK
+ok "to the site's own pool of another PHP version" "fastcgi_pass unix:/run/php/php8.3-fpm-shop_example.sock;" \
+  vhost-set-socket shop.example $SOCK /run/php/php8.3-fpm-shop_example.sock
+refuse "from-socket of an unlisted domain's site" "(shop_example is not the eeploi site user of other.example)" \
+  vhost-set-socket other.example /run/php/php8.4-fpm-shop_example.sock /run/php/php8.4-fpm-shop_other.sock
+refuse "from-socket outside /run/php" "invalid PHP-FPM socket: /tmp/php8.4-fpm.sock" vhost-set-socket shop.example /tmp/php8.4-fpm.sock $SOCK
 refuse "socket elsewhere" "invalid PHP-FPM socket" vhost-set-socket example.com /var/run/php/php8.4-fpm.sock /tmp/evil.sock
 refuse "socket with .." "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/../php8.4-fpm.sock $SOCK
 refuse "socket with a semicolon" "invalid PHP-FPM socket" vhost-set-socket example.com '/run/php/php8.4-fpm.sock;' $SOCK
@@ -418,7 +439,7 @@ refuse "from-socket of another domain's site user" "(shop_example is not the eep
   vhost-set-socket other.example $SOCK /run/php/php8.4-fpm.sock
 AS=ploi refuse "site socket from ploi" "invalid PHP-FPM socket" vhost-set-socket shop.example /run/php/php8.4-fpm.sock $SOCK
 refuse "socket of a listed user in sudo" "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-shop_sudo.sock
-refuse "same socket" "same socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm.sock
+refuse "same socket" "same socket" vhost-set-socket shop.example $SOCK $SOCK
 refuse "socket domain" "invalid domain" vhost-set-socket 'example.com;id' /run/php/php8.4-fpm.sock $SOCK
 refuse "socket arguments" "usage" vhost-set-socket example.com /run/php/php8.4-fpm.sock
 
@@ -603,10 +624,6 @@ db_state 0 0 1 0 0 0 0 1 > "$WORK/db-mysql-socket-user"
 pg_state 0 1 1 0 0 0 1 1 > "$WORK/db-pgsql-socket-done"
 pg_state 0 0 1 0 0 0 0 1 > "$WORK/db-pgsql-socket-user"
 pg_state 0 0 1 0 0 0 0 0 > "$WORK/db-pgsql-password-user"
-{ echo 'uid=none'; db_state 0 0 0 0 0 0 0; } > "$WORK/db-no-unix-user"
-{ echo 'uid=33'; db_state 0 0 0 0 0 0 0; } > "$WORK/db-system-user"
-{ echo 'uid=999'; db_state 0 0 0 0 0 0 0; } > "$WORK/db-uid-999"
-{ echo 'uid=1000'; db_state 0 0 0 0 0 0 0; } > "$WORK/db-uid-1000"
 
 ok "mysql socket created" "created: mysql database $S for user $S (socket login)" db-create mysql $S $S socket
 ok "mysql socket user" "CREATE USER '$S'@'localhost' IDENTIFIED WITH auth_socket;" db-create mysql $S $S socket
@@ -623,17 +640,17 @@ IN=$PW ok "socket login ignores stdin" "(socket login)" db-create mysql $S $S so
 IN=$PW lacks "socket login with stdin makes no password" "IDENTIFIED BY" db-create mysql $S $S socket
 IN=$PW ok "password created says so" "created: mysql database $S for user $S (password login)" db-create mysql $S $S password
 for engine in mysql mariadb pgsql; do
-  ok "$engine socket checks the Unix user" "check: id -u -- $S" db-create "$engine" $S $S socket
+  ok "$engine socket checks the site user" "check: user www-data and group www-data exist" db-create "$engine" $S $S socket
   for text in PASSWORD 'IDENTIFIED BY' '<password>' 'mysql_native_password' 'caching_sha2_password'; do
     lacks "$engine socket has no $text" "$text" db-create "$engine" $S $S socket
   done
-  IN=$PW lacks "$engine password login skips the Unix user" "id -u" db-create "$engine" $S $S password
+  IN=$PW lacks "$engine password login skips the site user" "check: user" db-create "$engine" $S $S password
 done
-IN=$PW DBSTATE="$WORK/db-no-unix-user" ok "password login needs no Unix user" "created: mysql database $S for user $S (password login)" db-create mysql $S $S password
+IN=$PW SYS='' ok "password login needs no Linux user" "created: mysql database $S for user $S (password login)" db-create mysql $S $S password
 ok "pgsql socket checks for a password" "FROM pg_authid WHERE rolname = '$S' AND rolpassword IS NULL;" db-create pgsql $S $S socket
 ok "mysql socket checks the login method" "AND plugin IN ('auth_socket', 'unix_socket');" db-create mysql $S $S socket
 ok "mysql checks the socket plugin" "WHERE PLUGIN_NAME = IF(VERSION() LIKE '%MariaDB%', 'unix_socket', 'auth_socket') AND PLUGIN_STATUS = 'ACTIVE';" db-create mysql $S $S socket
-DBSTATE="$WORK/db-uid-1000" ok "uid 1000 is a site user" "(socket login)" db-create mysql $S $S socket
+ok "uid 1000 is a site user" "(socket login)" db-create mysql shop_first shop_first socket
 
 echo "== db-create socket login: the auth_socket plugin"
 DBSTATE="$WORK/db-mysql-noplugin" ok "mysql installs auth_socket before the user" "  SET SESSION sql_log_off = 1;
@@ -657,17 +674,17 @@ DBSTATE="$WORK/db-mysql-socket-user" lacks "socket user existed is not created a
 DBSTATE="$WORK/db-pgsql-socket-user" lacks "pgsql socket role existed is not created again" "CREATE ROLE" db-create pgsql $S $S socket
 
 echo "== db-create socket login refusals"
-DBSTATE="$WORK/db-no-unix-user" refuse "no Unix user" "no Unix user $S on this server" db-create mysql $S $S socket
-DBSTATE="$WORK/db-no-unix-user" refuse "pgsql no Unix user" "no Unix user $S on this server" db-create pgsql $S $S socket
-DBSTATE="$WORK/db-no-unix-user" refuse "mariadb no Unix user" "no Unix user $S on this server" db-create mariadb $S $S socket
-DBSTATE="$WORK/db-no-unix-user" call db-create mysql $S $S socket
-if [[ $OUT != *"run:"* && $OUT != *"check: what"* ]]; then pass; else failure "no Unix user: the database is not asked" "$OUT"; fi
-DBSTATE="$WORK/db-system-user" refuse "system user" "$S is a system user (uid 33)" db-create mysql $S $S socket
-DBSTATE="$WORK/db-uid-999" refuse "uid 999" "is a system user (uid 999)" db-create pgsql $S $S socket
+SYS='' refuse "no Linux user" "no Linux user $S on this server" db-create mysql $S $S socket
+SYS='' refuse "pgsql no Linux user" "no Linux user $S on this server" db-create pgsql $S $S socket
+SYS='' refuse "mariadb no Linux user" "no Linux user $S on this server" db-create mariadb $S $S socket
+SYS='' call db-create mysql $S $S socket
+if [[ $OUT != *"run:"* && $OUT != *"check: what"* ]]; then pass; else failure "no Linux user: the database is not asked" "$OUT"; fi
+refuse "uid 999" "shop_low is a system user (uid 999), not a site user" db-create pgsql shop_low shop_low socket
+refuse "a listed user that isn't there" "no Linux user shop_half on this server" db-create mysql shop_half shop_half socket
 for shared in eeploi ploi forge; do
-  refuse "socket login for $shared" "$shared runs more than one site" db-create mysql "$shared" "$shared" socket
+  refuse "socket login for $shared" "reserved name, not a site user: $shared" db-create mysql "$shared" "$shared" socket
 done
-AS=deploy ETC_DIR="$WORK/etc-conf" refuse "socket login for the deploy user" "deploy runs more than one site" db-create pgsql deploy deploy socket
+AS=deploy ETC_DIR="$WORK/etc-conf" refuse "socket login for the deploy user" "reserved name, not a site user: deploy" db-create pgsql deploy deploy socket
 DBSTATE="$WORK/db-mysql-user" refuse "mysql password user, socket asked" "user shop_www exists with password login, not socket login: refusing, it is not switched" db-create mysql shop shop_www socket
 db_state 1 0 1 0 0 0 0 > "$WORK/db-mariadb-user"
 DBSTATE="$WORK/db-mariadb-user" refuse "mariadb password user, socket asked" "exists with password login" db-create mariadb shop shop_www socket
@@ -943,7 +960,7 @@ echo "== site-user-create: the domain check and the registry under one lock"
 # A dry run takes no lock; the order in the file is what counts.
 sed -n '/^  site-user-create)$/,/^  run-as)$/p' "$HELPER" > "$WORK/site-user-create.txt"
 lock_line=$(grep -n 'registry_lock$' "$WORK/site-user-create.txt" | head -1 | cut -d: -f1)
-check_line=$(grep -n 'registry_user "DOMAIN=' "$WORK/site-user-create.txt" | cut -d: -f1)
+check_line=$(grep -n 'registry_find "DOMAIN=' "$WORK/site-user-create.txt" | cut -d: -f1)
 write_line=$(grep -n '^      registry_write$' "$WORK/site-user-create.txt" | cut -d: -f1)
 # shellcheck disable=SC2016 # the literal $ETC and $1 of the helper's own line
 undo_line=$(grep -n 'rm -f "\$ETC/sites/\$1"' "$WORK/site-user-create.txt" | cut -d: -f1)
@@ -970,8 +987,23 @@ IN='id' ok "a program that fits one domain" "write: /etc/supervisor/conf.d/eeplo
 IN='id' refuse "a program name with an underscore" "invalid program" supervisor-write eeploi-shop.example-a_b shop_example "$SITE/current" 1
 printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-b.conf\n' \
   > "$WORK/etc-sites/sites/shop_other"
-ok "supervisor-remove-site removes the listed programs" "run: rm -f /etc/supervisor/conf.d/eeploi-other.example-a.conf
-run: rm -f /etc/supervisor/conf.d/eeploi-other.example-b.conf" supervisor-remove-site other.example
+ok "supervisor-remove-site removes the listed programs and their .paused copies" "run: rm -f /etc/supervisor/conf.d/eeploi-other.example-a.conf /etc/supervisor/conf.d/eeploi-other.example-a.conf.paused
+run: rm -f /etc/supervisor/conf.d/eeploi-other.example-b.conf /etc/supervisor/conf.d/eeploi-other.example-b.conf.paused" supervisor-remove-site other.example
+printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\nSUPERVISOR=/etc/passwd\n' > "$WORK/etc-sites/sites/shop_other"
+call supervisor-remove-site other.example
+if [ "$CODE" -eq 64 ] && [[ $OUT != *"rm -f"* ]]; then pass; else failure "supervisor-remove-site checks every line before it removes one" "exit $CODE
+$OUT"; fi
+printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\n' > "$WORK/etc-sites/sites/shop_other"
+AS=ploi refuse "supervisor-resume of a site's program from ploi" "supervisor-resume only runs for the deploy user eeploi, not ploi" \
+  supervisor-resume /etc/supervisor/conf.d/eeploi-other.example-a.conf
+AS=forge refuse "supervisor-pause of a site's program from forge" "supervisor-pause only runs for the deploy user eeploi, not forge" \
+  supervisor-pause /etc/supervisor/conf.d/eeploi-other.example-a.conf
+ok "supervisor-resume of a site's program by the deploy user" "run: mv /etc/supervisor/conf.d/eeploi-other.example-a.conf.paused /etc/supervisor/conf.d/eeploi-other.example-a.conf" \
+  supervisor-resume /etc/supervisor/conf.d/eeploi-other.example-a.conf
+AS=ploi ok "ploi still resumes its own worker" "run: mv /etc/supervisor/conf.d/worker-233475.conf.paused" supervisor-resume /etc/supervisor/conf.d/worker-233475.conf
+AS=forge ok "forge still pauses its own daemon" "run: mv /etc/supervisor/conf.d/daemon-12.conf /etc/supervisor/conf.d/daemon-12.conf.paused" supervisor-pause /etc/supervisor/conf.d/daemon-12.conf
+printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-b.conf\n' \
+  > "$WORK/etc-sites/sites/shop_other"
 lacks "supervisor-remove-site leaves no SUPERVISOR line" "SUPERVISOR=" supervisor-remove-site other.example
 ok "supervisor-remove-site writes the registry" "write: $WORK/etc-sites/sites/shop_other (644)" supervisor-remove-site other.example
 lacks "supervisor-remove-site never by name prefix" "eeploi-shop.example" supervisor-remove-site shop.example
@@ -1016,6 +1048,132 @@ AS=ploi refuse "supervisor-remove-site from ploi" "only runs for the deploy user
 cp -p "$WORK/shop_other.saved" "$WORK/etc-sites/sites/shop_other"
 AS=ploi ok "takeover subcommands still for ploi" "run: ln -sfn" vhost-enable example.com
 IN=$PW AS=ploi ok "db-create password login still for ploi" "created:" db-create mysql shop shop password
+
+echo "== vhost-set-root: a Ploi or Forge vhost moved into a site home gets disable_symlinks"
+NEW_ROOT="$SITE/current/public"
+OWN_LINE="disable_symlinks if_not_owner from=/srv/eeploi/shop_example;"
+# Ploi: one server block for port 80 and 443.
+cat > "$WORK/vhost-ploi" <<'VHOST'
+server {
+    listen 80;
+    listen [::]:80;
+    listen 443 ssl http2;
+    server_name shop.example;
+    root /home/ploi/shop.example/public;
+    index index.php;
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+}
+VHOST
+# Forge: a redirect on port 80, the site on 443.
+cat > "$WORK/vhost-forge" <<'VHOST'
+server {
+    listen 80;
+    server_name shop.example;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name shop.example;
+    root /home/forge/shop.example/public;
+}
+VHOST
+VHOST="$WORK/vhost-ploi" ok "ploi vhost: the root, then disable_symlinks" "      root $NEW_ROOT;
+      $OWN_LINE
+      index index.php;" vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+VHOST="$WORK/vhost-ploi" ok "ploi vhost: the rest stays" "      listen 443 ssl http2;
+      server_name shop.example;" vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+VHOST="$WORK/vhost-ploi" ok "ploi vhost: nginx -t" "run: nginx -t" vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+VHOST="$WORK/vhost-forge" ok "forge vhost: in the 443 block" "      listen 443 ssl;
+      server_name shop.example;
+      root $NEW_ROOT;
+      $OWN_LINE
+  }" vhost-set-root shop.example /home/forge/shop.example/public "$NEW_ROOT"
+VHOST="$WORK/vhost-forge" call vhost-set-root shop.example /home/forge/shop.example/public "$NEW_ROOT"
+if [ "$(grep -c disable_symlinks <<< "$OUT")" -eq 1 ]; then pass; else failure "forge vhost: disable_symlinks once" "$OUT"; fi
+# Run again on the result: still one root line and one disable_symlinks.
+VHOST="$WORK/vhost-ploi" call vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+sed -n 's/^  //p' <<< "$OUT" | sed '/^write:/d;/^run:/d' > "$WORK/vhost-moved"
+VHOST="$WORK/vhost-moved" call vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+if [ "$CODE" -eq 0 ] && [ "$(grep -c disable_symlinks <<< "$OUT")" -eq 1 ] && [ "$(grep -c "root $NEW_ROOT;" <<< "$OUT")" -eq 1 ]; then pass; else
+  failure "run again: one root and one disable_symlinks" "$OUT"; fi
+VHOST="$WORK/vhost-moved" lacks "back to the panel home: eeploi's line goes" "disable_symlinks" \
+  vhost-set-root shop.example "$NEW_ROOT" /home/ploi/shop.example/public
+VHOST="$WORK/vhost-moved" ok "back to the panel home: the old root" "      root /home/ploi/shop.example/public;" \
+  vhost-set-root shop.example "$NEW_ROOT" /home/ploi/shop.example/public
+printf 'server {\n    listen 80;\n    root /home/ploi/shop.example/public;\n}\n' > "$WORK/vhost-port80"
+VHOST="$WORK/vhost-port80" refuse "a root outside a 443 block" "the root line is not in a server block on port 443, disable_symlinks can't be placed" \
+  vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+printf 'server {\n    listen 443 ssl;\n    disable_symlinks off;\n    root /home/ploi/shop.example/public;\n}\n' > "$WORK/vhost-own-symlinks"
+VHOST="$WORK/vhost-own-symlinks" refuse "a vhost with its own disable_symlinks" "the vhost has a disable_symlinks line of its own" \
+  vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+printf 'server {\n    listen 443 ssl;\n    root /home/ploi/shop.example/public;\n}\nserver {\n    listen 443 ssl;\n    root /home/ploi/shop.example/public;\n}\n' > "$WORK/vhost-two-roots"
+VHOST="$WORK/vhost-two-roots" refuse "two root lines" "expected one 'root /home/ploi/shop.example/public;' line in the vhost, found 2" \
+  vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+VHOST="$WORK/vhost-forge" refuse "no root line" "expected one 'root /home/ploi/other/public;' line in the vhost, found 0" \
+  vhost-set-root shop.example /home/ploi/other/public "$NEW_ROOT"
+printf 'server {\n    listen 443 ssl;\n    # root /home/ploi/shop.example/public;\n    root /home/ploi/shop.example/public;\n}\n' > "$WORK/vhost-comment"
+VHOST="$WORK/vhost-comment" ok "a commented root line is not the root" "    # root /home/ploi/shop.example/public;
+      root $NEW_ROOT;" vhost-set-root shop.example /home/ploi/shop.example/public "$NEW_ROOT"
+VHOST="$WORK/vhost-ploi" ok "between panel homes: no disable_symlinks" "      root /home/eeploi/shop.example/current/public;
+      index index.php;" vhost-set-root shop.example /home/ploi/shop.example/public /home/eeploi/shop.example/current/public
+
+echo "== vhost-remove: every check before anything goes"
+AS=ploi call vhost-remove shop.example
+if [ "$CODE" -eq 64 ] && [[ $OUT == *"vhost-remove only runs for the deploy user eeploi, not ploi"* && $OUT != *"rm -f"* ]]; then pass; else
+  failure "vhost-remove of a site's vhost from ploi removes nothing" "exit $CODE
+$OUT"; fi
+ETC_DIR="$WORK/etc-reg-writable" call vhost-remove shop.example
+if [ "$CODE" -eq 64 ] && [[ $OUT == *"untrusted site registry"* && $OUT != *"rm -f"* ]]; then pass; else
+  failure "vhost-remove with an untrusted registry removes nothing" "exit $CODE
+$OUT"; fi
+ok "vhost-remove of a site's vhost" "run: rm -f /etc/nginx/sites-enabled/shop.example /etc/nginx/sites-available/shop.example" vhost-remove shop.example
+AS=ploi ok "vhost-remove of a panel's vhost from ploi" "run: rm -f /etc/nginx/sites-enabled/example.com" vhost-remove example.com
+AS=ploi call supervisor-remove eeploi-shop.example-a
+if [ "$CODE" -eq 64 ] && [[ $OUT != *"rm -f"* ]]; then pass; else failure "supervisor-remove from ploi removes nothing" "$OUT"; fi
+ETC_DIR="$WORK/etc-reg-writable" call supervisor-remove eeploi-shop.example-a
+if [ "$CODE" -eq 64 ] && [[ $OUT != *"rm -f"* ]]; then pass; else failure "supervisor-remove with an untrusted registry removes nothing" "$OUT"; fi
+
+echo "== php-pool-write: one pool per site"
+cp -p "$WORK/etc-sites/sites/shop_other" "$WORK/shop_other.saved"
+printf 'DOMAIN=other.example\nPOOL=/etc/php/8.3/fpm/pool.d/eeploi-shop_other.conf\n' > "$WORK/etc-sites/sites/shop_other"
+ok "a new version: the old pool goes after the new one passes" "run: php-fpm8.4 -t
+run: rm -f /etc/php/8.3/fpm/pool.d/eeploi-shop_other.conf
+run: php-fpm8.3 -t" php-pool-write 8.4 shop_other
+ok "a new version: the registry lists the new pool only" "  DOMAIN=other.example
+  POOL=/etc/php/8.4/fpm/pool.d/eeploi-shop_other.conf
+write:" php-pool-write 8.4 shop_other
+ok "a new version: both versions reload" "run: service php8.4-fpm reload
+run: service php8.3-fpm reload" php-pool-write 8.4 shop_other
+lacks "the same version removes nothing" "rm -f" php-pool-write 8.3 shop_other
+lacks "the same version reloads only itself" "php8.4" php-pool-write 8.3 shop_other
+printf 'DOMAIN=other.example\nPOOL=/etc/php/8.3/fpm/pool.d/eeploi-shop_example.conf\n' > "$WORK/etc-sites/sites/shop_other"
+refuse "a listed pool of another site" "invalid POOL in" php-pool-write 8.4 shop_other
+printf 'DOMAIN=other.example\nPOOL=/etc/passwd\n' > "$WORK/etc-sites/sites/shop_other"
+refuse "a listed pool outside pool.d" "invalid POOL in" php-pool-write 8.4 shop_other
+cp -p "$WORK/shop_other.saved" "$WORK/etc-sites/sites/shop_other"
+# The real run: the old pool is kept until the old version's test passes, and put back with the new one.
+sed -n '/^  php-pool-write)$/,/^  self-update)$/p' "$HELPER" > "$WORK/php-pool-write.txt"
+check "php-pool-write puts both pools back when the old version fails its test" \
+  grep -qF "mv -f \"${D}old_backup\" \"${D}old\"" "$WORK/php-pool-write.txt"
+
+echo "== the registry: one scan per call, the lock around Supervisor's check and write"
+check "registry_user is gone" bash -c "! grep -q 'registry_user' '$HELPER'"
+check "the scan runs once per call" grep -qF "[ ${D}REG_SCANNED -eq 0 ] || return 0" "$HELPER"
+check "a site user is checked once per call" grep -qF "SITE_USER_OK=\"ok:${D}1\"" "$HELPER"
+sed -n '/^  supervisor-write)$/,/^  supervisor-remove)$/p' "$HELPER" > "$WORK/supervisor-write.txt"
+lock_line=$(grep -n '^    registry_lock$' "$WORK/supervisor-write.txt" | cut -d: -f1)
+find_line=$(grep -n 'registry_find "SUPERVISOR=' "$WORK/supervisor-write.txt" | cut -d: -f1)
+put_line=$(grep -nF "| put \"${D}file\" 644" "$WORK/supervisor-write.txt" | cut -d: -f1)
+unlock_line=$(grep -n '^    registry_unlock ;;$' "$WORK/supervisor-write.txt" | cut -d: -f1)
+if [ -n "$lock_line" ] && [ "$lock_line" -lt "$find_line" ] && [ "$find_line" -lt "$put_line" ] && [ "$put_line" -lt "$unlock_line" ]; then pass; else
+  failure "supervisor-write: lock, check, write, unlock" "$lock_line $find_line $put_line $unlock_line"; fi
+
+echo "== db-create socket login: the site-user stand-in only"
+{ echo 'uid=1001'; db_state 0 0 0 0 0 0 0; } > "$WORK/db-with-uid"
+DBSTATE="$WORK/db-with-uid" refuse "no uid line in the database state" "cannot read the mysql checks: uid=1001" db-create mysql $S $S socket
+check "db_unix_user is gone" bash -c "! grep -q 'db_unix_user' '$HELPER'"
 
 echo "== Redis per site"
 ok "redis unit" "write: /etc/systemd/system/eeploi-redis@.service (644)" redis-create shop_example
@@ -1062,8 +1220,20 @@ ok "redis cap at 32" "  MemoryMax=68M" redis-create shop_example 32
 ok "redis size 1024" "  maxmemory 1024mb" redis-create shop_example 1024
 ok "redis cap at 1024" "  MemoryMax=1060M" redis-create shop_example 1024
 ok "redis size 256" "prepared: Redis of site user shop_example, 256 MB" redis-create shop_example 256
-SYS="$WORK/system-redis-on" ok "a running Redis restarts on a new size" "run: systemctl restart eeploi-redis@shop_example
-prepared: Redis of site user shop_example, 64 MB, restarted" redis-create shop_example 64
+SYS="$WORK/system-redis-on" ok "a running Redis restarts on a new size" "run: systemctl restart eeploi-redis@shop_example" redis-create shop_example 64
+SYS="$WORK/system-redis-on" ok "the registry after the restart" "run: systemctl restart eeploi-redis@shop_example
+  # Written by eeploi-helper" redis-create shop_example 64
+SYS="$WORK/system-redis-on" ok "restarted" "prepared: Redis of site user shop_example, 64 MB, restarted" redis-create shop_example 64
+# Kept before anything is rewritten, and put back on a failed restart: the template too.
+sed -n '/^  redis-create)$/,/^  redis-start)$/p' "$HELPER" > "$WORK/redis-create.txt"
+# line_of <text>: the line number of the first line in redis-create that has the text.
+line_of() { grep -nF -- "$1" "$WORK/redis-create.txt" | head -1 | cut -d: -f1; }
+keep_line=$(line_of "keep \"${D}REDIS_TEMPLATE\" \"${D}conf\" \"${D}dropin\"")
+template_line=$(line_of "put \"${D}REDIS_TEMPLATE\"")
+restart_line=$(line_of "systemctl restart \"${D}unit\" 2>&1")
+registry_line=$(line_of "registry_edit \"${D}1\" set \"REDIS_UNIT=")
+if [ -n "$keep_line" ] && [ -n "$template_line" ] && [ "$keep_line" -lt "$template_line" ] && [ "$restart_line" -lt "$registry_line" ]; then pass; else
+  failure "redis-create: keep the template first, the registry after the restart" "$keep_line $template_line $restart_line $registry_line"; fi
 SYS="$WORK/system-no-redis" ok "redis-create without redis-server" "prepared: Redis of site user shop_example" redis-create shop_example
 for bad in 31 1025 0 64mb 64.5 ' 64' 064 -64 '' 1e3 'x'; do
   refuse "redis size '$bad'" "the Redis size must be a whole number of MB from 32 to 1024: $bad" redis-create shop_example "$bad"
