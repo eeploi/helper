@@ -28,21 +28,21 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 | `redis-create <user> [<mb>]` | Prepares the site's own Redis, stopped: see [Redis per site](#redis-per-site). Deploy user only |
 | `redis-start <user>` | Starts the site's Redis and keeps it on after a reboot (`systemctl enable --now`). Deploy user only |
 | `redis-stop <user>` | Stops it and keeps it off (`systemctl disable --now`). Its data stays. Deploy user only |
-| `vhost-write <domain> <user> <php-version>` | Writes eeploi's vhost for the domain of that site user: HTTPS only, root `/srv/eeploi/<user>/<domain>/current/public`, certificate `/etc/nginx/ssl/<domain>.crt`, logs in `/var/log/nginx`, PHP through the site's own socket |
+| `vhost-write <domain> <user> <php-version>` | Writes eeploi's vhost for the domain of that site user: HTTPS only, root `/srv/eeploi/<user>/<domain>/current/public`, certificate `/etc/nginx/ssl/<domain>.crt`, logs in `/var/log/nginx`, PHP through the site's own socket. nginx follows a link in the site only when the link and its target have the same owner (`disable_symlinks if_not_owner from=/srv/eeploi/<user>`) |
 | `vhost-backup <domain>` | Copies the vhost and its SSL include to `/var/lib/eeploi/nginx/<domain>` (root only), before a take-over changes them |
 | `vhost-restore <domain>` | Puts that copy back |
 | `vhost-enable <domain>` | Links the vhost into `sites-enabled` |
 | `vhost-disable <domain>` | Removes the link from `sites-enabled` |
 | `vhost-remove <domain>` | Removes the vhost and its link |
-| `vhost-set-root <domain> <old> <new>` | Changes `root <old>;` to `root <new>;`. Both must be inside an allowed home folder |
-| `vhost-set-socket <domain> <from> <to>` | Changes the exact line `fastcgi_pass unix:<from>;` to `unix:<to>;`. Only PHP-FPM sockets in `/run/php` or `/var/run/php`: the default one per version, or a site user's. Runs `nginx -t` before the reload; on failure the old vhost comes back |
+| `vhost-set-root <domain> <old> <new>` | Changes `root <old>;` to `root <new>;`. Both must be inside an allowed home folder. A root in a site user's home must be in the folder of that user's own domain, `/srv/eeploi/<user>/<domain>/` |
+| `vhost-set-socket <domain> <from> <to>` | Changes the exact line `fastcgi_pass unix:<from>;` to `unix:<to>;`. Only PHP-FPM sockets in `/run/php` or `/var/run/php`: the default one per version, or the socket of the site user listed for that domain. Runs `nginx -t` before the reload; on failure the old vhost comes back |
 | `vhost-set-cert <domain>` | Points the vhost's certificate lines to `/etc/nginx/ssl/eeploi-<domain>.crt` and `.key` |
 | `ssl-csr <name>` | Makes a private key (once, mode `600` from the start) and prints a certificate request |
 | `ssl-write <name>` | Writes a certificate from stdin. Only one PEM certificate is accepted |
 | `ssl-remove <name>` | Removes a certificate and its key |
-| `supervisor-write <program> <user> <directory> <processes>` | Writes a Supervisor program `eeploi-<domain>-<name>` with the one-line command from stdin. Runs as the site user, in a folder under `/srv/eeploi/<user>/<domain>/`, 1 to 32 processes. The log goes to `/var/log/supervisor/eeploi/<user>/`, a folder owned by root with group `<user>` (`750`), so a site reads only its own worker logs |
+| `supervisor-write <program> <user> <directory> <processes>` | Writes a Supervisor program `eeploi-<domain>-<name>` with the one-line command from stdin. `<name>` is `a-z`, `0-9` and `-`, so no dot; a name that also fits another listed domain is refused. Runs as the site user, in a folder under `/srv/eeploi/<user>/<domain>/`, 1 to 32 processes. The log goes to `/var/log/supervisor/eeploi/<user>/`, a folder owned by root with group `<user>` (`750`), so a site reads only its own worker logs |
 | `supervisor-remove <program>` | Removes a Supervisor program `eeploi-*` |
-| `supervisor-remove-site <domain>` | Removes all eeploi Supervisor programs of a site |
+| `supervisor-remove-site <domain>` | Removes the Supervisor programs the site's registry lists |
 | `supervisor-pause <config>` | Renames a Supervisor config to `.paused` |
 | `supervisor-resume <config>` | Renames it back |
 | `supervisor-update` | `supervisorctl reread` and `update` |
@@ -50,17 +50,19 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 | `cron-remove <user>` | Removes that cron file |
 | `crontab-remove-lines <domain>` | Removes the exact lines from stdin from `/etc/crontab` and keeps them in `/var/lib/eeploi/crontab/<domain>`. Only jobs that run as `ploi` or `forge` on a path in their home |
 | `crontab-restore <domain>` | Adds those lines back, once each. Other changes to `/etc/crontab` stay |
-| `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` (the source must end in `/.env`, also after resolving links) into the home of the site user `<owner>`, mode `640`. Root only reads; the site user writes the copy |
-| `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` (the source must end in `/storage`, also after resolving links) into the home of the site user `<owner>`. Root only reads; the site user unpacks it |
+| `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` (the source must end in `/.env`, also after resolving links) into the home of the site user `<owner>`, mode `640`. `ploi` or `forge` reads the source, the site user writes the copy; root opens neither |
+| `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` (the source must end in `/storage`, also after resolving links) into the home of the site user `<owner>`. `ploi` or `forge` reads the source, the site user unpacks it; root opens neither |
 | `db-create <engine> <name> <user> <socket\|password>` | Creates a database and its user on the local MySQL, MariaDB or Postgres. `socket`: the user logs in over the socket as the site user of the same name, with no password. `password`: password login, with the password from stdin. The user gets that one database, nothing else. See [Databases](#databases) |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
 | `self-update <version>` | Installs a signed release (see below). Only a newer one |
 
 Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi`, the deploy user's, and `/srv/eeploi/<user>` of a site user.
 
+Every subcommand that takes a site user, writes a site's registry or removes its Supervisor programs runs only for the deploy user itself, not for `ploi` or `forge`.
+
 ## Site users
 
-One Linux user per site, named like `shop_example`: a lowercase letter, then `a-z`, `0-9` or `_`, at most 32. Never `root`, `eeploi`, the deploy user, `ploi`, `forge`, `ubuntu`, `www-data`, the nginx user, `postgres`, `mysql`, `redis` or `nobody`.
+One Linux user per site, named like `shop_example`: a lowercase letter, then `a-z`, `0-9` or `_`, at most 32. Never `root`, `eeploi`, the deploy user, `ploi`, `forge`, `ubuntu`, `www-data`, the nginx user and group, `postgres`, `mysql`, `redis`, `nobody` or `nogroup`. Never the name of a standard group that grants root or close to it, whether or not that group exists yet: `admin`, `wheel`, `sudo`, `adm`, `staff`, `shadow`, `disk`, `kmem`, `tty`, `utmp`, `crontab`, `docker`, `lxd`, `incus`, `libvirt`, `kvm`, `video`, `render`, `input`, `sgx`, `lpadmin`, `sambashare`, `operator`, `daemon`, `bin`, `sys`, `backup` and `syslog`. `useradd` makes a group of the user's name, and a package installed later keeps a group that is already there.
 
 **The registry.** `/etc/eeploi/sites/<user>`, one file per site user, owned by root, mode `644`. It holds `DOMAIN=<domain>` and every file and place of the site, one `KEY=value` line each, kept current by the subcommands that write or remove them:
 
@@ -87,18 +89,20 @@ The file is read line by line, never run. Only `DOMAIN` is used for checks. A fi
 3. the user exists with uid 1000 or higher and home `/srv/eeploi/<user>`;
 4. it is in no group but its own (`id -G`). A site user later added to `sudo`, `adm`, `docker` or another group is refused.
 
-**`site-user-create <user> <domain>`.** Only for the deploy user itself. The domain must not be listed for another site user.
+**`site-user-create <user> <domain>`.** Only for the deploy user itself. The domain must not be listed for another site user. The domain check and the new registry file happen under the registry's lock.
 
 - Listed and there: the home gets `750` and the ACL again, and the answer is `exists: site user <user> for <domain>, nothing changed`.
 - Listed, but the user is missing: the user is made.
 - Not listed: no user, group or `/srv/eeploi/<user>` of that name may exist (`exists … and is not an eeploi site user`). The helper writes the registry file, makes `/srv/eeploi` (root, `755`) when missing, then runs `useradd --home-dir /srv/eeploi/<user> --create-home --user-group --shell /usr/sbin/nologin <user>`. When `useradd` fails, the registry file goes again.
 - Then `chmod 750` on the home and `setfacl -m u:<nginx user>:x` (the `acl` package is installed first when `setfacl` is missing). Root changes the home folder itself, never anything in it.
 
-**`run-as <user>`.** Only for the deploy user itself, with exactly one argument and the script on stdin (not a terminal). It runs:
+**`run-as <user>`.** Only for the deploy user itself, with exactly one argument and the script on stdin. Neither stdin nor the output (stdout, stderr) may be a terminal. It runs, in a new session without a controlling terminal:
 
 ```
-runuser -u <user> -- env -i HOME=/srv/eeploi/<user> USER=<user> LOGNAME=<user> PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /bin/bash -s
+setsid --wait runuser -u <user> -- env -i HOME=/srv/eeploi/<user> USER=<user> LOGNAME=<user> PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /bin/bash -s
 ```
+
+`--wait` keeps the script's exit code.
 
 The system log gets `run-as <user>`, never the script.
 
@@ -108,9 +112,9 @@ Every site can have a Redis of its own, running as the site user. It listens on 
 
 | File | Owner | Holds |
 |---|---|---|
-| `/etc/systemd/system/eeploi-redis@.service` | root | One template for every site: `redis-server` with the site's config, as `User=%i` and `Group=%i` |
+| `/etc/systemd/system/eeploi-redis@.service` | root | One template for every site: `redis-server` with the site's config, as `User=%i` and `Group=%i`. Only Unix sockets (`RestrictAddressFamilies=AF_UNIX`), no swap (`MemorySwapMax=0`), only `.redis` writable (`ProtectSystem=strict`), and the kernel, cgroups, clock, devices and hostname out of reach (`Protect*`, `PrivateDevices`, `PrivateTmp`, `NoNewPrivileges`) |
 | `/etc/systemd/system/eeploi-redis@<user>.service.d/memory.conf` | root | `MemoryMax`: the size plus 36 MB for Redis itself and its rewrite child |
-| `/etc/eeploi/redis/<user>.conf` | root | `port 0`, `unixsocket /srv/eeploi/<user>/.redis/redis.sock` with `unixsocketperm 600`, `dir /srv/eeploi/<user>/.redis`, `appendonly yes`, `maxmemory <mb>mb` and `maxmemory-policy noeviction` |
+| `/etc/eeploi/redis/<user>.conf` | root | `port 0`, `unixsocket /srv/eeploi/<user>/.redis/redis.sock` with `unixsocketperm 600`, `dir /srv/eeploi/<user>/.redis`, `appendonly yes`, `maxmemory <mb>mb`, `maxmemory-policy noeviction`, `enable-module-command no` and `enable-debug-command no` (both need Redis 7) |
 | `/srv/eeploi/<user>/.redis` | the site user | The socket and the data, mode `700` |
 
 - **`redis-create <user> [<mb>]`:** `<mb>` is a whole number from 32 to 1024, 128 by default (`maxmemory 128mb`, `MemoryMax=164M`). Writes the template (when missing or different), the config and the drop-in, then `systemctl daemon-reload`. The site user makes its own `.redis` folder. It starts nothing. Called again, it rewrites the config and the drop-in, for example with a new size; a running Redis then restarts, and when that fails, the old files come back.

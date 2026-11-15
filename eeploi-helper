@@ -107,13 +107,24 @@ php_version() {
   [[ $1 =~ $re ]] || fail "invalid PHP version: $1"
 }
 
-# A PHP-FPM socket: the default one per version (Ploi and Forge use /var/run/php), or the pool of a
-# listed site user.
+# socket <socket> <domain>: a PHP-FPM socket: the default one per version (Ploi and Forge use
+# /var/run/php), or the pool of the site user listed for that domain.
 socket() {
   local re='^(/var)?/run/php/php[0-9]+\.[0-9]+-fpm(-([a-z][a-z0-9_]{0,31}))?\.sock$'
   [[ $1 =~ $re ]] || fail "invalid PHP-FPM socket: $1"
   local user=${BASH_REMATCH[3]}
-  [ -z "$user" ] || ( site_user "$user" ) > /dev/null 2>&1 || fail "invalid PHP-FPM socket: $1 ($user is not an eeploi site user)"
+  [ -z "$user" ] || ( site_user "$user" "$2" ) > /dev/null 2>&1 \
+    || fail "invalid PHP-FPM socket: $1 ($user is not the eeploi site user of $2)"
+}
+
+# site_root <path> <domain>: a path in a site user's home must be in the folder of that user's own
+# listed domain, /srv/eeploi/<user>/<domain>/. Other paths pass unchanged.
+site_root() {
+  local re='^/srv/eeploi/([a-z][a-z0-9_]{0,31})/'
+  [[ $1 =~ $re ]] || return 0
+  local user=${BASH_REMATCH[1]}
+  site_user "$user" "$2"
+  case "$1" in "/srv/eeploi/$user/$2/"?*) ;; *) fail "not in /srv/eeploi/$user/$2: $1" ;; esac
 }
 
 # home_path <path>: a path inside one of the allowed home folders, or in the home of a listed site
@@ -249,11 +260,18 @@ root_dir() {
 # A site user: one Linux user per site, home /srv/eeploi/<user>, listed in the registry.
 SITE_USER_RE='^[a-z][a-z0-9_]{0,31}$'
 
-# site_user_name <user>: a valid name, and not one of the system's, a panel's or the deploy user.
+# Names a site user never gets: the system's own users, panels and services, and the standard groups
+# that grant root or close to it. useradd makes a group of the user's name, and a package installed
+# later keeps a group that is already there, so these are refused also while the group doesn't exist.
+RESERVED_USERS='root|eeploi|ploi|forge|ubuntu|www-data|postgres|mysql|redis|nobody|nogroup'
+RESERVED_GROUPS='admin|wheel|sudo|adm|staff|shadow|disk|kmem|tty|utmp|crontab|docker|lxd|incus|incus-admin|libvirt|libvirt-qemu|kvm|video|render|input|sgx|systemd-journal|systemd-network|lpadmin|sambashare|operator|daemon|bin|sys|backup|syslog|ssl-cert'
+
+# site_user_name <user>: a valid name, and not one of the system's, a panel's, a powerful group or the
+# deploy user.
 site_user_name() {
   [[ $1 =~ $SITE_USER_RE ]] || fail "invalid site user: $1 (a-z, 0-9 and _, starting with a letter, at most 32)"
   nginx_user
-  case "|root|eeploi|$DEPLOY_USER|ploi|forge|ubuntu|www-data|$NGINX_USER|postgres|mysql|redis|nobody|" in
+  case "|$RESERVED_USERS|$RESERVED_GROUPS|$DEPLOY_USER|$NGINX_USER|$NGINX_GROUP|" in
     *"|$1|"*) fail "reserved name, not a site user: $1" ;;
   esac
 }
@@ -297,10 +315,8 @@ registry_write() {
 registry_edit() {
   local user=$1 mode pair key line new found
   shift
-  if [ -z "$DRY" ]; then
-    exec 9> "$ETC/sites/.lock"
-    flock 9 || fail "cannot lock $ETC/sites"
-  fi
+  deploy_caller
+  registry_lock
   registry_read "$user"
   for pair in "$@"; do
     case "$pair" in set|add|del|clear) mode=$pair; continue ;; esac
@@ -321,7 +337,29 @@ registry_edit() {
     REG_LINES=$new
   done
   registry_write
+  registry_unlock
+}
+
+# registry_lock, registry_unlock: one writer of the registry at a time (fd 9, closed before any runuser).
+registry_lock() {
+  [ -z "$DRY" ] || return 0
+  exec 9> "$ETC/sites/.lock"
+  flock 9 || fail "cannot lock $ETC/sites"
+}
+registry_unlock() {
   [ -n "$DRY" ] || exec 9>&-
+}
+
+# registry_domains: every listed site user and its domain, as "<user> <domain>" lines.
+registry_domains() {
+  local f user
+  [ -d "$ETC/sites" ] || return 0
+  for f in "$ETC/sites"/*; do
+    user=${f##*/}
+    [[ $user =~ $SITE_USER_RE ]] || continue
+    registry_read "$user"
+    echo "$user $REG_DOMAIN"
+  done
 }
 
 # registry_user <KEY=value>: the site user whose registry has that exact line, or nothing.
@@ -362,6 +400,7 @@ site_account() {
 # site_user <user> [<domain>]: a site user eeploi made. Its name is valid and not reserved, its
 # registry is trusted (and lists <domain>, when given), and site_account passes. Sets REG_*.
 site_user() {
+  deploy_caller
   site_user_name "$1"
   registry_read "$1"
   [ -z "${2:-}" ] || [ "$REG_DOMAIN" = "$2" ] || fail "site user $1 is for $REG_DOMAIN, not $2"
@@ -406,19 +445,24 @@ restore_kept() {
 
 # source_path <path> <name>: a path named <name> (.env, storage) in another panel's home (/home/ploi,
 # /home/forge), never the caller's own. Sets SRC to where it really is (Ploi's site folder is a link),
-# which must still be in those homes and still be named <name>. Root only reads from here.
+# which must still be in that same home and still be named <name>, and SRC_OWNER to that panel's user.
+# The source is read as SRC_OWNER, never as root: a folder swapped after this check gives it only what
+# it may read anyway.
 source_path() {
   home_path "$1"
   local re='^/home/(ploi|forge)/[A-Za-z0-9._/-]+$'
   [[ $1 =~ $re ]] || fail "source must be in /home/ploi or /home/forge: $1"
+  SRC_OWNER=${BASH_REMATCH[1]}
   case "$1" in "/home/$CALLER/"*) fail "source cannot be in /home/$CALLER: $1" ;; esac
   [ "${1##*/}" = "$2" ] || fail "source must end in /$2: $1"
   SRC=$1
   if [ -z "$DRY" ]; then
     SRC=$(realpath -e -- "$1") || fail "source not found: $1"
     [[ $SRC =~ $re ]] || fail "source resolves outside /home/ploi and /home/forge: $1"
+    [ "${BASH_REMATCH[1]}" = "$SRC_OWNER" ] || fail "source resolves into another panel's home: $1"
     case "$SRC" in "/home/$CALLER/"*) fail "source resolves into /home/$CALLER: $1" ;; esac
     [ "${SRC##*/}" = "$2" ] || fail "source resolves to a path not ending in /$2: $1"
+    id -u "$SRC_OWNER" > /dev/null 2>&1 || fail "no user $SRC_OWNER on this server"
   fi
 }
 
@@ -451,6 +495,8 @@ server {
     http2 on;
     server_name $1;
     root /srv/eeploi/$2/$1/current/public;
+    # nginx follows a link in the site only when the link and its target have the same owner.
+    disable_symlinks if_not_owner from=/srv/eeploi/$2;
 
     ssl_certificate /etc/nginx/ssl/$1.crt;
     ssl_certificate_key /etc/nginx/ssl/$1.key;
@@ -549,10 +595,23 @@ Group=%i
 ExecStart=/usr/bin/redis-server /etc/eeploi/redis/%i.conf --supervised systemd --daemonize no
 Restart=on-failure
 UMask=0077
+MemorySwapMax=0
 NoNewPrivileges=yes
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectSystem=strict
 ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+# Only Unix sockets: its own, and systemd's notify socket. No TCP or UDP.
+RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/srv/eeploi/%i/.redis
 
 [Install]
@@ -581,6 +640,8 @@ dir /srv/eeploi/$1/.redis
 appendonly yes
 maxmemory $2mb
 maxmemory-policy noeviction
+enable-module-command no
+enable-debug-command no
 CONF
 }
 
@@ -842,13 +903,15 @@ case "$command" in
     file=$(vhost_file "$1")
     home_path "$2"
     home_path "$3"
+    site_root "$2" "$1"
+    site_root "$3" "$1"
     run sed -i "s#root ${2//./\\.};#root $3;#" "$file" ;;
 
   vhost-set-socket)
     [ $# -eq 3 ] || fail "usage: vhost-set-socket <domain> <from-socket> <to-socket>"
     file=$(vhost_file "$1")
-    socket "$2"
-    socket "$3"
+    socket "$2" "$1"
+    socket "$3" "$1"
     [ "$2" != "$3" ] || fail "from and to are the same socket: $2"
     from=$(escape_dots "$2")
     line="^[[:space:]]*fastcgi_pass unix:$from;[[:space:]]*\$"
@@ -909,6 +972,16 @@ case "$command" in
     site_user "$2"
     site_domain=$REG_DOMAIN
     case "$1" in "eeploi-$site_domain-"?*) ;; *) fail "the program of site user $2 must start with eeploi-$site_domain-: $1" ;; esac
+    # No dot after the domain, and no other listed domain that fits too: each name has one site.
+    [[ ${1#"eeploi-$site_domain-"} =~ ^[a-z0-9-]+$ ]] || fail "after eeploi-$site_domain- only a-z, 0-9 and -: $1"
+    domains=$(registry_domains)
+    while read -r other other_domain; do
+      [ -n "$other" ] && [ "$other" != "$2" ] || continue
+      case "$1" in
+        "eeploi-$other_domain-"?*)
+          [[ ${1#"eeploi-$other_domain-"} == *.* ]] || fail "$1 also fits site user $other ($other_domain)" ;;
+      esac
+    done <<< "$domains"
     case "$3" in "/srv/eeploi/$2/$site_domain/"?*) ;; *) fail "not in /srv/eeploi/$2/$site_domain: $3" ;; esac
     site_path "$2" "$3"
     [[ $4 =~ ^([1-9]|[12][0-9]|3[0-2])$ ]] || fail "processes must be 1 to 32: $4"
@@ -928,20 +1001,29 @@ case "$command" in
     registry_edit "$2" add "SUPERVISOR=$file" set "LOGS=$logs" ;;
 
   supervisor-remove)
+    deploy_caller
     [ $# -eq 1 ] || fail "usage: supervisor-remove <program>"
     program "$1"
     run rm -f "/etc/supervisor/conf.d/$1.conf"
     registry_forget "SUPERVISOR=/etc/supervisor/conf.d/$1.conf" ;;
 
   supervisor-remove-site)
+    deploy_caller
     [ $# -eq 1 ] || fail "usage: supervisor-remove-site <domain>"
     domain "$1"
-    for f in /etc/supervisor/conf.d/eeploi-"$1"-*.conf; do
-      [ -e "$f" ] || continue
+    # Only the programs the site's registry lists: a name prefix could also fit another site.
+    user=$(registry_user "DOMAIN=$1")
+    [ -n "$user" ] || exit 0
+    registry_read "$user"
+    found=0
+    while IFS= read -r line; do
+      case "$line" in SUPERVISOR=*) ;; *) continue ;; esac
+      f=${line#SUPERVISOR=}
+      [[ $f =~ ^/etc/supervisor/conf\.d/eeploi-[a-z0-9.-]+\.conf$ ]] || fail "invalid Supervisor config in $REG_FILE: $f"
       run rm -f "$f"
-      registry_forget "SUPERVISOR=$f"
-    done
-    true ;;
+      found=1
+    done <<< "$REG_LINES"
+    [ $found -eq 0 ] || registry_edit "$user" clear SUPERVISOR ;;
 
   supervisor-pause)
     [ $# -eq 1 ] || fail "usage: supervisor-pause <config>"
@@ -1028,15 +1110,15 @@ case "$command" in
     site_user "$3"
     site_path "$3" "$2"
     [ -f "$SRC" ] || [ -n "$DRY" ] || fail "no file: $1"
-    # Root only reads the source (no link at the end), the site user writes the copy: a swapped link in
-    # its home can't send root's write elsewhere.
+    # The panel's user reads the source (no link at the end), the site user writes the copy: root
+    # opens neither path.
     # shellcheck disable=SC2016 # $1 is for the inner shell
     write='umask 027 && cat > "$1" && chmod 640 "$1"'
     cd / || fail "cannot change to /"
     if [ -n "$DRY" ]; then
-      echo "run: dd if=$SRC iflag=nofollow | runuser -u $3 -- sh -c '$write' sh $2"
+      echo "run: runuser -u $SRC_OWNER -- dd if=$SRC iflag=nofollow | runuser -u $3 -- sh -c '$write' sh $2"
     else
-      dd if="$SRC" iflag=nofollow status=none | runuser -u "$3" -- sh -c "$write" sh "$2"
+      runuser -u "$SRC_OWNER" -- dd if="$SRC" iflag=nofollow status=none | runuser -u "$3" -- sh -c "$write" sh "$2"
     fi ;;
 
   storage-copy)
@@ -1044,12 +1126,13 @@ case "$command" in
     source_path "$1" storage
     site_user "$3"
     site_path "$3" "$2"
-    # Root reads the source with tar (links stay links), the site user unpacks it in its own folder.
+    # The panel's user reads the source with tar (links stay links), the site user unpacks it in its own
+    # folder: root opens neither path.
     cd / || fail "cannot change to /"
     if [ -n "$DRY" ]; then
-      echo "run: tar -C $SRC -cf - . | runuser -u $3 -- tar -C $2 -xf - --no-same-owner"
+      echo "run: runuser -u $SRC_OWNER -- tar -C $SRC -cf - . | runuser -u $3 -- tar -C $2 -xf - --no-same-owner"
     elif [ -d "$SRC" ]; then
-      tar -C "$SRC" -cf - . | runuser -u "$3" -- tar -C "$2" -xf - --no-same-owner
+      runuser -u "$SRC_OWNER" -- tar -C "$SRC" -cf - . | runuser -u "$3" -- tar -C "$2" -xf - --no-same-owner
     fi ;;
 
   db-create)
@@ -1147,6 +1230,10 @@ case "$command" in
     site_user_name "$1"
     domain "$2"
     home="/srv/eeploi/$1"
+    # Under the lock from the domain check until the registry file is written (or taken out again):
+    # two calls at once can't list one domain twice.
+    root_dir "$ETC/sites"
+    registry_lock
     listed=$(registry_user "DOMAIN=$2")
     [ -z "$listed" ] || [ "$listed" = "$1" ] || fail "$2 is listed for site user $listed"
     new=1
@@ -1155,6 +1242,7 @@ case "$command" in
       [ "$REG_DOMAIN" = "$2" ] || fail "site user $1 is for $REG_DOMAIN, not $2"
       new=0
       if passwd_of "$1" > /dev/null; then
+        registry_unlock
         site_user "$1" "$2"
         site_home "$1"
         echo "exists: site user $1 for $2, nothing changed"
@@ -1166,7 +1254,6 @@ case "$command" in
       fail "$1 exists (a user, group or $home) and is not an eeploi site user"
     fi
     if [ $new -eq 1 ]; then
-      root_dir "$ETC/sites"
       REG_FILE="$ETC/sites/$1"
       REG_LINES="DOMAIN=$2"$'\n'"HOME=$home"$'\n'
       registry_write
@@ -1180,8 +1267,9 @@ case "$command" in
         [ $new -eq 0 ] || rm -f "$ETC/sites/$1"
         fail "useradd failed: site user $1 not created"
       fi
-      site_user "$1" "$2"
     fi
+    registry_unlock
+    [ -n "$DRY" ] || site_user "$1" "$2"
     site_home "$1"
     echo "created: site user $1 for $2, home $home" ;;
 
@@ -1190,8 +1278,11 @@ case "$command" in
     [ $# -eq 1 ] || fail "usage: run-as <user> < script"
     site_user "$1"
     [ ! -t 0 ] || fail "run-as needs the script on stdin, not a terminal"
+    { [ ! -t 1 ] && [ ! -t 2 ]; } || fail "run-as needs its output in a pipe or a file, not a terminal"
     cd / || fail "cannot change to /"
-    as=(runuser -u "$1" -- env -i HOME="/srv/eeploi/$1" USER="$1" LOGNAME="$1" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /bin/bash -s)
+    # setsid: the site user's shell starts in a new session, without a controlling terminal.
+    # --wait keeps its exit code.
+    as=(setsid --wait runuser -u "$1" -- env -i HOME="/srv/eeploi/$1" USER="$1" LOGNAME="$1" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /bin/bash -s)
     if [ -n "$DRY" ]; then
       run "${as[@]}"
       exit 0
