@@ -12,7 +12,9 @@ The helper has a fixed list of subcommands. Each one checks its arguments and do
 
 ## Subcommands
 
-Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a worker command, cron lines and a database password come on stdin, and each is checked. Files a root service reads (vhosts, Supervisor configs) are built by the helper from checked arguments, never taken from the caller. Logs those services open as root go to `/var/log`, never to a folder the caller can write.
+Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a worker command, cron lines, a database password and the script for `run-as` come on stdin, and each is checked. Files a root service reads (vhosts, PHP-FPM pools, Supervisor configs, cron files, Redis units and configs) are built by the helper from checked arguments, never taken from the caller. Logs those services open as root go to `/var/log`, never to a folder the caller can write.
+
+Every site runs as its own Linux user, a site user, with its home in `/srv/eeploi/<user>`. See [Site users](#site-users). `<user>` below is always a site user.
 
 | Subcommand | Does |
 |---|---|
@@ -20,37 +22,104 @@ Run as `sudo eeploi-helper <subcommand> [arguments]`. Only a certificate, a work
 | `nginx-test` | `nginx -t` |
 | `nginx-reload` | Reloads nginx |
 | `php-fpm-reload <version>` | Reloads PHP-FPM for that version, like `8.4` |
-| `php-pool-write <version>` | Writes eeploi's own PHP-FPM pool (`/etc/php/<version>/fpm/pool.d/eeploi.conf`), runs as the deploy user, socket `/run/php/php<version>-fpm-eeploi.sock`. Tests the config with `php-fpm<version> -t` before the reload; on failure the old pool comes back |
-| `vhost-write <domain> <socket>` | Writes eeploi's vhost for the domain: HTTPS only, root `/home/<caller>/<domain>/current/public`, certificate `/etc/nginx/ssl/<domain>.crt`, logs in `/var/log/nginx`, PHP through the given PHP-FPM socket |
+| `site-user-create <user> <domain>` | Makes the site user for a domain: the registry file, the user and its group, and its home `/srv/eeploi/<user>` (`750`, the nginx user may pass through). Called again for the same user and domain, it changes nothing. Deploy user only |
+| `run-as <user>` | Runs the script from stdin with `bash` as the site user, in a clean environment. Nothing goes on the command line. Deploy user only |
+| `php-pool-write <version> <user>` | Writes the site's PHP-FPM pool (`/etc/php/<version>/fpm/pool.d/eeploi-<user>.conf`), runs as the site user, socket `/run/php/php<version>-fpm-<user>.sock` owned by the nginx user with mode `0600`, so only that user may open it, not its group. Also writes `conf.d/90-eeploi.ini` with `opcache.validate_permission = 1`. Tests the config with `php-fpm<version> -t` before the reload; on failure the old files come back. One pool per site: when the registry lists the site's pool for another PHP version, that pool goes once the new one passes its test, the old version is tested and reloaded too, and on a failed test both pools come back. Pools of other panels are never touched |
+| `redis-create <user> [<mb>]` | Prepares the site's own Redis, stopped: see [Redis per site](#redis-per-site). Deploy user only |
+| `redis-start <user>` | Starts the site's Redis and keeps it on after a reboot (`systemctl enable --now`). Deploy user only |
+| `redis-stop <user>` | Stops it and keeps it off (`systemctl disable --now`). Its data stays. Deploy user only |
+| `vhost-write <domain> <user> <php-version>` | Writes eeploi's vhost for the domain of that site user: HTTPS only, root `/srv/eeploi/<user>/<domain>/current/public`, certificate `/etc/nginx/ssl/<domain>.crt`, logs in `/var/log/nginx`, PHP through the site's own socket. nginx follows a link in the site only when the link and its target have the same owner (`disable_symlinks if_not_owner from=/srv/eeploi/<user>`) |
 | `vhost-backup <domain>` | Copies the vhost and its SSL include to `/var/lib/eeploi/nginx/<domain>` (root only), before a take-over changes them |
 | `vhost-restore <domain>` | Puts that copy back |
 | `vhost-enable <domain>` | Links the vhost into `sites-enabled` |
 | `vhost-disable <domain>` | Removes the link from `sites-enabled` |
-| `vhost-remove <domain>` | Removes the vhost and its link |
-| `vhost-set-root <domain> <old> <new>` | Changes `root <old>;` to `root <new>;`. Both must be inside an allowed home folder |
-| `vhost-set-socket <domain> <from> <to>` | Changes the exact line `fastcgi_pass unix:<from>;` to `unix:<to>;`. Only PHP-FPM sockets in `/run/php` or `/var/run/php`. Runs `nginx -t` before the reload; on failure the old vhost comes back |
+| `vhost-remove <domain>` | Removes the vhost and its link. Every check runs before anything is removed |
+| `vhost-set-root <domain> <old> <new>` | Changes the vhost's one `root <old>;` line to `root <new>;`. Both must be inside an allowed home folder. A root in a site user's home must be in the folder of that user's own domain, `/srv/eeploi/<user>/<domain>/`, and gets `disable_symlinks if_not_owner from=/srv/eeploi/<user>;` right after it, once. That root line must sit at the top level of a server block that listens on port 443 (not inside a `location` or `if`), the vhost may have no `disable_symlinks` line of its own, and no line may combine a quote with `{`, `}` or `#`; otherwise it is refused. Moved back to a panel home, eeploi's `disable_symlinks` line goes. Runs `nginx -t`; on failure the old vhost comes back |
+| `vhost-set-socket <domain> <from> <to>` | Changes the exact line `fastcgi_pass unix:<from>;` to `unix:<to>;`. Only PHP-FPM sockets in `/run/php` or `/var/run/php`. `<to>` is the pool of the site user listed for that domain. `<from>` may also be a socket the vhost still uses: the default one per version, `php<version>-fpm-eeploi.sock` from 1.0.1, or a panel's pool per user; never another site user's. Runs `nginx -t` before the reload; on failure the old vhost comes back. Going back to a panel's socket is `vhost-restore` |
 | `vhost-set-cert <domain>` | Points the vhost's certificate lines to `/etc/nginx/ssl/eeploi-<domain>.crt` and `.key` |
 | `ssl-csr <name>` | Makes a private key (once, mode `600` from the start) and prints a certificate request |
 | `ssl-write <name>` | Writes a certificate from stdin. Only one PEM certificate is accepted |
 | `ssl-remove <name>` | Removes a certificate and its key |
-| `supervisor-write <program> <directory> <processes>` | Writes a Supervisor program `eeploi-*` with the one-line command from stdin. Runs as the calling user, in a folder in their home, 1 to 32 processes, log in `/var/log/supervisor` |
+| `supervisor-write <program> <user> <directory> <processes>` | Writes a Supervisor program `eeploi-<domain>-<name>` with the one-line command from stdin. `<name>` is `a-z`, `0-9` and `-`, so no dot; a name that also fits another listed domain is refused. Runs as the site user, in a folder under `/srv/eeploi/<user>/<domain>/`, 1 to 32 processes. The log goes to `/var/log/supervisor/eeploi/<user>/`, a folder owned by root with group `<user>` (`750`), so a site reads only its own worker logs. A `%` in the command is refused |
 | `supervisor-remove <program>` | Removes a Supervisor program `eeploi-*` |
-| `supervisor-remove-site <domain>` | Removes all eeploi Supervisor programs of a site |
+| `supervisor-remove-site <domain>` | Removes the Supervisor programs the site's registry lists, and their `.paused` copies |
 | `supervisor-pause <config>` | Renames a Supervisor config to `.paused` |
 | `supervisor-resume <config>` | Renames it back |
 | `supervisor-update` | `supervisorctl reread` and `update` |
-| `cron-write <domain>` | Writes one `schedule:run` cron line for a site. Nothing else is allowed |
-| `cron-remove <domain>` | Removes that cron file |
+| `cron-write <user>` | Writes one line to `/etc/cron.d/eeploi-<user>`: `* * * * * <user> php[<version>] /srv/eeploi/<user>/<domain>/current/artisan schedule:run > /dev/null 2>&1`. Nothing else is allowed |
+| `cron-remove <user>` | Removes that cron file |
 | `crontab-remove-lines <domain>` | Removes the exact lines from stdin from `/etc/crontab` and keeps them in `/var/lib/eeploi/crontab/<domain>`. Only jobs that run as `ploi` or `forge` on a path in their home |
 | `crontab-restore <domain>` | Adds those lines back, once each. Other changes to `/etc/crontab` stay |
-| `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` (the source must end in `/.env`, also after resolving links) into the caller's home folder, mode `640`. Root only reads; the caller writes the copy |
-| `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` (the source must end in `/storage`, also after resolving links) into the caller's home folder. Root only reads; the caller unpacks it |
-| `db-create <engine> <name> <user> <socket\|password>` | Creates a database and its user on the local MySQL, MariaDB or Postgres. `socket`: the user logs in over the socket as the Unix user of the same name, with no password. `password`: password login, with the password from stdin. The user gets that one database, nothing else. See [Databases](#databases) |
+| `env-install <from> <to> <owner>` | Copies a `.env` from `/home/ploi` or `/home/forge` (the source must end in `/.env`, also after resolving links) into the home of the site user `<owner>`, mode `640`. `ploi` or `forge` reads the source, the site user writes the copy; root opens neither |
+| `storage-copy <from> <to> <owner>` | Copies a `storage` folder from `/home/ploi` or `/home/forge` (the source must end in `/storage`, also after resolving links) into the home of the site user `<owner>`. `ploi` or `forge` reads the source, the site user unpacks it; root opens neither |
+| `db-create <engine> <name> <user> <socket\|password>` | Creates a database and its user on the local MySQL, MariaDB or Postgres. `socket`: the user logs in over the socket as the site user of the same name, with no password. `password`: password login, with the password from stdin. The user gets that one database, nothing else. See [Databases](#databases) |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
-| `acl-nginx` | Lets the nginx user pass through the deploy user's home folder (`setfacl -m u:<nginx user>:x`), and installs the `acl` package first when `setfacl` is missing. Nothing more: the folder stays `750` |
 | `self-update <version>` | Installs a signed release (see below). Only a newer one |
 
-Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi` and the deploy user's.
+Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi`, the deploy user's, and `/srv/eeploi/<user>` of a site user.
+
+Only the deploy user may call the helper, through sudo. `ploi`, `forge` and every other user are refused, for every subcommand. Since 1.0.2; before, `ploi` and `forge` could call the subcommands that take no site user.
+
+## Site users
+
+One Linux user per site, named like `shop_example`: a lowercase letter, then `a-z`, `0-9` or `_`, at most 32, with at least one `_` after the first letter. No standard user or group of the system or of a package has one. Never `root`, `eeploi`, the deploy user, `ploi`, `forge`, `ubuntu`, `www-data`, the nginx user and group, `postgres`, `mysql`, `redis`, `nobody` or `nogroup`. Never the name of a standard group that grants root or close to it, whether or not that group exists yet: `admin`, `wheel`, `sudo`, `adm`, `staff`, `shadow`, `disk`, `kmem`, `tty`, `utmp`, `crontab`, `docker`, `lxd`, `incus`, `libvirt`, `kvm`, `video`, `render`, `input`, `sgx`, `lpadmin`, `sambashare`, `operator`, `daemon`, `bin`, `sys`, `backup` and `syslog`. `useradd` makes a group of the user's name, and a package installed later keeps a group that is already there.
+
+**The registry.** `/etc/eeploi/sites/<user>`, one file per site user, owned by root, mode `644`. It holds `DOMAIN=<domain>` and every file and place of the site, one `KEY=value` line each, kept current by the subcommands that write or remove them:
+
+```
+DOMAIN=shop.example
+HOME=/srv/eeploi/shop_example
+VHOST=/etc/nginx/sites-available/shop.example
+POOL=/etc/php/8.4/fpm/pool.d/eeploi-shop_example.conf
+CRON=/etc/cron.d/eeploi-shop_example
+SUPERVISOR=/etc/supervisor/conf.d/eeploi-shop.example-horizon.conf
+LOGS=/var/log/supervisor/eeploi/shop_example
+REDIS_CONF=/etc/eeploi/redis/shop_example.conf
+REDIS_UNIT=eeploi-redis@shop_example.service
+REDIS_DROPIN=/etc/systemd/system/eeploi-redis@shop_example.service.d/memory.conf
+REDIS_SOCKET=/srv/eeploi/shop_example/.redis/redis.sock
+```
+
+The file is read line by line, never run. Only `DOMAIN` is used for checks. A file that is not root-owned, is a link, is writable by others, or has another line, is refused.
+
+**The check.** Every subcommand that takes a site user first checks:
+
+1. the name is valid, has an `_` after the first letter, and is not reserved;
+2. its registry file is trusted, and lists the domain when one is given;
+3. the user exists with uid 1000 or higher and home `/srv/eeploi/<user>`;
+4. it is in no group but its own (`id -G`). A site user later added to `sudo`, `adm`, `docker` or another group is refused.
+
+**`site-user-create <user> <domain>`.** Only for the deploy user itself. The domain must not be listed for another site user. The domain check and the new registry file happen under the registry's lock.
+
+- Listed and there: the home gets `750` and the ACL again, and the answer is `exists: site user <user> for <domain>, nothing changed`.
+- Listed, but the user is missing: the user is made.
+- Not listed: no user, group or `/srv/eeploi/<user>` of that name may exist (`exists … and is not an eeploi site user`). The helper writes the registry file, makes `/srv/eeploi` (root, `755`) when missing, then runs `useradd --home-dir /srv/eeploi/<user> --create-home --user-group --shell /usr/sbin/nologin <user>`. When `useradd` fails, the registry file goes again.
+- Then `chmod 750` on the home and `setfacl -m u:<nginx user>:x` (the `acl` package is installed first when `setfacl` is missing). Root changes the home folder itself, never anything in it.
+
+**`run-as <user>`.** Only for the deploy user itself, with exactly one argument and the script on stdin. Neither stdin nor the output (stdout, stderr) may be a terminal. It runs, in a new session without a controlling terminal:
+
+```
+setsid --wait runuser -u <user> -- env -i HOME=/srv/eeploi/<user> USER=<user> LOGNAME=<user> PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 /bin/bash -s
+```
+
+`--wait` keeps the script's exit code.
+
+The system log gets `run-as <user>`, never the script.
+
+## Redis per site
+
+Every site can have a Redis of its own, running as the site user. It listens on no TCP port, only on a socket in the site's home. The unit and config stay root-owned, so the site can't change them.
+
+| File | Owner | Holds |
+|---|---|---|
+| `/etc/systemd/system/eeploi-redis@.service` | root | One template for every site: `redis-server` with the site's config, as `User=%i` and `Group=%i`. Only Unix sockets (`RestrictAddressFamilies=AF_UNIX`), no swap (`MemorySwapMax=0`), only `.redis` writable (`ProtectSystem=strict`), and the kernel, cgroups, clock, devices and hostname out of reach (`Protect*`, `PrivateDevices`, `PrivateTmp`, `NoNewPrivileges`) |
+| `/etc/systemd/system/eeploi-redis@<user>.service.d/memory.conf` | root | `MemoryMax`: the size plus 36 MB for Redis itself and its rewrite child |
+| `/etc/eeploi/redis/<user>.conf` | root | `port 0`, `unixsocket /srv/eeploi/<user>/.redis/redis.sock` with `unixsocketperm 600`, `dir /srv/eeploi/<user>/.redis`, `appendonly yes`, `maxmemory <mb>mb`, `maxmemory-policy noeviction`, `enable-module-command no` and `enable-debug-command no` (both need Redis 7) |
+| `/srv/eeploi/<user>/.redis` | the site user | The socket and the data, mode `700` |
+
+- **`redis-create <user> [<mb>]`:** `<mb>` is a whole number from 32 to 1024, 128 by default (`maxmemory 128mb`, `MemoryMax=164M`). Writes the template (when missing or different), the config and the drop-in, then `systemctl daemon-reload`. The site user makes its own `.redis` folder. It starts nothing. Called again, it rewrites the config and the drop-in, for example with a new size; a running Redis then restarts, and when that fails, the old template, config and drop-in come back. The registry changes only after a good restart, or when Redis wasn't running.
+- **`redis-start <user>`:** refused before `redis-create`, and when `redis-server` is not installed. The helper never installs Redis.
+- **`redis-stop <user>`:** the data stays in the home, so it is there again after `redis-start`.
 
 ## Settings on the server
 
@@ -60,6 +129,8 @@ Two optional files, both owned by root and not writable by anyone else. The help
 |---|---|
 | `/etc/eeploi/helper.conf` | `DEPLOY_USER=<user>`, when the deploy user is not `eeploi`. Only that line and comments are allowed. The file is read, never run |
 | `/etc/eeploi/new-server` | Marker written when eeploi created the server. Without it, `firewall-close-22` refuses. On a server you bring yourself, eeploi never touches the SSH port or the firewall |
+
+The helper writes two folders there itself: `/etc/eeploi/sites` (the registry, see [Site users](#site-users)) and `/etc/eeploi/redis`. The same rules apply to them.
 
 The nginx user is read from the `user` line in `/etc/nginx/nginx.conf`. Without one it is `www-data`. A line the helper cannot read, two `user` lines or `root` are refused.
 
@@ -75,7 +146,7 @@ echo "$password" | sudo eeploi-helper db-create pgsql shop_example shop_example 
 - **Two ways in,** named by the fourth argument, which is required. Anything else is refused.
   - **`socket`:** the user has no password at all. Only processes running as the Unix user of the same name get in, over the local socket. Postgres: a role without a password (peer auth). MariaDB: `IDENTIFIED VIA unix_socket`. MySQL: `IDENTIFIED WITH auth_socket`. The default for every site eeploi creates; nothing is stored, and the site's `.env` has no `DB_PASSWORD`. Stdin is ignored: it is never read, so an open stdin can't make the helper wait.
   - **`password`:** the password comes on stdin. For a site that already has a password, or a database reached over TCP. Nothing on stdin, a lone newline, a terminal or an invalid password is refused: it never falls back to socket login.
-- **The Unix user (socket login):** must exist (`id -u`), and must be a site's own user: not a system user (uid below 1000), and not the deploy user, `eeploi`, `ploi` or `forge`, which run more than one site.
+- **The Unix user (socket login):** must pass the [site user check](#site-users): socket login is only for a user the helper made, never a system user or one that runs more than one site (the deploy user, `eeploi`, `ploi`, `forge`).
 - **The auth_socket plugin (MySQL, socket login):** Ubuntu's MySQL installs it when root has no password. When it is not active, the helper installs it first (`INSTALL PLUGIN auth_socket SONAME 'auth_socket.so'`), the one plugin shipped with MySQL for this. MariaDB has `unix_socket` built in and on; when it is not active, the helper refuses.
 - **Password:** on stdin only, 16 to 128 of `A-Z a-z 0-9 . _ ~ + / = -`. Never an argument, never in the system log, never in a file, never printed. The SQL goes to the client on stdin, so it is on no command line. The session turns off the server's statement logs first (`sql_log_off`; for Postgres `log_statement`, `log_min_error_statement`, `log_min_duration_statement`, `pg_stat_statements.track_utility`). On an error only the error lines are shown, without the password.
 - **How:** MySQL and MariaDB as root through the local socket. Postgres as the `postgres` user (`runuser -u postgres -- psql`). Both with a clean environment, so no option file or variable from the caller counts.
@@ -90,7 +161,7 @@ Every refusal and error exits with `64` and one line on stderr, like the other s
 You need `curl` and `minisign` (`apt install minisign`).
 
 ```bash
-VERSION=1.0.1
+VERSION=1.0.2
 curl -fLO https://github.com/eeploi/helper/releases/download/v$VERSION/eeploi-helper
 curl -fLO https://github.com/eeploi/helper/releases/download/v$VERSION/eeploi-helper.minisig
 minisign -Vm eeploi-helper -P RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA
@@ -126,10 +197,12 @@ Going back, or installing the same version again, is not possible: an older rele
 `EEPLOI_HELPER_DRY_RUN=1` checks every argument and prints what the helper would run or write. It changes nothing. sudo drops the variable, so it is for tests only.
 
 ```bash
-EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash eeploi-helper php-pool-write 8.4
+EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash eeploi-helper php-fpm-reload 8.4
 ```
 
-In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point to test copies of `/etc/eeploi` and `nginx.conf`, and `EEPLOI_HELPER_DB_STATE` to a file with what `db-create`'s checks would find (`key=count` lines). A dry run of `db-create` prints the SQL with `<password>` in place of the password. A `uid=<n>` or `uid=none` line in that file stands in for `id -u <user>` (without one: `1001`).
+In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point to test copies of `/etc/eeploi` and `nginx.conf`, and `EEPLOI_HELPER_DB_STATE` to a file with what `db-create`'s checks would find (`key=count` lines). A dry run of `db-create` prints the SQL with `<password>` in place of the password. `EEPLOI_HELPER_VHOST` points to a vhost for `vhost-set-root`, which then prints the vhost it would write.
+
+`EEPLOI_HELPER_SYSTEM` points to a file with what the site-user checks would find on the server: `passwd <getent passwd line>`, `group <getent group line>`, `id <user>:<id -G output>`, `path <path that exists>` and `active <running unit>`. Without it, none of them exist. A dry run prints every file it would write, the registry included.
 
 ## Tests
 
@@ -143,6 +216,7 @@ Plain bash, no extra tools. Runs `bash -n`, `shellcheck` when installed, and the
 
 - **Fixed actions.** Each subcommand does one thing. There is no way to pass a command.
 - **Checked input.** Domains, paths, versions, sockets and configs are checked against strict patterns. Paths must stay inside the allowed home folders, also after resolving links.
+- **One user per site.** Each site runs as its own Linux user, listed in a root-owned registry. The helper acts as a site user only after the site user check, and root writes nothing inside a site's home.
 - **Called through sudo.** The helper refuses to run unless `SUDO_USER` is an allowed user.
 - **Fixed environment.** `PATH`, `TMPDIR`, `HOME` (`/root`), the locale (`LC_ALL=C`) and the umask are set by the helper, not taken from the caller. `curl` reads no curlrc.
 - **Signed releases.** Every release is signed with minisign. The helper only installs a release signed with the key built into it.
