@@ -266,14 +266,16 @@ SITE_USER_RE='^[a-z][a-z0-9_]{0,31}$'
 RESERVED_USERS='root|eeploi|ploi|forge|ubuntu|www-data|postgres|mysql|redis|nobody|nogroup'
 RESERVED_GROUPS='admin|wheel|sudo|adm|staff|shadow|disk|kmem|tty|utmp|crontab|docker|lxd|incus|incus-admin|libvirt|libvirt-qemu|kvm|video|render|input|sgx|systemd-journal|systemd-network|lpadmin|sambashare|operator|daemon|bin|sys|backup|syslog|ssl-cert'
 
-# site_user_name <user>: a valid name, and not one of the system's, a panel's, a powerful group or the
-# deploy user.
+# site_user_name <user>: a valid name with an _ after the first letter, and not one of the system's, a
+# panel's, a powerful group or the deploy user.
 site_user_name() {
   [[ $1 =~ $SITE_USER_RE ]] || fail "invalid site user: $1 (a-z, 0-9 and _, starting with a letter, at most 32)"
   nginx_user
   case "|$RESERVED_USERS|$RESERVED_GROUPS|$DEPLOY_USER|$NGINX_USER|$NGINX_GROUP|" in
     *"|$1|"*) fail "reserved name, not a site user: $1" ;;
   esac
+  # No standard user or group of the system or of a package has one.
+  case "${1:1}" in *_*) ;; *) fail "a site user needs an _ after its first letter, like shop_example: $1" ;; esac
 }
 
 # The registry, $ETC/sites/<user>: DOMAIN=<domain> and every file and place of the site, one
@@ -548,8 +550,8 @@ STATE=/var/lib/eeploi
 # escape_dots <text>: dots escaped for a sed pattern (the input is already checked: no other special characters).
 escape_dots() { printf '%s' "$1" | sed 's/[.]/\\./g'; }
 
-# pool_conf <version> <user>: the site's own PHP-FPM pool, running as the site user. Only nginx may use
-# its socket.
+# pool_conf <version> <user>: the site's own PHP-FPM pool, running as the site user. Only the nginx user
+# may use its socket (0600, no group access).
 pool_conf() {
   cat <<POOL
 ; Written by eeploi-helper (php-pool-write). eeploi rewrites this file, do not edit.
@@ -558,8 +560,7 @@ user = $2
 group = $2
 listen = /run/php/php$1-fpm-$2.sock
 listen.owner = $NGINX_USER
-listen.group = $NGINX_GROUP
-listen.mode = 0660
+listen.mode = 0600
 pm = ondemand
 pm.max_children = 5
 pm.process_idle_timeout = 10s

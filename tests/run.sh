@@ -59,7 +59,9 @@ add_sites() {
   mkdir -p "$1/sites"
   chmod 755 "$1" "$1/sites"
   printf 'DOMAIN=shop.example\nHOME=/srv/eeploi/shop_example\nCRON=/etc/cron.d/eeploi-shop_example\nREDIS_CONF=/etc/eeploi/redis/shop_example.conf\n' > "$1/sites/shop_example"
-  printf '# a comment\nDOMAIN=www.shop.example\n\n' > "$1/sites/shop"
+  printf '# a comment\nDOMAIN=www.shop.example\n\n' > "$1/sites/shop_www"
+  # Listed, and there, but without an _: refused all the same.
+  printf 'DOMAIN=plain.example\n' > "$1/sites/shopexample"
   local user
   for user in shop_other shop_sudo shop_low shop_away shop_group shop_half; do
     printf 'DOMAIN=%s.example\n' "${user#shop_}" > "$1/sites/$user"
@@ -70,7 +72,7 @@ add_sites "$WORK/etc-conf"
 add_sites "$WORK/etc-plain"
 printf 'DOMAIN=shop.example\n' > "$WORK/etc-plain/sites/shop_example"
 # The longest name: 32 characters, for db-create's socket login.
-LONG_USER=b2345678901234567890123456789012
+LONG_USER=b23456789012345678901234567890_2
 printf 'DOMAIN=long.example\n' > "$WORK/etc-sites/sites/$LONG_USER"
 # Broken registries, each in a folder of its own: the helper refuses them all.
 for bad in writable link badline inject twice nodomain baddomain folder; do
@@ -94,7 +96,8 @@ account() {
 }
 {
   account shop_example 1001 /srv/eeploi/shop_example 1001
-  account shop 1002 /srv/eeploi/shop 1002
+  account shop_www 1002 /srv/eeploi/shop_www 1002
+  account shopexample 1008 /srv/eeploi/shopexample 1008
   account shop_other 1003 /srv/eeploi/shop_other 1003
   account shop_sudo 1004 /srv/eeploi/shop_sudo '1004 27'
   account shop_low 999 /srv/eeploi/shop_low 999
@@ -103,7 +106,7 @@ account() {
   echo 'group shop_group:x:1006:'
   echo 'id shop_group:1010'
   account "$LONG_USER" 1007 "/srv/eeploi/$LONG_USER" 1007
-  account alex 1000 /home/alex 1000
+  account alex_web 1000 /home/alex_web 1000
   echo 'group shop_staff:x:1011:'
   echo 'path /srv/eeploi/shop_left'
   echo 'path /srv/eeploi'
@@ -259,7 +262,7 @@ IN='php artisan horizon' ok "supervisor as the site user" "user=shop_example" su
 # storage-copy and env-install: root only reads from /home/ploi or /home/forge; the site user writes.
 refuse "storage from own home" "source must be in /home/ploi or /home/forge" storage-copy /home/eeploi/a/storage $SITE/storage shop_example
 refuse "env from own home" "source must be in /home/ploi or /home/forge" env-install /home/eeploi/a/.env $SITE/.env shop_example
-refuse "env from a site home" "source must be in /home/ploi or /home/forge" env-install /srv/eeploi/shop/www.shop.example/.env $SITE/.env shop_example
+refuse "env from a site home" "source must be in /home/ploi or /home/forge" env-install /srv/eeploi/shop_www/www.shop.example/.env $SITE/.env shop_example
 lacks "env not written by root" "install -o" env-install /home/ploi/a/.env $SITE/.env shop_example
 lacks "storage not written by root" "rsync" storage-copy /home/ploi/a/storage $SITE/storage shop_example
 # self-update: only a newer version than the installed one.
@@ -363,8 +366,10 @@ ok "pool user" "user = shop_example" "${POOL[@]}"
 ok "pool group" "group = shop_example" "${POOL[@]}"
 ok "pool socket" "listen = /run/php/php8.4-fpm-shop_example.sock" "${POOL[@]}"
 ok "socket owner" "listen.owner = www-data" "${POOL[@]}"
-ok "socket group" "listen.group = www-data" "${POOL[@]}"
-ok "socket mode" "listen.mode = 0660" "${POOL[@]}"
+lacks "socket without group access" "listen.group" "${POOL[@]}"
+ok "socket for the nginx user only" "  listen.owner = www-data
+  listen.mode = 0600" "${POOL[@]}"
+NGINX="$WORK/nginx-group.conf" lacks "socket never for the nginx group" "= web" php-pool-write 8.4 shop_example
 ok "ondemand" "pm = ondemand
   pm.max_children = 5
   pm.process_idle_timeout = 10s
@@ -385,7 +390,7 @@ refuse "pool version" "invalid PHP version" php-pool-write '8.4/../../x' shop_ex
 refuse "pool version missing" "usage" php-pool-write
 refuse "pool without a user" "usage" php-pool-write 8.4
 refuse "pool two versions" "usage" php-pool-write 8.3 8.4 shop_example
-refuse "pool for an unlisted user" "alex is not an eeploi site user" php-pool-write 8.4 alex
+refuse "pool for an unlisted user" "alex_web is not an eeploi site user" php-pool-write 8.4 alex_web
 refuse "pool for the deploy user" "reserved name, not a site user: eeploi" php-pool-write 8.4 eeploi
 NGINX="$WORK/nginx-root.conf" refuse "pool with nginx as root" "nginx runs as root" "${POOL[@]}"
 
@@ -403,8 +408,8 @@ refuse "socket with .." "invalid PHP-FPM socket" vhost-set-socket example.com /r
 refuse "socket with a semicolon" "invalid PHP-FPM socket" vhost-set-socket example.com '/run/php/php8.4-fpm.sock;' $SOCK
 refuse "socket other pool" "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-root.sock
 refuse "socket of the old eeploi pool" "invalid PHP-FPM socket" vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-eeploi.sock
-refuse "socket of an unlisted user" "invalid PHP-FPM socket: /run/php/php8.4-fpm-alex.sock (alex is not the eeploi site user of example.com)" \
-  vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-alex.sock
+refuse "socket of an unlisted user" "invalid PHP-FPM socket: /run/php/php8.4-fpm-alex_web.sock (alex_web is not the eeploi site user of example.com)" \
+  vhost-set-socket example.com /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-alex_web.sock
 refuse "socket of another domain's site user" "invalid PHP-FPM socket: $SOCK (shop_example is not the eeploi site user of other.example)" \
   vhost-set-socket other.example /run/php/php8.4-fpm.sock $SOCK
 refuse "socket of a site user for an unlisted domain" "(shop_example is not the eeploi site user of example.com)" \
@@ -474,7 +479,7 @@ IN=$PW ok "mysql created" "created: mysql database shop for user shop" db-create
 IN=$PW ok "mysql through the socket as root" "HOME=/root LC_ALL=C mysql --protocol=socket --user=root" db-create mysql shop shop password
 IN=$PW ok "mysql with a clean environment" "run: env -i PATH=" db-create mysql shop shop password
 IN=$PW ok "mysql statement log off first" "(SQL on stdin)
-  SET SESSION sql_log_off = 1;" db-create mysql shop shop socket
+  SET SESSION sql_log_off = 1;" db-create mysql shop shop_www socket
 IN=$PW ok "mysql user on localhost" "CREATE USER 'shop'@'localhost' IDENTIFIED BY '<password>';" db-create mysql shop shop password
 # shellcheck disable=SC2016 # the backticks are literal SQL or a name that must be refused
 IN=$PW ok "mysql database utf8mb4" 'CREATE DATABASE `shop_db` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' db-create mysql shop_db shop password
@@ -488,13 +493,13 @@ IN=$PW ok "pgsql as postgres" "runuser -u postgres -- psql -X -q -A -t --no-pass
 IN=$PW ok "pgsql statement logs off" "SET log_statement = 'none';
   SET log_min_duration_statement = -1;
   SET log_min_error_statement = 'panic';
-  SET pg_stat_statements.track_utility = off;" db-create pgsql shop shop socket
+  SET pg_stat_statements.track_utility = off;" db-create pgsql shop shop_www socket
 IN=$PW ok "pgsql role without rights" "CREATE ROLE \"shop\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '<password>';" db-create pgsql shop shop password
 IN=$PW ok "pgsql database owned by the user" "CREATE DATABASE \"shop_db\" OWNER \"shop\" ENCODING 'UTF8' TEMPLATE template0;" db-create pgsql shop_db shop password
 IN=$PW ok "pgsql closed to others" "REVOKE ALL ON DATABASE \"shop_db\" FROM PUBLIC;" db-create pgsql shop_db shop password
 IN=$PW ok "pgsql created" "created: pgsql database shop for user shop" db-create pgsql shop shop password
-IN=$PW ok "longest names" "created: mysql database a2345678901234567890123456789012 for user b2345678901234567890123456789012" \
-  db-create mysql a2345678901234567890123456789012 b2345678901234567890123456789012 socket
+IN=$PW ok "longest names" "created: mysql database a2345678901234567890123456789012 for user $LONG_USER" \
+  db-create mysql a2345678901234567890123456789012 "$LONG_USER" socket
 IN="$PW"$'\n' ok "password with a trailing newline" "created:" db-create mysql shop shop password
 IN='Az09._~+/=-Az09._~+/=-Az09._~+/=-' ok "password with every allowed sign" "created:" db-create mysql shop shop password
 IN=$PW DBSTATE="$WORK/db-mysql-done" ok "already there" "exists: mysql database shop for user shop, nothing changed" db-create mysql shop shop password
@@ -663,25 +668,26 @@ for shared in eeploi ploi forge; do
   refuse "socket login for $shared" "$shared runs more than one site" db-create mysql "$shared" "$shared" socket
 done
 AS=deploy ETC_DIR="$WORK/etc-conf" refuse "socket login for the deploy user" "deploy runs more than one site" db-create pgsql deploy deploy socket
-DBSTATE="$WORK/db-mysql-user" refuse "mysql password user, socket asked" "user shop exists with password login, not socket login: refusing, it is not switched" db-create mysql shop shop socket
+DBSTATE="$WORK/db-mysql-user" refuse "mysql password user, socket asked" "user shop_www exists with password login, not socket login: refusing, it is not switched" db-create mysql shop shop_www socket
 db_state 1 0 1 0 0 0 0 > "$WORK/db-mariadb-user"
-DBSTATE="$WORK/db-mariadb-user" refuse "mariadb password user, socket asked" "exists with password login" db-create mariadb shop shop socket
-DBSTATE="$WORK/db-pgsql-password-user" refuse "pgsql role with a password, socket asked" "user shop exists with password login" db-create pgsql shop shop socket
+DBSTATE="$WORK/db-mariadb-user" refuse "mariadb password user, socket asked" "exists with password login" db-create mariadb shop shop_www socket
+DBSTATE="$WORK/db-pgsql-password-user" refuse "pgsql role with a password, socket asked" "user shop_www exists with password login" db-create pgsql shop shop_www socket
 IN=$PW DBSTATE="$WORK/db-mysql-socket-user" refuse "mysql socket user, password asked" "user $S exists with socket login, not password login: refusing, it is not switched" db-create mysql $S $S password
 IN=$PW DBSTATE="$WORK/db-pgsql-socket-user" refuse "pgsql role without a password, password asked" "exists with socket login" db-create pgsql $S $S password
 IN=$PW DBSTATE="$WORK/db-mysql-socket-done" refuse "socket done, password asked" "exists with socket login" db-create mysql $S $S password
 db_state 0 1 1 0 0 0 1 1 1 1 1 > "$WORK/db-mysql-socket-and-tcp"
-DBSTATE="$WORK/db-mysql-socket-and-tcp" refuse "socket asked, a user on 127.0.0.1" "user shop exists on 127.0.0.1 with password login, not socket login" db-create mysql shop shop socket
-DBSTATE="$WORK/db-mysql-tcp-only" refuse "socket asked, a user on 127.0.0.1 only" "exists on 127.0.0.1 with password login" db-create mysql shop shop socket
+DBSTATE="$WORK/db-mysql-socket-and-tcp" refuse "socket asked, a user on 127.0.0.1" "user shop_www exists on 127.0.0.1 with password login, not socket login" db-create mysql shop shop_www socket
+DBSTATE="$WORK/db-mysql-tcp-only" refuse "socket asked, a user on 127.0.0.1 only" "exists on 127.0.0.1 with password login" db-create mysql shop shop_www socket
 lacks "socket login has no 127.0.0.1 user" "'@'127.0.0.1' IDENTIFIED" db-create mysql $S $S socket
-DBSTATE="$WORK/db-mysql-taken" refuse "socket: database of another user" "database shop belongs to another user" db-create mysql shop shop socket
-DBSTATE="$WORK/db-mysql-shared" refuse "socket: database shared" "database shop belongs to another user" db-create mysql shop shop socket
-DBSTATE="$WORK/db-pgsql-taken" refuse "socket: pgsql database of another owner" "belongs to another user" db-create pgsql shop shop socket
-DBSTATE="$WORK/db-mysql-nobody" refuse "socket: database nobody has" "exists and is not shop's" db-create mysql shop shop socket
-DBSTATE="$WORK/db-mysql-global" refuse "socket: user with global rights" "rights beyond one database" db-create mysql shop shop socket
-DBSTATE="$WORK/db-mysql-elsewhere" refuse "socket: user on another database" "rights on another database" db-create mysql shop shop socket
-DBSTATE="$WORK/db-mysql-fresh" refuse "socket: mariadb on MySQL" "this server runs MySQL, not MariaDB" db-create mariadb shop shop socket
-DBSTATE="$WORK/db-mariadb-fresh" refuse "socket: mysql on MariaDB" "this server runs MariaDB, not MySQL" db-create mysql shop shop socket
+DBSTATE="$WORK/db-mysql-taken" refuse "socket: database of another user" "database shop belongs to another user" db-create mysql shop shop_www socket
+DBSTATE="$WORK/db-mysql-shared" refuse "socket: database shared" "database shop belongs to another user" db-create mysql shop shop_www socket
+DBSTATE="$WORK/db-pgsql-taken" refuse "socket: pgsql database of another owner" "belongs to another user" db-create pgsql shop shop_www socket
+DBSTATE="$WORK/db-mysql-nobody" refuse "socket: database nobody has" "exists and is not shop_www's" db-create mysql shop shop_www socket
+DBSTATE="$WORK/db-mysql-global" refuse "socket: user with global rights" "rights beyond one database" db-create mysql shop shop_www socket
+DBSTATE="$WORK/db-mysql-elsewhere" refuse "socket: user on another database" "rights on another database" db-create mysql shop shop_www socket
+DBSTATE="$WORK/db-mysql-fresh" refuse "socket: mariadb on MySQL" "this server runs MySQL, not MariaDB" db-create mariadb shop shop_www socket
+DBSTATE="$WORK/db-mariadb-fresh" refuse "socket: mysql on MariaDB" "this server runs MariaDB, not MySQL" db-create mysql shop shop_www socket
+refuse "socket: a site user without an _" "a site user needs an _ after its first letter, like shop_example: shopexample" db-create mysql shop shopexample socket
 refuse "socket: hyphen in the name" "invalid user name: shop-example" db-create mysql shop_example shop-example socket
 refuse "socket: reserved mysql" "reserved user name: mysql" db-create mysql shop mysql socket
 refuse "socket: reserved postgres" "reserved user name: postgres" db-create pgsql shop postgres socket
@@ -748,7 +754,7 @@ fi
 echo "== site users: the check every site subcommand trusts"
 # run-as shows site_user best: it does nothing else before runuser.
 ok "a listed site user" "run: setsid --wait runuser -u shop_example " run-as shop_example
-ok "a registry with a comment and an empty line" "run: setsid --wait runuser -u shop " run-as shop
+ok "a registry with a comment and an empty line" "run: setsid --wait runuser -u shop_www " run-as shop_www
 for reserved in root eeploi ubuntu ploi forge postgres mysql redis nobody; do
   refuse "run-as $reserved" "reserved name, not a site user: $reserved" run-as "$reserved"
 done
@@ -759,7 +765,7 @@ NGINX="$WORK/nginx-group.conf" refuse "run-as the nginx user" "reserved name, no
 for bad in Shop shop-example shop.example '1shop' '_shop' '' a23456789012345678901234567890123 'shop;id' $'shop\nid' '../shop'; do
   refuse "site user name '$bad'" "invalid site user" run-as "$bad"
 done
-refuse "an unlisted user" "alex is not an eeploi site user (not in $WORK/etc-sites/sites)" run-as alex
+refuse "an unlisted user" "alex_web is not an eeploi site user (not in $WORK/etc-sites/sites)" run-as alex_web
 refuse "a listed user in sudo" "shop_sudo is in other groups too (ids 1004 27), not a site user" run-as shop_sudo
 refuse "a uid below 1000" "shop_low is a system user (uid 999), not a site user" run-as shop_low
 refuse "a home outside /srv/eeploi" "shop_away has home /home/shop_away, not /srv/eeploi/shop_away" run-as shop_away
@@ -800,10 +806,10 @@ lacks "a second call writes no registry" "write:" site-user-create shop_example 
 ok "a half-made site user gets its user" "run: useradd --home-dir /srv/eeploi/shop_half" site-user-create shop_half half.example
 lacks "a half-made site user keeps its registry" "write:" site-user-create shop_half half.example
 refuse "a second call for a site user in sudo" "in other groups too" site-user-create shop_sudo sudo.example
-refuse "an existing user that isn't listed" "alex exists (a user, group or /srv/eeploi/alex) and is not an eeploi site user" site-user-create alex alex.example
+refuse "an existing user that isn't listed" "alex_web exists (a user, group or /srv/eeploi/alex_web) and is not an eeploi site user" site-user-create alex_web alex-web.example
 refuse "an existing group that isn't listed" "shop_staff exists (a user, group or /srv/eeploi/shop_staff) and is not an eeploi site user" site-user-create shop_staff staff.example
 refuse "an existing home that isn't listed" "shop_left exists (a user, group or /srv/eeploi/shop_left) and is not an eeploi site user" site-user-create shop_left left.example
-call site-user-create alex alex.example
+call site-user-create alex_web alex-web.example
 if [ "$CODE" -eq 64 ] && [[ $OUT != *"write:"* && $OUT != *"run:"* ]]; then pass; else failure "nothing written or run for an existing user" "exit $CODE
 $OUT"; fi
 refuse "a domain listed for another user" "shop.example is listed for site user shop_example" site-user-create shop_new shop.example
@@ -843,7 +849,7 @@ ok "the registry keeps its other lines" "  DOMAIN=shop.example
   HOME=/srv/eeploi/shop_example
   CRON=/etc/cron.d/eeploi-shop_example" vhost-write shop.example shop_example 8.4
 refuse "vhost for a domain that isn't the user's" "site user shop_example is for shop.example, not other.example" vhost-write other.example shop_example 8.4
-refuse "vhost for an unlisted user" "alex is not an eeploi site user" vhost-write shop.example alex 8.4
+refuse "vhost for an unlisted user" "alex_web is not an eeploi site user" vhost-write shop.example alex_web 8.4
 refuse "vhost for the deploy user" "reserved name, not a site user: eeploi" vhost-write shop.example eeploi 8.4
 refuse "vhost old arguments" "usage" vhost-write shop.example /run/php/php8.4-fpm-eeploi.sock
 IN=$CRON_LINE ok "cron line" "  * * * * * shop_example php8.4 /srv/eeploi/shop_example/shop.example/current/artisan schedule:run > /dev/null 2>&1
@@ -860,12 +866,12 @@ IN=$'* * * * * shop_example php8.4 /srv/eeploi/shop_example/shopXexample/current
   refuse "cron: dots in the path are dots" "only" cron-write shop_example
 IN=$'* * * * * shop_example php8.4 /srv/eeploi/shop_example/shop.example/current/artisan schedule:run > /dev/null 2>&1; id\n' \
   refuse "cron with more after the line" "only" cron-write shop_example
-IN=$CRON_LINE refuse "cron for an unlisted user" "alex is not an eeploi site user" cron-write alex
+IN=$CRON_LINE refuse "cron for an unlisted user" "alex_web is not an eeploi site user" cron-write alex_web
 IN=$CRON_LINE refuse "cron old arguments" "invalid site user: shop.example" cron-write shop.example
 ok "cron-remove takes it out of the registry" "  HOME=/srv/eeploi/shop_example
   REDIS_CONF=" cron-remove shop_example
 lacks "cron-remove leaves no CRON line" "CRON=" cron-remove shop_example
-refuse "cron-remove for an unlisted user" "alex is not an eeploi site user" cron-remove alex
+refuse "cron-remove for an unlisted user" "alex_web is not an eeploi site user" cron-remove alex_web
 SUP=(supervisor-write eeploi-shop.example-a shop_example "$SITE/current" 1)
 IN='php artisan horizon' ok "supervisor directory" "directory=$SITE/current" "${SUP[@]}"
 IN='php artisan horizon' ok "supervisor log folder" "run: install -d -o root -g shop_example -m 750 /var/log/supervisor/eeploi/shop_example" "${SUP[@]}"
@@ -878,7 +884,7 @@ IN='id' refuse "supervisor program of just the domain" "must start with eeploi-s
 IN='id' refuse "supervisor directory of another site" "not in $SITE" supervisor-write eeploi-shop.example-a shop_example /srv/eeploi/shop_other/other.example/current 1
 IN='id' refuse "supervisor directory of another domain" "not in $SITE" supervisor-write eeploi-shop.example-a shop_example /srv/eeploi/shop_example/other.example/current 1
 IN='id' refuse "supervisor directory with .." "invalid path" supervisor-write eeploi-shop.example-a shop_example $SITE/../../shop_other 1
-IN='id' refuse "supervisor for an unlisted user" "alex is not an eeploi site user" supervisor-write eeploi-shop.example-a alex $SITE/current 1
+IN='id' refuse "supervisor for an unlisted user" "alex_web is not an eeploi site user" supervisor-write eeploi-shop.example-a alex_web $SITE/current 1
 IN='id' refuse "supervisor old arguments" "usage" supervisor-write eeploi-shop.example-a $SITE/current 1
 printf 'SUPERVISOR=/etc/supervisor/conf.d/eeploi-shop.example-a.conf\n' >> "$WORK/etc-sites/sites/shop_other"
 IN='id' refuse "supervisor program listed for another site" "eeploi-shop.example-a belongs to site user shop_other" "${SUP[@]}"
@@ -887,16 +893,16 @@ lacks "supervisor-remove leaves no line" "SUPERVISOR=" supervisor-remove eeploi-
 printf 'DOMAIN=other.example\n' > "$WORK/etc-sites/sites/shop_other"
 lacks "supervisor-remove of an unlisted program" "write:" supervisor-remove eeploi-shop.example-b
 refuse "env-install to another user's home" "not in /srv/eeploi/shop_example" env-install /home/ploi/a/.env /srv/eeploi/shop_other/other.example/.env shop_example
-refuse "env-install as an unlisted owner" "alex is not an eeploi site user" env-install /home/ploi/a/.env /srv/eeploi/alex/a/.env alex
+refuse "env-install as an unlisted owner" "alex_web is not an eeploi site user" env-install /home/ploi/a/.env /srv/eeploi/alex_web/a/.env alex_web
 refuse "env-install to the deploy user's home" "not in /srv/eeploi/shop_example" env-install /home/ploi/a/.env /home/eeploi/a/.env shop_example
 refuse "env-install to the site home with .." "invalid path" env-install /home/ploi/a/.env $SITE/../../shop_other/x/.env shop_example
 refuse "storage-copy to another user's home" "not in /srv/eeploi/shop_example" storage-copy /home/ploi/a/storage /srv/eeploi/shop_other/other.example/storage shop_example
 ok "vhost-set-root into a site home" "root $SITE/current/public;" vhost-set-root shop.example /home/ploi/shop.example/public $SITE/current/public
-refuse "vhost-set-root into an unlisted home" "alex is not an eeploi site user" vhost-set-root shop.example /home/ploi/x/public /srv/eeploi/alex/a/public
+refuse "vhost-set-root into an unlisted home" "alex_web is not an eeploi site user" vhost-set-root shop.example /home/ploi/x/public /srv/eeploi/alex_web/a/public
 refuse "vhost-set-root elsewhere in /srv" "outside the allowed home folders" vhost-set-root shop.example /home/ploi/x/public /srv/public
-refuse "db-create socket login for an unlisted user" "alex is not an eeploi site user" db-create mysql alex alex socket
+refuse "db-create socket login for an unlisted user" "alex_web is not an eeploi site user" db-create mysql alex_web alex_web socket
 refuse "db-create socket login for a site user in sudo" "in other groups too" db-create pgsql shop_sudo shop_sudo socket
-IN=$PW ok "db-create password login needs no site user" "created: mysql database alex for user alex (password login)" db-create mysql alex alex password
+IN=$PW ok "db-create password login needs no site user" "created: mysql database alex_web for user alex_web (password login)" db-create mysql alex_web alex_web password
 
 echo "== site users: powerful groups, even before they exist"
 # None of these groups is in the system stand-in: a name is refused for what a package may make later.
@@ -911,6 +917,20 @@ for group in incus-admin libvirt-qemu systemd-journal systemd-network ssl-cert; 
 done
 NGINX="$WORK/nginx-group.conf" refuse "the nginx group is reserved" "reserved name, not a site user: web" site-user-create web new.example
 ok "a name that only starts like a group" "created: site user docker_shop" site-user-create docker_shop docker-shop.example
+
+echo "== site users: an _ after the first letter"
+ok "shop_example passes" "run: setsid --wait runuser -u shop_example " run-as shop_example
+ok "docker_shop passes" "created: site user docker_shop for docker-shop.example" site-user-create docker_shop docker-shop.example
+ok "an _ at the end passes" "created: site user shop_ for new.example" site-user-create shop_ new.example
+for name in shopexample a ab b2345678901234567890123456789012; do
+  refuse "site-user-create $name" "a site user needs an _ after its first letter, like shop_example: $name" site-user-create "$name" new.example
+done
+refuse "site-user-create docker" "reserved name, not a site user: docker" site-user-create docker docker.example
+refuse "site-user-create admin" "reserved name, not a site user: admin" site-user-create admin admin.example
+refuse "listed and there, without an _" "a site user needs an _ after its first letter, like shop_example: shopexample" run-as shopexample
+refuse "redis-create without an _" "needs an _ after its first letter" redis-create shopexample
+refuse "vhost-write without an _" "needs an _ after its first letter" vhost-write plain.example shopexample 8.4
+refuse "a socket of a user without an _" "invalid PHP-FPM socket" vhost-set-socket plain.example /run/php/php8.4-fpm.sock /run/php/php8.4-fpm-shopexample.sock
 
 echo "== vhost: nginx follows only the site's own links"
 ok "disable_symlinks in the site's home" "      root /srv/eeploi/shop_example/shop.example/current/public;
@@ -1054,7 +1074,7 @@ ok "redis-stop" "run: systemctl disable --now eeploi-redis@shop_example" redis-s
 refuse "redis-start before redis-create" "no Redis for site user shop_other yet: run redis-create first" redis-start shop_other
 SYS="$WORK/system-no-redis" refuse "redis-start without redis-server" "Redis is not installed on this server (no /usr/bin/redis-server): install the redis-server package first" redis-start shop_example
 for sub in redis-create redis-start redis-stop; do
-  refuse "$sub for an unlisted user" "alex is not an eeploi site user" "$sub" alex
+  refuse "$sub for an unlisted user" "alex_web is not an eeploi site user" "$sub" alex_web
   for reserved in root eeploi redis; do
     refuse "$sub for $reserved" "reserved name, not a site user: $reserved" "$sub" "$reserved"
   done

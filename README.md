@@ -24,7 +24,7 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 | `php-fpm-reload <version>` | Reloads PHP-FPM for that version, like `8.4` |
 | `site-user-create <user> <domain>` | Makes the site user for a domain: the registry file, the user and its group, and its home `/srv/eeploi/<user>` (`750`, the nginx user may pass through). Called again for the same user and domain, it changes nothing. Deploy user only |
 | `run-as <user>` | Runs the script from stdin with `bash` as the site user, in a clean environment. Nothing goes on the command line. Deploy user only |
-| `php-pool-write <version> <user>` | Writes the site's PHP-FPM pool (`/etc/php/<version>/fpm/pool.d/eeploi-<user>.conf`), runs as the site user, socket `/run/php/php<version>-fpm-<user>.sock` that only nginx may use. Also writes `conf.d/90-eeploi.ini` with `opcache.validate_permission = 1`. Tests the config with `php-fpm<version> -t` before the reload; on failure the old files come back. Pools of other panels are never touched |
+| `php-pool-write <version> <user>` | Writes the site's PHP-FPM pool (`/etc/php/<version>/fpm/pool.d/eeploi-<user>.conf`), runs as the site user, socket `/run/php/php<version>-fpm-<user>.sock` owned by the nginx user with mode `0600`, so only that user may open it, not its group. Also writes `conf.d/90-eeploi.ini` with `opcache.validate_permission = 1`. Tests the config with `php-fpm<version> -t` before the reload; on failure the old files come back. Pools of other panels are never touched |
 | `redis-create <user> [<mb>]` | Prepares the site's own Redis, stopped: see [Redis per site](#redis-per-site). Deploy user only |
 | `redis-start <user>` | Starts the site's Redis and keeps it on after a reboot (`systemctl enable --now`). Deploy user only |
 | `redis-stop <user>` | Stops it and keeps it off (`systemctl disable --now`). Its data stays. Deploy user only |
@@ -62,7 +62,7 @@ Every subcommand that takes a site user, writes a site's registry or removes its
 
 ## Site users
 
-One Linux user per site, named like `shop_example`: a lowercase letter, then `a-z`, `0-9` or `_`, at most 32. Never `root`, `eeploi`, the deploy user, `ploi`, `forge`, `ubuntu`, `www-data`, the nginx user and group, `postgres`, `mysql`, `redis`, `nobody` or `nogroup`. Never the name of a standard group that grants root or close to it, whether or not that group exists yet: `admin`, `wheel`, `sudo`, `adm`, `staff`, `shadow`, `disk`, `kmem`, `tty`, `utmp`, `crontab`, `docker`, `lxd`, `incus`, `libvirt`, `kvm`, `video`, `render`, `input`, `sgx`, `lpadmin`, `sambashare`, `operator`, `daemon`, `bin`, `sys`, `backup` and `syslog`. `useradd` makes a group of the user's name, and a package installed later keeps a group that is already there.
+One Linux user per site, named like `shop_example`: a lowercase letter, then `a-z`, `0-9` or `_`, at most 32, with at least one `_` after the first letter. No standard user or group of the system or of a package has one. Never `root`, `eeploi`, the deploy user, `ploi`, `forge`, `ubuntu`, `www-data`, the nginx user and group, `postgres`, `mysql`, `redis`, `nobody` or `nogroup`. Never the name of a standard group that grants root or close to it, whether or not that group exists yet: `admin`, `wheel`, `sudo`, `adm`, `staff`, `shadow`, `disk`, `kmem`, `tty`, `utmp`, `crontab`, `docker`, `lxd`, `incus`, `libvirt`, `kvm`, `video`, `render`, `input`, `sgx`, `lpadmin`, `sambashare`, `operator`, `daemon`, `bin`, `sys`, `backup` and `syslog`. `useradd` makes a group of the user's name, and a package installed later keeps a group that is already there.
 
 **The registry.** `/etc/eeploi/sites/<user>`, one file per site user, owned by root, mode `644`. It holds `DOMAIN=<domain>` and every file and place of the site, one `KEY=value` line each, kept current by the subcommands that write or remove them:
 
@@ -84,7 +84,7 @@ The file is read line by line, never run. Only `DOMAIN` is used for checks. A fi
 
 **The check.** Every subcommand that takes a site user first checks:
 
-1. the name is valid and not reserved;
+1. the name is valid, has an `_` after the first letter, and is not reserved;
 2. its registry file is trusted, and lists the domain when one is given;
 3. the user exists with uid 1000 or higher and home `/srv/eeploi/<user>`;
 4. it is in no group but its own (`id -G`). A site user later added to `sudo`, `adm`, `docker` or another group is refused.
