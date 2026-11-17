@@ -2,6 +2,17 @@
 
 All notable changes to eeploi-helper. Versions follow [semver](https://semver.org): a removed or changed subcommand is a major release, a new subcommand a minor one. While eeploi is in development, every change ships as a patch release (since 2026-11-13).
 
+## 1.0.4 (2026-11-17)
+
+Closes two gaps in 1.0.3's checks, checks the files nginx reads as root, and lets take-overs through that 1.0.3 refused.
+
+- Changed: `vhost-set-root` and `vhost-set-socket` split a vhost's words on a carriage return too, as nginx does.
+- Changed: `vhost-set-root` and `vhost-set-socket` also check every file an `ssl_` or `auth_` directive names, with the rule for includes: in `/etc/nginx`, and the file and every folder up to there root-owned and not writable by group or others. The directives are matched by pattern, so the `proxy_`, `grpc_` and `uwsgi_` ones are covered, and so is one nginx adds later: certificates and keys (`ssl_certificate`, `ssl_trusted_certificate`, `proxy_ssl_certificate_key`, `ssl_session_ticket_key`…), `ssl_crl`, `ssl_dhparam`, `ssl_key_log`, every `…ssl_…_file` and every `auth_…_file`. A certificate elsewhere, such as certbot's in `/etc/letsencrypt`, is refused: eeploi uses its own, in `/etc/nginx/ssl`.
+- Changed: `vhost-set-root` and `vhost-set-socket` refuse a vhost, or a file it includes, with a temp or cache path (`proxy_temp_path`, `fastcgi_cache_path`, any `…_temp_path` or `…_cache_path`) or with njs, Perl, XSLT, GeoIP or Lua directives. nginx's root process makes those folders and gives them to nginx's user, or loads their code or data, and eeploi needs none of them.
+- Changed: `vhost-set-socket` no longer reloads nginx. It runs `nginx -t`, like `vhost-set-root`; eeploi reloads once, after the whole swap.
+- Changed: an include, log or file path in quotes (`include "snippets/fastcgi-php.conf";`) is read without them and checked like any other. A word with more than one pair of quotes is still refused.
+- Changed: `releases-own` hands back only folders and files with one link, in one walk over the releases, from inside each folder.
+
 ## 1.0.3 (2026-11-17)
 
 Root runs and reads as code only files that root alone can change.

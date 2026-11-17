@@ -124,7 +124,6 @@ account() {
 } > "$WORK/system"
 grep -v redis-server "$WORK/system" > "$WORK/system-no-redis"
 { cat "$WORK/system"; echo 'active eeploi-redis@shop_example.service'; } > "$WORK/system-redis-on"
-
 # A copy with a well-formed (fake) release key, to test self-update past the key check.
 FAKE_KEY='RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
@@ -190,7 +189,7 @@ else
 fi
 
 echo "== existing subcommands"
-ok "version" "1.0.3" version
+ok "version" "1.0.4" version
 ok "nginx-test" "run: nginx -t" nginx-test
 ok "nginx-reload" "run: service nginx reload" nginx-reload
 ok "php-fpm" "run: service php8.4-fpm reload" php-fpm-reload 8.4
@@ -310,9 +309,9 @@ lacks "env not read by root" "run: dd " env-install /home/ploi/a/.env $SITE/.env
 lacks "storage not read by root" "run: tar " storage-copy /home/forge/a/storage $SITE/storage shop_example
 ok "storage read as forge" "run: runuser -u forge -- tar -C /home/forge/a/storage -cf - ." storage-copy /home/forge/a/storage $SITE/storage shop_example
 # self-update: strictly newer, compared by number.
-BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.3
+BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.4
 BIN="$WORK/keyed-helper" refuse "older version" "only a newer version" self-update 0.99.99
-BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.4
+BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.5
 BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.1.0
 BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
 BIN="$WORK/keyed-helper" ok "numbers, not text" "download:" self-update 1.0.10
@@ -330,7 +329,7 @@ BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-upd
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version
 AS=deploy refuse "deploy without config" "run through sudo" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.3" version
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.4" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy copies into a site home" "runuser -u shop_example -- sh -c" env-install /home/ploi/a/.env $SITE/.env shop_example
 AS=deploy ETC_DIR="$WORK/etc-conf" refuse "the deploy user is not a site user" "reserved name, not a site user: deploy" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
 ETC_DIR="$WORK/etc-conf" refuse "eeploi refused when another user deploys" "run through sudo as the deploy user deploy" version
@@ -415,8 +414,8 @@ echo "== vhost-set-socket"
 SOCK=/run/php/php8.4-fpm-shop_example.sock
 ok "to the site's socket" "fastcgi_pass unix:$SOCK;" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
 ok "only the exact line" 'fastcgi_pass unix:/var/run/php/php8\.4-fpm\.sock;' vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
-ok "nginx -t then reload" "run: nginx -t
-run: service nginx reload" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
+ok "nginx -t" "run: nginx -t" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
+lacks "no reload: the caller reloads once, after the whole swap" "reload" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
 refuse "no switch back to a panel socket" "invalid PHP-FPM socket: /var/run/php/php8.4-fpm.sock (the new socket is the pool of the site user of shop.example)" \
   vhost-set-socket shop.example $SOCK /var/run/php/php8.4-fpm.sock
 ok "run/php default" "unix:/run/php/php8.3-fpm-shop_example.sock;" vhost-set-socket shop.example /run/php/php8.3-fpm.sock /run/php/php8.3-fpm-shop_example.sock
@@ -1222,8 +1221,25 @@ paths_vhost "    include $WORK/ploi/../open-dir/x.conf;"
 set_root refuse "an include with .." "a vhost include with . or ..: $WORK/ploi/../open-dir/x.conf"
 paths_vhost "    include $WORK/*/x.conf;"
 set_root refuse "a wildcard in the folder of an include" "a vhost include with a wildcard in its folder"
-paths_vhost "    include \"$WORK/fastcgi_params\";"
-set_root refuse "a quoted include" "a vhost include that can't be read safely"
+paths_vhost "    include \"$WORK/fastcgi_params\";
+    include 'fastcgi_params';"
+set_root ok "a quoted include is read like nginx reads it" "root $NEW_ROOT;"
+paths_vhost "    include \"$WORK/open-dir/x.conf\";"
+set_root refuse "a quoted include is checked too" "a vhost include in a folder that is not root-owned, or open to group or others: $WORK/open-dir/x.conf"
+paths_vhost "    include \"$WORK/fast\"\"cgi_params\";"
+set_root refuse "an include of more than one quoted part" "a vhost include that can't be read safely"
+paths_vhost "    include"$'\r'"$WORK/open-dir/x.conf;"
+set_root refuse "a carriage return splits words, as in nginx" "a vhost include in a folder that is not root-owned, or open to group or others: $WORK/open-dir/x.conf"
+paths_vhost "    access_log"$'\r'"/home/ploi/shop.example/access.log;"
+set_root refuse "a carriage return before a log" "a vhost log outside $WORK/log-nginx: /home/ploi/shop.example/access.log"
+paths_vhost "    include fastcgi_params;"$'\r'"
+    access_log $WORK/log-nginx/shop.example-access.log;"$'\r'
+set_root ok "Windows line endings" "root $NEW_ROOT;"
+paths_vhost "    include fastcgi_params;"$'\r'"
+    include $WORK/open-dir/x.conf;"$'\r'
+set_root refuse "Windows line endings are checked too" "a vhost include in a folder that is not root-owned, or open to group or others: $WORK/open-dir/x.conf"
+paths_vhost "    include"$'\r\r'"$WORK/open-dir/x.conf;"
+set_root refuse "two carriage returns in a row" "a vhost include in a folder that is not root-owned, or open to group or others: $WORK/open-dir/x.conf"
 paths_vhost "    include $WORK/nested-open.conf;"
 set_root refuse "an include that includes an open file" "a vhost include in a folder that is not root-owned, or open to group or others: $WORK/open-dir/x.conf"
 paths_vhost "    include $WORK/loop.conf;"
@@ -1250,6 +1266,90 @@ paths_vhost "    access_log $WORK/log-nginx/dir.log;"
 set_root refuse "a log that is a folder" "a vhost log that is a link or not a file: $WORK/log-nginx/dir.log"
 paths_vhost "    access_log $WORK/open-logs/a.log;"
 LOGS="$WORK/open-logs" set_root refuse "a log folder others may write" "a vhost log in a folder that is not root-owned"
+paths_vhost "    access_log \"$WORK/log-nginx/shop.example-access.log\";
+    error_log '/home/ploi/shop.example/error.log';"
+set_root refuse "a quoted log is checked too" "a vhost log outside $WORK/log-nginx: /home/ploi/shop.example/error.log"
+paths_vhost "    access_log \"$WORK/log-nginx/shop.example-access.log\";"
+set_root ok "a quoted log is read like nginx reads it" "root $NEW_ROOT;"
+mkdir -p "$WORK/ssl/shop.example" "$WORK/ssl-open"
+chmod 755 "$WORK/ssl" "$WORK/ssl/shop.example"
+chmod 775 "$WORK/ssl-open"
+for f in shop.example/server.crt shop.example/server.key dhparam.pem passwords htpasswd; do printf 'x\n' > "$WORK/ssl/$f"; done
+chmod 600 "$WORK/ssl/shop.example/server.key"
+printf 'x\n' > "$WORK/ssl-open/server.crt"
+printf 'x\n' > "$WORK/ssl/open.key"
+chmod 606 "$WORK/ssl/open.key"
+ln -s "$WORK/ssl/shop.example/server.crt" "$WORK/ssl/linked.crt"
+paths_vhost "    ssl_certificate $WORK/ssl/shop.example/server.crt;
+    ssl_certificate_key ssl/shop.example/server.key;
+    ssl_dhparam \"$WORK/ssl/dhparam.pem\";
+    ssl_password_file $WORK/ssl/passwords;
+    location / { auth_basic_user_file $WORK/ssl/htpasswd; }"
+set_root ok "certificates, keys and password files, all root's" "root $NEW_ROOT;"
+paths_vhost "    ssl_certificate /etc/letsencrypt/live/shop.example/fullchain.pem;"
+set_root refuse "a certbot certificate" "a vhost ssl_certificate outside $WORK: /etc/letsencrypt/live/shop.example/fullchain.pem"
+paths_vhost "    ssl_certificate_key /etc/letsencrypt/live/shop.example/privkey.pem;"
+set_root refuse "a certbot key" "a vhost ssl_certificate_key outside $WORK: /etc/letsencrypt/live/shop.example/privkey.pem"
+paths_vhost "    ssl_certificate $WORK/ssl-open/server.crt;"
+set_root refuse "a certificate in a folder its group may write" \
+  "a vhost ssl_certificate in a folder that is not root-owned, or open to group or others: $WORK/ssl-open/server.crt ($WORK/ssl-open)"
+paths_vhost "    ssl_certificate_key $WORK/ssl/open.key;"
+set_root refuse "a key others may write" "a vhost ssl_certificate_key that is not root-owned, or open to group or others: $WORK/ssl/open.key"
+paths_vhost "    ssl_certificate $WORK/ssl/linked.crt;"
+set_root refuse "a certificate that is a link" "a vhost ssl_certificate that is not root-owned, or open to group or others: $WORK/ssl/linked.crt"
+paths_vhost "    ssl_certificate $WORK/ssl/*.crt;"
+set_root refuse "a certificate with a wildcard" "a vhost ssl_certificate with a wildcard: $WORK/ssl/*.crt"
+paths_vhost "    ssl_certificate \$ssl_server_name.crt;"
+set_root refuse "a certificate named by a variable" "a vhost ssl_certificate that can't be read safely"
+paths_vhost "    ssl_dhparam /home/ploi/dhparam.pem;"
+set_root refuse "a dhparam outside the nginx folder" "a vhost ssl_dhparam outside $WORK: /home/ploi/dhparam.pem"
+paths_vhost "    ssl_dhparam $WORK/group-writable.conf;"
+set_root refuse "a dhparam its group may write" "a vhost ssl_dhparam that is not root-owned, or open to group or others: $WORK/group-writable.conf"
+paths_vhost "    ssl_password_file /home/ploi/passwords;"
+set_root refuse "a password file outside the nginx folder" "a vhost ssl_password_file outside $WORK: /home/ploi/passwords"
+paths_vhost "    ssl_password_file $WORK/ssl/missing;"
+set_root refuse "a password file that isn't there" "a vhost ssl_password_file that is not root-owned, or open to group or others: $WORK/ssl/missing"
+paths_vhost "    location / { auth_basic_user_file /srv/eeploi/shop_example/shop.example/.htpasswd; }"
+set_root refuse "basic auth from a site's own folder" "a vhost auth_basic_user_file outside $WORK: /srv/eeploi/shop_example/shop.example/.htpasswd"
+paths_vhost "    location / { auth_basic_user_file $WORK/open-dir/x.conf; }"
+set_root refuse "basic auth from a folder others may write" "a vhost auth_basic_user_file in a folder that is not root-owned"
+paths_vhost "    ssl_trusted_certificate $WORK/ssl/shop.example/server.crt;
+    ssl_client_certificate ssl/shop.example/server.crt;
+    ssl_session_ticket_key $WORK/ssl/shop.example/server.key;
+    location / { proxy_ssl_certificate $WORK/ssl/shop.example/server.crt; proxy_ssl_certificate_key $WORK/ssl/shop.example/server.key; }
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_stapling on;
+    proxy_ssl_server_name on;"
+set_root ok "the other file directives, all root's, and ssl_ settings that name no file" "root $NEW_ROOT;"
+for directive in ssl_trusted_certificate ssl_client_certificate ssl_crl ssl_stapling_file ssl_session_ticket_key ssl_key_log \
+  proxy_ssl_certificate proxy_ssl_certificate_key proxy_ssl_trusted_certificate proxy_ssl_password_file grpc_ssl_certificate_key \
+  uwsgi_ssl_certificate auth_jwt_key_file ssl_future_thing_file; do
+  paths_vhost "    location / { $directive /home/ploi/shop.example/x.pem; }"
+  set_root refuse "$directive outside the nginx folder" "a vhost $directive outside $WORK: /home/ploi/shop.example/x.pem"
+done
+paths_vhost "    proxy_ssl_trusted_certificate $WORK/ssl-open/server.crt;"
+set_root refuse "a proxy CA in a folder its group may write" "a vhost proxy_ssl_trusted_certificate in a folder that is not root-owned"
+paths_vhost "    auth_jwt_key_file $WORK/ssl/open.key;"
+set_root refuse "a JWT key others may write" "a vhost auth_jwt_key_file that is not root-owned, or open to group or others: $WORK/ssl/open.key"
+for line in 'proxy_temp_path /etc/cron.d' 'client_body_temp_path /tmp/body' 'fastcgi_cache_path /var/cache/nginx/shop levels=1:2 keys_zone=shop:10m' \
+  'uwsgi_cache_path /tmp/u keys_zone=u:1m' 'js_import /home/ploi/shop.example/main.js' 'js_path /home/ploi' 'perl_modules /home/ploi/perl' \
+  'perl_require shop.pm' 'xslt_stylesheet /home/ploi/x.xslt' 'geoip_country /home/ploi/GeoIP.dat' 'content_by_lua_file /home/ploi/x.lua'; do
+  paths_vhost "    $line;"
+  set_root refuse "${line%% *} is refused" "a vhost with ${line%% *}, which eeploi doesn't allow"
+done
+paths_vhost "    fastcgi_cache shop;
+    proxy_cache_valid 200 1m;
+    fastcgi_cache_key \$scheme\$host\$request_uri;"
+set_root ok "a cache zone a vhost only uses is fine" "root $NEW_ROOT;"
+paths_vhost "    include $WORK/nested-perl.conf;"
+printf 'perl_modules /home/ploi/perl;\n' > "$WORK/nested-perl.conf"
+set_root refuse "Perl in an included file" "a vhost with perl_modules, which eeploi doesn't allow"
+paths_vhost "    include $WORK/nested-cert.conf;"
+printf 'ssl_certificate /etc/letsencrypt/live/shop.example/fullchain.pem;\n' > "$WORK/nested-cert.conf"
+set_root refuse "a certbot certificate in an included file" "a vhost ssl_certificate outside $WORK"
+paths_vhost "    ssl_certificate"$'\r'"/etc/letsencrypt/live/shop.example/fullchain.pem;"
+set_root refuse "a carriage return before a certificate" "a vhost ssl_certificate outside $WORK"
 SOCK_FROM=/var/run/php/php8.4-fpm.sock SOCK_TO=/run/php/php8.4-fpm-shop_example.sock
 paths_vhost "    include $WORK/open-dir/x.conf;"
 VHOST="$WORK/vhost-paths" refuse "vhost-set-socket: an open include" "a vhost include in a folder that is not root-owned" \
@@ -1259,7 +1359,7 @@ paths_vhost "    include fastcgi_params;
 VHOST="$WORK/vhost-paths" refuse "vhost-set-socket: a log that is a link" "a vhost log that is a link or not a file" \
   vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
 paths_vhost "    include fastcgi_params;"
-VHOST="$WORK/vhost-paths" ok "vhost-set-socket: includes all root's" "run: service nginx reload" \
+VHOST="$WORK/vhost-paths" ok "vhost-set-socket: includes all root's" "run: nginx -t" \
   vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
 ok "vhost-set-socket: a dry run says it checks" "check: the vhost's includes and logs" vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
 ok "vhost-set-root: a dry run says it checks" "check: the vhost's includes and logs" vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
@@ -1277,10 +1377,11 @@ VHOST="$WORK/vhost-paths" refuse "a quote open over two lines" "a vhost line wit
   vhost-set-root shop.example "$OLD_ROOT" /home/eeploi/shop.example/current/public
 
 echo "== releases-own"
-ok "chown below the site's releases, from inside its folder" "run: cd $SITE
-run: chown -R -P -h --from=root shop_example: -- releases" releases-own shop_example
-ok "also what the deploy user left" "run: chown -R -P -h --from=eeploi shop_example: -- releases" releases-own shop_example
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "the configured deploy user" "run: chown -R -P -h --from=deploy shop_example: -- releases" releases-own shop_example
+ok "chown below the site's releases, from inside its folder, in one walk" "run: cd $SITE
+run: find releases -depth ( -user root -o -user eeploi ) ( -type d -o -links 1 ) -execdir chown -h shop_example: -- {} +" \
+  releases-own shop_example
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "the configured deploy user" "-user root -o -user deploy )" releases-own shop_example
+lacks "no chown that walks on its own" "chown -R" releases-own shop_example
 ok "only with hard link protection" "check: fs.protected_hardlinks is 1" releases-own shop_example
 ok "the site's own domain from the registry" "run: cd /srv/eeploi/shop_www/www.shop.example" releases-own shop_www
 refuse "releases-own for an unlisted user" "alex_web is not an eeploi site user" releases-own alex_web
