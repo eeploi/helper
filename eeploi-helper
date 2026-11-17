@@ -645,7 +645,7 @@ inside() {
 # folder and no link; the log file itself belongs to nginx's user. Statements may span lines; quotes
 # aren't parsed, so a line with a quote and a #, an open quote, or a # inside a word is refused.
 vhost_paths() {
-  local file=$1 depth=${2:-0} line t dq sq text='' stmt arg match nginx_dir=${NGINX_CONF%/*} ob='{' cb='}'
+  local file=$1 depth=${2:-0} line t dq sq text='' stmt name arg match nginx_dir=${NGINX_CONF%/*} ob='{' cb='}'
   local word_end='(^|[[:space:];{}])$'
   local -a words
   [ "$depth" -le 8 ] || fail "vhost includes nested deeper than 8: $file"
@@ -659,9 +659,9 @@ vhost_paths() {
   done < "$file"
   while IFS= read -r -d ';' stmt; do
     read -r -a words <<< "$stmt"
-    arg=${words[1]:-}
+    name=${words[0]:-} arg=${words[1]:-}
     # nginx takes a quoted name too: "include" is include.
-    case "${words[0]//[\"\'\\]/}" in
+    case "${name//[\"\'\\]/}" in
       include)
         [[ $arg == /* ]] || arg="$nginx_dir/$arg"
         [[ ${arg%/*} != *[*?]* ]] || fail "a vhost include with a wildcard in its folder: $arg"
