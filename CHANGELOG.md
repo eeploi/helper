@@ -2,6 +2,14 @@
 
 All notable changes to eeploi-helper. Versions follow [semver](https://semver.org): a removed or changed subcommand is a major release, a new subcommand a minor one. While eeploi is in development, every change ships as a patch release (since 2026-11-13).
 
+## 1.0.3 (2026-11-17)
+
+Root runs and reads as code only files that root alone can change.
+
+- Changed: the first line is `#!/bin/bash`, so sudo never runs a `bash` found on `PATH`.
+- Changed: `vhost-set-root` and `vhost-set-socket` check what the vhost includes and logs to. Every `include`, also in included files, must be in `/etc/nginx`, every `access_log` and `error_log` in `/var/log/nginx`. Each included file and every folder up to there must be root-owned and not writable by group or others, and a log may not be a link. A line nginx could read differently than the helper (a quote with a `#`, an open quote, a `#` inside a word) is refused. Otherwise the vhost is refused and stays as it was.
+- New subcommand `releases-own <user>`: gives what root or the deploy user owns in the site's `releases` folder back to the site user, with `chown -R -P -h --from=<owner>` from inside the site's folder, only with `fs.protected_hardlinks` on. eeploi.com calls it instead of asking for a `chown` as root.
+
 ## 1.0.2 (2026-11-15)
 
 Every site runs as its own Linux user, a site user, with its home in `/srv/eeploi/<user>`. A patch release while eeploi is in development, though subcommands change shape.
