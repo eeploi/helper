@@ -414,8 +414,8 @@ echo "== vhost-set-socket"
 SOCK=/run/php/php8.4-fpm-shop_example.sock
 ok "to the site's socket" "fastcgi_pass unix:$SOCK;" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
 ok "only the exact line" 'fastcgi_pass unix:/var/run/php/php8\.4-fpm\.sock;' vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
-ok "nginx -t then reload" "run: nginx -t
-run: service nginx reload" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
+ok "nginx -t" "run: nginx -t" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
+lacks "no reload: the caller reloads once, after the whole swap" "reload" vhost-set-socket shop.example /var/run/php/php8.4-fpm.sock $SOCK
 refuse "no switch back to a panel socket" "invalid PHP-FPM socket: /var/run/php/php8.4-fpm.sock (the new socket is the pool of the site user of shop.example)" \
   vhost-set-socket shop.example $SOCK /var/run/php/php8.4-fpm.sock
 ok "run/php default" "unix:/run/php/php8.3-fpm-shop_example.sock;" vhost-set-socket shop.example /run/php/php8.3-fpm.sock /run/php/php8.3-fpm-shop_example.sock
@@ -1313,6 +1313,25 @@ paths_vhost "    location / { auth_basic_user_file /srv/eeploi/shop_example/shop
 set_root refuse "basic auth from a site's own folder" "a vhost auth_basic_user_file outside $WORK: /srv/eeploi/shop_example/shop.example/.htpasswd"
 paths_vhost "    location / { auth_basic_user_file $WORK/open-dir/x.conf; }"
 set_root refuse "basic auth from a folder others may write" "a vhost auth_basic_user_file in a folder that is not root-owned"
+paths_vhost "    ssl_trusted_certificate $WORK/ssl/shop.example/server.crt;
+    ssl_client_certificate ssl/shop.example/server.crt;
+    ssl_session_ticket_key $WORK/ssl/shop.example/server.key;
+    location / { proxy_ssl_certificate $WORK/ssl/shop.example/server.crt; proxy_ssl_certificate_key $WORK/ssl/shop.example/server.key; }
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:SSL:10m;
+    ssl_stapling on;
+    proxy_ssl_server_name on;"
+set_root ok "the other file directives, all root's, and ssl_ settings that name no file" "root $NEW_ROOT;"
+for directive in ssl_trusted_certificate ssl_client_certificate ssl_crl ssl_stapling_file ssl_session_ticket_key ssl_key_log \
+  proxy_ssl_certificate proxy_ssl_certificate_key proxy_ssl_trusted_certificate proxy_ssl_password_file grpc_ssl_certificate_key \
+  uwsgi_ssl_certificate auth_jwt_key_file ssl_future_thing_file; do
+  paths_vhost "    location / { $directive /home/ploi/shop.example/x.pem; }"
+  set_root refuse "$directive outside the nginx folder" "a vhost $directive outside $WORK: /home/ploi/shop.example/x.pem"
+done
+paths_vhost "    proxy_ssl_trusted_certificate $WORK/ssl-open/server.crt;"
+set_root refuse "a proxy CA in a folder its group may write" "a vhost proxy_ssl_trusted_certificate in a folder that is not root-owned"
+paths_vhost "    auth_jwt_key_file $WORK/ssl/open.key;"
+set_root refuse "a JWT key others may write" "a vhost auth_jwt_key_file that is not root-owned, or open to group or others: $WORK/ssl/open.key"
 paths_vhost "    include $WORK/nested-cert.conf;"
 printf 'ssl_certificate /etc/letsencrypt/live/shop.example/fullchain.pem;\n' > "$WORK/nested-cert.conf"
 set_root refuse "a certbot certificate in an included file" "a vhost ssl_certificate outside $WORK"
@@ -1327,7 +1346,7 @@ paths_vhost "    include fastcgi_params;
 VHOST="$WORK/vhost-paths" refuse "vhost-set-socket: a log that is a link" "a vhost log that is a link or not a file" \
   vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
 paths_vhost "    include fastcgi_params;"
-VHOST="$WORK/vhost-paths" ok "vhost-set-socket: includes all root's" "run: service nginx reload" \
+VHOST="$WORK/vhost-paths" ok "vhost-set-socket: includes all root's" "run: nginx -t" \
   vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
 ok "vhost-set-socket: a dry run says it checks" "check: the vhost's includes and logs" vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
 ok "vhost-set-root: a dry run says it checks" "check: the vhost's includes and logs" vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"

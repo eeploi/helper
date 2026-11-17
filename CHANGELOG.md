@@ -7,7 +7,8 @@ All notable changes to eeploi-helper. Versions follow [semver](https://semver.or
 Closes two gaps in 1.0.3's checks, checks the files nginx reads as root, and lets take-overs through that 1.0.3 refused.
 
 - Changed: `vhost-set-root` and `vhost-set-socket` split a vhost's words on a carriage return too, as nginx does.
-- Changed: `vhost-set-root` and `vhost-set-socket` also check every `ssl_certificate`, `ssl_certificate_key`, `ssl_dhparam`, `ssl_password_file` and `auth_basic_user_file`, with the rule for includes: in `/etc/nginx`, and the file and every folder up to there root-owned and not writable by group or others. A certificate elsewhere, such as certbot's in `/etc/letsencrypt`, is refused: eeploi uses its own, in `/etc/nginx/ssl`.
+- Changed: `vhost-set-root` and `vhost-set-socket` also check every file an `ssl_` or `auth_` directive names, with the rule for includes: in `/etc/nginx`, and the file and every folder up to there root-owned and not writable by group or others. The directives are matched by pattern, so the `proxy_`, `grpc_` and `uwsgi_` ones are covered, and so is one nginx adds later: certificates and keys (`ssl_certificate`, `ssl_trusted_certificate`, `proxy_ssl_certificate_key`, `ssl_session_ticket_key`…), `ssl_crl`, `ssl_dhparam`, `ssl_key_log`, every `…ssl_…_file` and every `auth_…_file`. A certificate elsewhere, such as certbot's in `/etc/letsencrypt`, is refused: eeploi uses its own, in `/etc/nginx/ssl`.
+- Changed: `vhost-set-socket` no longer reloads nginx. It runs `nginx -t`, like `vhost-set-root`; eeploi reloads once, after the whole swap.
 - Changed: an include, log or file path in quotes (`include "snippets/fastcgi-php.conf";`) is read without them and checked like any other. A word with more than one pair of quotes is still refused.
 - Changed: `releases-own` hands back only folders and files with one link, in one walk over the releases, from inside each folder.
 
