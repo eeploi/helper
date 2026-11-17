@@ -645,7 +645,8 @@ inside() {
 # auth_ directive names (certificate, key, CRL, dhparam, ticket key, key log, password or auth file),
 # in the nginx folder too: a bad one fails nginx -t, and with it
 # every site's reload. eeploi's certificates are in /etc/nginx/ssl; certbot's are refused. A log is in
-# nginx's log folder, root's alone, and no link; the log file itself belongs to nginx's user.
+# nginx's log folder, root's alone, and no link; the log file itself belongs to nginx's user. Temp and
+# cache paths, njs, Perl, XSLT, GeoIP and Lua are refused: eeploi needs none of them.
 # Statements may span lines; quotes aren't parsed, so a line with a quote and a #, an open quote, or a
 # # inside a word is refused. A path in one pair of quotes, with no other quote, is read without them;
 # inside refuses any other quote. Words split on a carriage return too, as nginx splits them.
@@ -689,6 +690,9 @@ vhost_paths() {
         [[ $arg != *[*?]* ]] || fail "a vhost log with a wildcard: $arg"
         inside "$arg" "$NGINX_LOGS" "vhost log"
         [[ ! -L $arg && ( -f $arg || ! -e $arg ) ]] || fail "a vhost log that is a link or not a file: $arg" ;;
+      # nginx's root process makes these folders and gives them to nginx's user, or loads code or data.
+      *_temp_path|*_cache_path|js_*|perl*|xslt_*|geoip*|*lua*)
+        fail "a vhost with $name, which eeploi doesn't allow: nginx's root process makes its folder or reads its code" ;;
     esac
   done <<< "${text//[$ob$cb]/;};"
 }

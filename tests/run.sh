@@ -1332,6 +1332,19 @@ paths_vhost "    proxy_ssl_trusted_certificate $WORK/ssl-open/server.crt;"
 set_root refuse "a proxy CA in a folder its group may write" "a vhost proxy_ssl_trusted_certificate in a folder that is not root-owned"
 paths_vhost "    auth_jwt_key_file $WORK/ssl/open.key;"
 set_root refuse "a JWT key others may write" "a vhost auth_jwt_key_file that is not root-owned, or open to group or others: $WORK/ssl/open.key"
+for line in 'proxy_temp_path /etc/cron.d' 'client_body_temp_path /tmp/body' 'fastcgi_cache_path /var/cache/nginx/shop levels=1:2 keys_zone=shop:10m' \
+  'uwsgi_cache_path /tmp/u keys_zone=u:1m' 'js_import /home/ploi/shop.example/main.js' 'js_path /home/ploi' 'perl_modules /home/ploi/perl' \
+  'perl_require shop.pm' 'xslt_stylesheet /home/ploi/x.xslt' 'geoip_country /home/ploi/GeoIP.dat' 'content_by_lua_file /home/ploi/x.lua'; do
+  paths_vhost "    $line;"
+  set_root refuse "${line%% *} is refused" "a vhost with ${line%% *}, which eeploi doesn't allow"
+done
+paths_vhost "    fastcgi_cache shop;
+    proxy_cache_valid 200 1m;
+    fastcgi_cache_key \$scheme\$host\$request_uri;"
+set_root ok "a cache zone a vhost only uses is fine" "root $NEW_ROOT;"
+paths_vhost "    include $WORK/nested-perl.conf;"
+printf 'perl_modules /home/ploi/perl;\n' > "$WORK/nested-perl.conf"
+set_root refuse "Perl in an included file" "a vhost with perl_modules, which eeploi doesn't allow"
 paths_vhost "    include $WORK/nested-cert.conf;"
 printf 'ssl_certificate /etc/letsencrypt/live/shop.example/fullchain.pem;\n' > "$WORK/nested-cert.conf"
 set_root refuse "a certbot certificate in an included file" "a vhost ssl_certificate outside $WORK"
