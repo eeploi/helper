@@ -682,10 +682,10 @@ vhost_paths() {
     if [[ $t == *[\"\']* && $line == *#* ]]; then fail "a vhost line with a quote and a # can't be read safely: $line"; fi
     if [ $((${#dq} % 2 + ${#sq} % 2)) -ne 0 ]; then fail "a vhost line with an open quote can't be read safely: $line"; fi
     if [[ $line == *#* && ! $t =~ $word_end ]]; then fail "a vhost line with a # inside a word can't be read safely: $line"; fi
-    text="$text $t"
+    text="$text ${t//$'\r'/ }"
   done < "$file"
   while IFS= read -r -d ';' stmt; do
-    IFS=$' \t\n\r' read -r -a words <<< "$stmt"
+    read -r -a words <<< "$stmt"
     name=${words[0]:-} arg=$(unquote "${words[1]:-}")
     # nginx takes a quoted name too: "include" is include.
     case "${name//[\"\'\\]/}" in
@@ -700,6 +700,7 @@ vhost_paths() {
         done <<< "$(compgen -G "$arg" || true)" ;;
       ssl_certificate|ssl_certificate_key|ssl_dhparam|ssl_password_file|auth_basic_user_file)
         [[ $arg == /* ]] || arg="$nginx_dir/$arg"
+        [[ $arg != *[*?]* ]] || fail "a vhost ${name//[\"\'\\]/} with a wildcard: $arg"
         inside "$arg" "$nginx_dir" "vhost ${name//[\"\'\\]/}"
         closed -f "$arg" || fail "a vhost ${name//[\"\'\\]/} that is not root-owned, or open to group or others: $arg" ;;
       access_log|error_log)
