@@ -132,7 +132,7 @@ sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
 # call <args...>: run the helper in dry-run mode. Settings (temporary per call):
 #   IN (stdin), AS (SUDO_USER, default eeploi), ETC_DIR (default etc-sites), NGINX (nginx.conf), BIN (helper file),
 #   DRYRUN (1 or empty), DBSTATE (what db-create's checks find), SYS (what the server has, default system),
-#   VHOST (the vhost vhost-set-root rewrites)
+#   VHOST (the vhost vhost-set-root rewrites), LOGS (nginx's log folder)
 call() {
   local dry=${DRYRUN-1}
   OUT=$(printf '%s' "${IN:-}" | env -i PATH="$PATH" \
@@ -142,6 +142,7 @@ call() {
     EEPLOI_HELPER_DB_STATE="${DBSTATE:-}" \
     EEPLOI_HELPER_SYSTEM="${SYS-$WORK/system}" \
     EEPLOI_HELPER_VHOST="${VHOST:-}" \
+    EEPLOI_HELPER_NGINX_LOGS="${LOGS:-$WORK/log-nginx}" \
     bash "${BIN:-$HELPER}" "$@" 2>&1)
   CODE=$?
 }
@@ -189,7 +190,7 @@ else
 fi
 
 echo "== existing subcommands"
-ok "version" "1.0.2" version
+ok "version" "1.0.3" version
 ok "nginx-test" "run: nginx -t" nginx-test
 ok "nginx-reload" "run: service nginx reload" nginx-reload
 ok "php-fpm" "run: service php8.4-fpm reload" php-fpm-reload 8.4
@@ -309,9 +310,9 @@ lacks "env not read by root" "run: dd " env-install /home/ploi/a/.env $SITE/.env
 lacks "storage not read by root" "run: tar " storage-copy /home/forge/a/storage $SITE/storage shop_example
 ok "storage read as forge" "run: runuser -u forge -- tar -C /home/forge/a/storage -cf - ." storage-copy /home/forge/a/storage $SITE/storage shop_example
 # self-update: strictly newer, compared by number.
-BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.2
+BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.3
 BIN="$WORK/keyed-helper" refuse "older version" "only a newer version" self-update 0.99.99
-BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.3
+BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.4
 BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.1.0
 BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
 BIN="$WORK/keyed-helper" ok "numbers, not text" "download:" self-update 1.0.10
@@ -329,7 +330,7 @@ BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-upd
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version
 AS=deploy refuse "deploy without config" "run through sudo" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.2" version
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.3" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy copies into a site home" "runuser -u shop_example -- sh -c" env-install /home/ploi/a/.env $SITE/.env shop_example
 AS=deploy ETC_DIR="$WORK/etc-conf" refuse "the deploy user is not a site user" "reserved name, not a site user: deploy" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
 ETC_DIR="$WORK/etc-conf" refuse "eeploi refused when another user deploys" "run through sudo as the deploy user deploy" version
@@ -1171,6 +1172,126 @@ VHOST="$WORK/vhost-root-in-if" refuse "a root inside an if" "the root line is no
   vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
 VHOST="$WORK/vhost-root-in-location" ok "between panel homes, a root in a location may stay" "root /home/eeploi/shop.example/current/public;" \
   vhost-set-root shop.example "$OLD_ROOT" /home/eeploi/shop.example/current/public
+
+echo "== vhost-set-root: what the vhost includes and logs to stays root's"
+# The nginx folder is $WORK (next to nginx-default.conf), the log folder $WORK/log-nginx. The tests own
+# both, which stands in for root.
+mkdir -p "$WORK/ploi/shop.example/before" "$WORK/log-nginx/dir.log" "$WORK/open-dir" "$WORK/open-parent/inner" "$WORK/open-empty" "$WORK/open-logs"
+chmod 755 "$WORK/ploi" "$WORK/ploi/shop.example" "$WORK/ploi/shop.example/before" "$WORK/log-nginx" "$WORK/open-parent/inner"
+chmod 777 "$WORK/open-dir" "$WORK/open-parent" "$WORK/open-empty" "$WORK/open-logs"
+printf 'fastcgi_param A b;\n' > "$WORK/fastcgi_params"
+printf 'add_header X-A b;\n' > "$WORK/ploi/shop.example/before/headers"
+printf 'add_header X-B b;\n' > "$WORK/ploi/shop.example/before/more"
+printf 'add_header X-C c;\n' > "$WORK/open-dir/x.conf"
+printf 'add_header X-C c;\n' > "$WORK/open-parent/inner/x.conf"
+printf 'add_header X-C c;\n' > "$WORK/group-writable.conf"
+chmod 664 "$WORK/group-writable.conf"
+ln -s "$WORK/fastcgi_params" "$WORK/linked.conf"
+printf 'include %s/open-dir/x.conf;\n' "$WORK" > "$WORK/nested-open.conf"
+printf 'include fastcgi_params;\n' > "$WORK/nested-closed.conf"
+printf 'include loop.conf;\n' > "$WORK/loop.conf"
+ln -s /etc/hostname "$WORK/log-nginx/linked.log"
+# paths_vhost <lines>: a vhost with the root and these lines in its server block.
+paths_vhost() { printf 'server {\n    listen 443 ssl;\n    root %s;\n%s\n}\n' "$OLD_ROOT" "$1" > "$WORK/vhost-paths"; }
+set_root() { VHOST="$WORK/vhost-paths" "$1" "$2" "$3" vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"; }
+paths_vhost "    include fastcgi_params;
+    include $WORK/ploi/shop.example/before/*;
+    location ~ \\.php\$ { include $WORK/nested-closed.conf; }
+    access_log off;
+    access_log $WORK/log-nginx/shop.example-access.log combined;
+    error_log $WORK/log-nginx/shop.example-error.log error;
+    error_log stderr;"
+set_root ok "Ploi's includes and logs, all root's" "root $NEW_ROOT;"
+paths_vhost "    include $WORK/ploi/shop.example/nothing-yet/*;"
+set_root refuse "a wildcard in a folder that is missing" "a vhost include in a folder that is not root-owned"
+paths_vhost "    include $WORK/ploi/shop.example/before/none-*;"
+set_root ok "a wildcard that matches nothing, in a closed folder" "root $NEW_ROOT;"
+paths_vhost "    include $WORK/open-dir/x.conf;"
+set_root refuse "an include in a folder others may write" "a vhost include in a folder that is not root-owned, or open to group or others: $WORK/open-dir/x.conf"
+paths_vhost "    include $WORK/open-parent/inner/x.conf;"
+set_root refuse "an include below a folder others may write" "($WORK/open-parent)"
+paths_vhost "    include $WORK/open-empty/*;"
+set_root refuse "a wildcard in an open folder that matches nothing yet" "a vhost include in a folder that is not root-owned"
+paths_vhost "    include $WORK/group-writable.conf;"
+set_root refuse "an include its group may write" "a vhost include that is not root-owned, or open to group or others: $WORK/group-writable.conf"
+paths_vhost "    include linked.conf;"
+set_root refuse "an include that is a link" "a vhost include that is not root-owned, or open to group or others: $WORK/linked.conf"
+paths_vhost "    include /home/ploi/shop.example/nginx.conf;"
+set_root refuse "an include outside the nginx folder" "a vhost include outside $WORK: /home/ploi/shop.example/nginx.conf"
+paths_vhost "    include $WORK/ploi/../open-dir/x.conf;"
+set_root refuse "an include with .." "a vhost include with . or ..: $WORK/ploi/../open-dir/x.conf"
+paths_vhost "    include $WORK/*/x.conf;"
+set_root refuse "a wildcard in the folder of an include" "a vhost include with a wildcard in its folder"
+paths_vhost "    include \"$WORK/fastcgi_params\";"
+set_root refuse "a quoted include" "a vhost include that can't be read safely"
+paths_vhost "    include $WORK/nested-open.conf;"
+set_root refuse "an include that includes an open file" "a vhost include in a folder that is not root-owned, or open to group or others: $WORK/open-dir/x.conf"
+paths_vhost "    include $WORK/loop.conf;"
+set_root refuse "an include that includes itself" "vhost includes nested deeper than 8"
+paths_vhost "    include
+        $WORK/open-dir/x.conf;"
+set_root refuse "an include over two lines" "a vhost include in a folder that is not root-owned"
+paths_vhost "    location / { try_files \$uri /index.php; } include $WORK/open-dir/x.conf;"
+set_root refuse "an include after a } on the same line" "a vhost include in a folder that is not root-owned"
+paths_vhost "    add_header X-Note \"a#b\"; include $WORK/open-dir/x.conf;"
+VHOST="$WORK/vhost-paths" refuse "a quote and a # on one line" "a vhost line with a quote and a # can't be read safely" \
+  vhost-set-root shop.example "$OLD_ROOT" /home/eeploi/shop.example/current/public
+paths_vhost "    # include $WORK/open-dir/x.conf;"
+set_root ok "an include in a comment" "root $NEW_ROOT;"
+paths_vhost "    access_log /home/ploi/shop.example/access.log;"
+set_root refuse "a log outside the log folder" "a vhost log outside $WORK/log-nginx: /home/ploi/shop.example/access.log"
+paths_vhost "    error_log logs/error.log;"
+set_root refuse "a relative log" "a vhost log that can't be read safely: logs/error.log"
+paths_vhost "    access_log $WORK/log-nginx/a*.log;"
+set_root refuse "a log with a wildcard" "a vhost log with a wildcard: $WORK/log-nginx/a*.log"
+paths_vhost "    error_log $WORK/log-nginx/linked.log;"
+set_root refuse "a log that is a link" "a vhost log that is a link or not a file: $WORK/log-nginx/linked.log"
+paths_vhost "    access_log $WORK/log-nginx/dir.log;"
+set_root refuse "a log that is a folder" "a vhost log that is a link or not a file: $WORK/log-nginx/dir.log"
+paths_vhost "    access_log $WORK/open-logs/a.log;"
+LOGS="$WORK/open-logs" set_root refuse "a log folder others may write" "a vhost log in a folder that is not root-owned"
+SOCK_FROM=/var/run/php/php8.4-fpm.sock SOCK_TO=/run/php/php8.4-fpm-shop_example.sock
+paths_vhost "    include $WORK/open-dir/x.conf;"
+VHOST="$WORK/vhost-paths" refuse "vhost-set-socket: an open include" "a vhost include in a folder that is not root-owned" \
+  vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
+paths_vhost "    include fastcgi_params;
+    error_log $WORK/log-nginx/linked.log;"
+VHOST="$WORK/vhost-paths" refuse "vhost-set-socket: a log that is a link" "a vhost log that is a link or not a file" \
+  vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
+paths_vhost "    include fastcgi_params;"
+VHOST="$WORK/vhost-paths" ok "vhost-set-socket: includes all root's" "run: service nginx reload" \
+  vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
+ok "vhost-set-socket: a dry run says it checks" "check: the vhost's includes and logs" vhost-set-socket shop.example "$SOCK_FROM" "$SOCK_TO"
+ok "vhost-set-root: a dry run says it checks" "check: the vhost's includes and logs" vhost-set-root shop.example "$OLD_ROOT" "$NEW_ROOT"
+paths_vhost "    add_header X-A a#; include $WORK/open-dir/x.conf;"
+set_root refuse "a # inside a word is no comment to nginx" "a vhost line with a # inside a word can't be read safely"
+paths_vhost "    add_header X-A a; # include $WORK/open-dir/x.conf;"
+set_root ok "a # after a ; is a comment" "root $NEW_ROOT;"
+paths_vhost "    \"include\" $WORK/open-dir/x.conf;"
+set_root refuse "a quoted include name" "a vhost include in a folder that is not root-owned"
+paths_vhost "    'error_log' /home/ploi/shop.example/error.log;"
+set_root refuse "a quoted log name" "a vhost log outside $WORK/log-nginx"
+paths_vhost "    add_header X-A '
+    #'; include $WORK/open-dir/x.conf;"
+VHOST="$WORK/vhost-paths" refuse "a quote open over two lines" "a vhost line with an open quote can't be read safely" \
+  vhost-set-root shop.example "$OLD_ROOT" /home/eeploi/shop.example/current/public
+
+echo "== releases-own"
+ok "chown below the site's releases, from inside its folder" "run: cd $SITE
+run: chown -R -P -h --from=root shop_example: -- releases" releases-own shop_example
+ok "also what the deploy user left" "run: chown -R -P -h --from=eeploi shop_example: -- releases" releases-own shop_example
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "the configured deploy user" "run: chown -R -P -h --from=deploy shop_example: -- releases" releases-own shop_example
+ok "only with hard link protection" "check: fs.protected_hardlinks is 1" releases-own shop_example
+ok "the site's own domain from the registry" "run: cd /srv/eeploi/shop_www/www.shop.example" releases-own shop_www
+refuse "releases-own for an unlisted user" "alex_web is not an eeploi site user" releases-own alex_web
+refuse "releases-own for root" "reserved name, not a site user: root" releases-own root
+refuse "releases-own for a site user in sudo" "in other groups too" releases-own shop_sudo
+refuse "releases-own without a user" "usage: releases-own <user>" releases-own
+refuse "releases-own with a path" "usage" releases-own shop_example /srv/eeploi/shop_example/shop.example/releases
+AS=ploi refuse "releases-own from ploi" "run through sudo as the deploy user eeploi" releases-own shop_example
+
+echo "== first line"
+check "the first line names /bin/bash, never a bash on PATH" grep -qxF '#!/bin/bash' <(head -n 1 "$HELPER")
 
 echo "== registry_lock makes its folder first"
 # Dry runs skip the lock, so this reads the function itself: root_dir comes before the lock file opens.
