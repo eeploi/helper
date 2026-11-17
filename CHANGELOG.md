@@ -9,7 +9,6 @@ Closes two gaps in 1.0.3's checks, checks the files nginx reads as root, and let
 - Changed: `vhost-set-root` and `vhost-set-socket` split a vhost's words on a carriage return too, as nginx does.
 - Changed: `vhost-set-root` and `vhost-set-socket` also check every `ssl_certificate`, `ssl_certificate_key`, `ssl_dhparam`, `ssl_password_file` and `auth_basic_user_file`, with the rule for includes: in `/etc/nginx`, and the file and every folder up to there root-owned and not writable by group or others. A certificate elsewhere, such as certbot's in `/etc/letsencrypt`, is refused: eeploi uses its own, in `/etc/nginx/ssl`.
 - Changed: an include, log or file path in quotes (`include "snippets/fastcgi-php.conf";`) is read without them and checked like any other. A word with more than one pair of quotes is still refused.
-- Changed: `/var/log/nginx` may also belong to nginx's user, as long as it isn't writable by group or others. The folders below it stay root's.
 - Changed: `releases-own` hands back only folders and files with one link, in one walk over the releases, from inside each folder.
 
 ## 1.0.3 (2026-11-17)

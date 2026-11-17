@@ -625,35 +625,18 @@ vhost_root_conf() {
   done
 }
 
-# inside <path> <base> <what> [<base check>]: the path is in <base>, without . or .. parts, and every
-# folder from its own up to <base> is closed (<base> itself passes <base check> instead, when given).
+# inside <path> <base> <what>: the path is in <base>, without . or .. parts, and every folder from its
+# own up to <base> is closed.
 inside() {
   local dir=${1%/*} re='^/[A-Za-z0-9._/*?-]+$'
   [[ $1 =~ $re ]] || fail "a $3 that can't be read safely: $1"
   case "$1/" in */../*|*/./*|*//*) fail "a $3 with . or ..: $1" ;; esac
   case "$1" in "$2/"?*) ;; *) fail "a $3 outside $2: $1" ;; esac
   while :; do
-    if [ "$dir" = "$2" ] && [ -n "${4:-}" ]; then "$4" "$dir"; else closed -d "$dir"; fi \
-      || fail "a $3 in a folder that is not root-owned, or open to group or others: $1 ($dir)"
+    closed -d "$dir" || fail "a $3 in a folder that is not root-owned, or open to group or others: $1 ($dir)"
     [ "$dir" != "$2" ] || return 0
     dir=${dir%/*}
   done
-}
-
-# log_folder <folder>: nginx's log folder, no link, owned by root or by nginx's user, and not writable
-# by group or others. Some packages give the folder to nginx's user.
-log_folder() {
-  local owner
-  if [[ ! -d $1 || -L $1 || -n "$(find "$1" -maxdepth 0 \( -perm -020 -o -perm -002 \) 2> /dev/null)" ]]; then return 1; fi
-  if [ -n "$DRY" ] && owner=$(stand_in "owner $1 "); then
-    :
-  elif [ -O "$1" ]; then
-    return 0
-  else
-    owner=$(stat -c %U -- "$1") || return 1
-  fi
-  nginx_user > /dev/null
-  [ "$owner" = "$NGINX_USER" ]
 }
 
 # unquote <word>: the word without the quotes around it, when one pair of the same quotes encloses it
@@ -668,9 +651,9 @@ unquote() {
 # (a relative one counts from there), and each file it matches is closed. So is each certificate, key,
 # dhparam, password and basic-auth file, in the nginx folder too: a bad one fails nginx -t, and with it
 # every site's reload. eeploi's certificates are in /etc/nginx/ssl; certbot's are refused. A log is in
-# nginx's log folder and no link; the log file itself belongs to nginx's user. Statements may span lines; quotes
-# aren't parsed, so a line with a quote and a #, an open quote, or a # inside a word is refused. Words
-# split on a carriage return too, as nginx splits them.
+# nginx's log folder, root's alone, and no link; the log file itself belongs to nginx's user.
+# Statements may span lines; quotes aren't parsed, so a line with a quote and a #, an open quote, or a
+# # inside a word is refused. Words split on a carriage return too, as nginx splits them.
 vhost_paths() {
   local file=$1 depth=${2:-0} line t dq sq text='' stmt name arg match nginx_dir=${NGINX_CONF%/*} ob='{' cb='}'
   local word_end='(^|[[:space:];{}])$'
@@ -706,7 +689,7 @@ vhost_paths() {
       access_log|error_log)
         case "$arg" in off|stderr|syslog:*|memory:*) continue ;; esac
         [[ $arg != *[*?]* ]] || fail "a vhost log with a wildcard: $arg"
-        inside "$arg" "$NGINX_LOGS" "vhost log" log_folder
+        inside "$arg" "$NGINX_LOGS" "vhost log"
         [[ ! -L $arg && ( -f $arg || ! -e $arg ) ]] || fail "a vhost log that is a link or not a file: $arg" ;;
     esac
   done <<< "${text//[$ob$cb]/;};"

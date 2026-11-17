@@ -124,8 +124,6 @@ account() {
 } > "$WORK/system"
 grep -v redis-server "$WORK/system" > "$WORK/system-no-redis"
 { cat "$WORK/system"; echo 'active eeploi-redis@shop_example.service'; } > "$WORK/system-redis-on"
-{ cat "$WORK/system"; echo "owner $WORK/log-nginx www-data"; echo "owner $WORK/open-logs www-data"; } > "$WORK/system-logs-www"
-
 # A copy with a well-formed (fake) release key, to test self-update past the key check.
 FAKE_KEY='RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
@@ -1268,8 +1266,6 @@ paths_vhost "    access_log $WORK/log-nginx/dir.log;"
 set_root refuse "a log that is a folder" "a vhost log that is a link or not a file: $WORK/log-nginx/dir.log"
 paths_vhost "    access_log $WORK/open-logs/a.log;"
 LOGS="$WORK/open-logs" set_root refuse "a log folder others may write" "a vhost log in a folder that is not root-owned"
-LOGS="$WORK/open-logs" SYS="$WORK/system-logs-www" set_root refuse "a log folder of nginx's user that others may write" \
-  "a vhost log in a folder that is not root-owned"
 paths_vhost "    access_log \"$WORK/log-nginx/shop.example-access.log\";
     error_log '/home/ploi/shop.example/error.log';"
 set_root refuse "a quoted log is checked too" "a vhost log outside $WORK/log-nginx: /home/ploi/shop.example/error.log"
@@ -1322,10 +1318,6 @@ printf 'ssl_certificate /etc/letsencrypt/live/shop.example/fullchain.pem;\n' > "
 set_root refuse "a certbot certificate in an included file" "a vhost ssl_certificate outside $WORK"
 paths_vhost "    ssl_certificate"$'\r'"/etc/letsencrypt/live/shop.example/fullchain.pem;"
 set_root refuse "a carriage return before a certificate" "a vhost ssl_certificate outside $WORK"
-paths_vhost "    access_log $WORK/log-nginx/shop.example-access.log;"
-SYS="$WORK/system-logs-www" set_root ok "a log folder owned by nginx's user" "root $NEW_ROOT;"
-SYS="$WORK/system-logs-www" NGINX="$WORK/nginx-ploi.conf" set_root refuse "a log folder owned by a user nginx doesn't run as" \
-  "a vhost log in a folder that is not root-owned, or open to group or others: $WORK/log-nginx/shop.example-access.log ($WORK/log-nginx)"
 SOCK_FROM=/var/run/php/php8.4-fpm.sock SOCK_TO=/run/php/php8.4-fpm-shop_example.sock
 paths_vhost "    include $WORK/open-dir/x.conf;"
 VHOST="$WORK/vhost-paths" refuse "vhost-set-socket: an open include" "a vhost include in a folder that is not root-owned" \
