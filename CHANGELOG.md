@@ -2,6 +2,13 @@
 
 All notable changes to eeploi-helper. Versions follow [semver](https://semver.org): a removed or changed subcommand is a major release, a new subcommand a minor one. While eeploi is in development, every change ships as a patch release (since 2026-11-13).
 
+## 1.1.0 (unreleased)
+
+Brings a later recipes release to a server eeploi built.
+
+- New subcommand `recipe-run <version> <provider>`: downloads a signed recipes release, checks its signature with a recipes key built into the helper and every file against the signed manifest, runs the `always` steps that are new or changed on this server (and an unchanged one whose check fails), then every check. Values come from `/etc/eeploi/recipes.conf`; the last good run is kept in `/var/lib/eeploi/recipes/state`. See README, Recipes.
+- Changed: tests need `minisign`.
+
 ## 1.0.4 (2026-11-17)
 
 Closes two gaps in 1.0.3's checks, checks the files nginx reads as root, and lets take-overs through that 1.0.3 refused.

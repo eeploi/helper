@@ -7,11 +7,20 @@ umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export TMPDIR=/tmp HOME=/root LC_ALL=C
 
-VERSION='1.0.4'
+VERSION='1.1.0'
 
 # The minisign public key releases are signed with (minisign.pub, key id A2C97024AB6219A8).
 PUBKEY='RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA'
 RELEASES='https://github.com/eeploi/helper/releases/download'
+# The minisign public key recipes releases are signed with, apart from the helper's own.
+RECIPES_PUBKEY='RWS...REPLACE_WITH_RECIPES_KEY'
+RECIPES_RELEASES='https://github.com/eeploi/recipes/releases/download'
+# Downloads: HTTPS only, also after a redirect; -q first, so curl reads no curlrc. Each caller adds
+# --max-filesize.
+FETCH=(curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https'
+  --connect-timeout 10 --max-time 120)
+# A release version: three numbers, no leading zeros, small enough to compare as numbers.
+SEMVER_RE='^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
 INSTALL_PATH=/usr/local/sbin/eeploi-helper
 
 DRY="${EEPLOI_HELPER_DRY_RUN:-}"
@@ -23,24 +32,39 @@ CALLER="${SUDO_USER:-}"
 # what db-create's checks would find on the database server, EEPLOI_HELPER_SYSTEM for the users,
 # groups, paths and running units the site-user checks would find (see stand_in),
 # EEPLOI_HELPER_VHOST for the vhost vhost-set-root rewrites (the result is printed) and
-# vhost-set-socket checks, and
-# EEPLOI_HELPER_NGINX_LOGS for nginx's log folder.
+# vhost-set-socket checks,
+# EEPLOI_HELPER_NGINX_LOGS for nginx's log folder, EEPLOI_HELPER_OS_RELEASE for os-release,
+# EEPLOI_HELPER_RECIPES_STATE for recipe-run's state folder, EEPLOI_HELPER_RECIPES_DOWNLOAD for the
+# recipes release (a folder with its files) and EEPLOI_HELPER_RECIPES_RESULTS for which steps and
+# checks fail ("fail <path>" lines), EEPLOI_HELPER_MINISIGN for a minisign outside PATH.
 ETC=/etc/eeploi
 NGINX_CONF=/etc/nginx/nginx.conf
 NGINX_LOGS=/var/log/nginx
+OS_RELEASE=/etc/os-release
+RECIPES_STATE=/var/lib/eeploi/recipes
 DB_STATE=
 SYSTEM=
 VHOST_STAND_IN=
+RECIPES_DOWNLOAD=
+RECIPES_RESULTS=
+MINISIGN=minisign
 if [ -n "$DRY" ]; then
+  MINISIGN="${EEPLOI_HELPER_MINISIGN:-$MINISIGN}"
+  RECIPES_DOWNLOAD="${EEPLOI_HELPER_RECIPES_DOWNLOAD:-}"
+  RECIPES_RESULTS="${EEPLOI_HELPER_RECIPES_RESULTS:-}"
   ETC="${EEPLOI_HELPER_ETC:-$ETC}"
   NGINX_CONF="${EEPLOI_HELPER_NGINX_CONF:-$NGINX_CONF}"
   NGINX_LOGS="${EEPLOI_HELPER_NGINX_LOGS:-$NGINX_LOGS}"
+  OS_RELEASE="${EEPLOI_HELPER_OS_RELEASE:-$OS_RELEASE}"
+  RECIPES_STATE="${EEPLOI_HELPER_RECIPES_STATE:-$RECIPES_STATE}"
   DB_STATE="${EEPLOI_HELPER_DB_STATE:-}"
   SYSTEM="${EEPLOI_HELPER_SYSTEM:-}"
   VHOST_STAND_IN="${EEPLOI_HELPER_VHOST:-}"
 fi
 
-fail() { echo "eeploi-helper: $*" >&2; exit 64; }
+# A refusal exits 64. recipe-run sets FAIL_EXIT to 1 once its steps start: then something ran.
+FAIL_EXIT=64
+fail() { echo "eeploi-helper: $*" >&2; exit "$FAIL_EXIT"; }
 
 # Temporary files and folders, removed on every exit.
 TMP_PATHS=""
@@ -76,11 +100,13 @@ trusted() { closed -f "$1" && closed -d "$(dirname -- "$1")"; }
 
 
 # The deploy user: eeploi, or DEPLOY_USER from helper.conf. The file is parsed, never sourced.
+# recipes.conf names it too, by the same rule.
+DEPLOY_USER_NAME='[a-z][a-z0-9_-]{1,31}'
 DEPLOY_USER=eeploi
 CONF="$ETC/helper.conf"
 if [ -e "$CONF" ] || [ -L "$CONF" ]; then
   trusted "$CONF" || fail "untrusted config: $CONF (must be a root-owned file, not writable by others)"
-  conf_re='^DEPLOY_USER=([a-z][a-z0-9_-]{1,31})$'
+  conf_re="^DEPLOY_USER=($DEPLOY_USER_NAME)$"
   seen=0
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
@@ -506,6 +532,268 @@ version_lt() {
   (( a1 != b1 )) && { (( a1 < b1 )); return; }
   (( a2 != b2 )) && { (( a2 < b2 )); return; }
   (( a3 < b3 ))
+}
+
+# release_key <key> <what> <variable> <subcommand>: a minisign public key, not the placeholder.
+release_key() {
+  local re='^RW[A-Za-z0-9+/]{54}$'
+  case "$1" in *REPLACE_WITH_*) fail "no $2 key in this build ($3 is the placeholder), $4 refused" ;; esac
+  [[ $1 =~ $re ]] || fail "invalid $2 key in this build, $4 refused"
+}
+
+# Every recipes release has these files: a step runs after both, a check after the values.
+RECIPE_START=stack/start.sh
+RECIPE_VALUES=stack/values.sh
+
+# A path in a recipes release: relative, no . or .. parts, no empty part.
+RECIPE_PATH_RE='^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$'
+
+# recipes_conf: the values the steps use, from $ETC/recipes.conf, in R_USER, R_PORT and R_PHP. Written
+# at first boot, root's, parsed line by line, never sourced, each key once. DEPLOY_USER must be the
+# helper's own.
+recipes_conf() {
+  local file="$ETC/recipes.conf" line key value re='^(DEPLOY_USER|SSH_PORT|PHP)=(.*)$'
+  R_USER='' R_PORT='' R_PHP=''
+  [ -e "$file" ] || [ -L "$file" ] || fail "no $file: this server was not built from a recipe that writes it, recipe-run refused"
+  trusted "$file" || fail "untrusted values file: $file (must be a root-owned file, not writable by others)"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    [[ $line =~ $re ]] || fail "invalid line in $file: $line"
+    key=${BASH_REMATCH[1]} value=${BASH_REMATCH[2]}
+    case "$key" in
+      DEPLOY_USER)
+        [ -z "$R_USER" ] || fail "DEPLOY_USER is set twice in $file"
+        [[ $value =~ ^$DEPLOY_USER_NAME$ && $value != root ]] || fail "invalid DEPLOY_USER in $file: $value"
+        R_USER=$value ;;
+      SSH_PORT)
+        [ -z "$R_PORT" ] || fail "SSH_PORT is set twice in $file"
+        { [ "$value" = 22 ] || { [[ $value =~ ^[1-9][0-9]{4}$ ]] && [ "$value" -ge 10000 ] && [ "$value" -le 32767 ]; }; } \
+          || fail "invalid SSH_PORT in $file: $value (22, or 10000 to 32767)"
+        R_PORT=$value ;;
+      PHP)
+        [ -z "$R_PHP" ] || fail "PHP is set twice in $file"
+        [[ $value =~ ^[0-9]\.[0-9]$ ]] || fail "invalid PHP in $file: $value"
+        R_PHP=$value ;;
+    esac
+  done < "$file"
+  for key in DEPLOY_USER:$R_USER SSH_PORT:$R_PORT PHP:$R_PHP; do
+    [ -n "${key#*:}" ] || fail "no ${key%%:*} in $file"
+  done
+  [ "$R_USER" = "$DEPLOY_USER" ] || fail "DEPLOY_USER is $R_USER in $file but $DEPLOY_USER for the helper, recipe-run refused"
+}
+
+# os_target: R_OS, this server's OS as a recipes target such as ubuntu-26.04, and R_VERSION (26.04),
+# from ID and VERSION_ID in os-release, parsed line by line, never sourced. On Ubuntu /etc/os-release
+# links to /usr/lib/os-release.
+os_target() {
+  local file line id='' version='' start_re='^(ID|VERSION_ID)=' re='^(ID|VERSION_ID)=("?)([a-z0-9][a-z0-9.]{0,15})("?)$'
+  if ! file=$(readlink -f -- "$OS_RELEASE") || ! trusted "$file"; then
+    fail "untrusted or missing os-release: $OS_RELEASE"
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ $line =~ $start_re ]] || continue
+    [[ $line =~ $re && ${BASH_REMATCH[2]} == "${BASH_REMATCH[4]}" ]] || fail "cannot read os-release: $line"
+    if [ "${BASH_REMATCH[1]}" = ID ]; then
+      [ -z "$id" ] || fail "ID is set twice in $file"
+      id=${BASH_REMATCH[3]}
+    else
+      [ -z "$version" ] || fail "VERSION_ID is set twice in $file"
+      version=${BASH_REMATCH[3]}
+    fi
+  done < "$file"
+  [ -n "$id" ] && [ -n "$version" ] || fail "no ID or VERSION_ID in $file"
+  R_OS="$id-$version" R_VERSION=$version
+}
+
+# recipes_lock: one recipe-run at a time (fd 8), in the root-owned state folder.
+recipes_lock() {
+  [ -z "$DRY" ] || return 0
+  root_dir "${RECIPES_STATE%/*}"
+  root_dir "$RECIPES_STATE"
+  exec 8> "$RECIPES_STATE/.lock"
+  flock -n 8 || fail "another recipe-run is running"
+}
+
+# recipes_state: the last good run from $RECIPES_STATE/state, root's, parsed line by line: R_LAST, its
+# release (empty before the first run), and R_RAN, a "<sha256> <path>" line per step it left in place.
+recipes_state() {
+  local file="$RECIPES_STATE/state" line release_re='^release (.*)$' step_re='^step ([0-9a-f]{64}) (.*)$'
+  R_LAST='' R_RAN=''
+  [ -e "$file" ] || [ -L "$file" ] || return 0
+  trusted "$file" || fail "untrusted recipes state: $file (must be a root-owned file, not writable by others)"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    if [[ $line =~ $release_re ]]; then
+      [ -z "$R_LAST" ] || fail "release is set twice in $file"
+      R_LAST=${BASH_REMATCH[1]}
+      [[ $R_LAST =~ $SEMVER_RE ]] || fail "invalid line in $file: $line"
+    elif [[ $line =~ $step_re && ${BASH_REMATCH[2]} =~ $RECIPE_PATH_RE ]]; then
+      R_RAN="$R_RAN${line#step }"$'\n'
+    else
+      fail "invalid line in $file: $line"
+    fi
+  done < "$file"
+  [ -n "$R_LAST" ] || fail "no release in $file"
+}
+
+# recipes_state_write <version> <lines>: the state after a good run, the release and a step line per
+# "<sha256> <path>" line.
+recipes_state_write() {
+  local line text="# Written by eeploi-helper (recipe-run): the last good run here. Do not edit."$'\n'"release $1"$'\n'
+  while IFS= read -r line; do
+    [ -z "$line" ] || text="${text}step $line"$'\n'
+  done <<< "$2"
+  [ -z "$DRY" ] || printf '%s' "$text" | sed 's/^/  /'
+  printf '%s' "$text" | put "$RECIPES_STATE/state" 644
+}
+
+# recipes_fetch <file> <most bytes>: one file of the release, from $R_BASE into $R_WORK. A dry run copies
+# it from EEPLOI_HELPER_RECIPES_DOWNLOAD.
+recipes_fetch() {
+  if [ -n "$DRY" ]; then
+    echo "download: $R_BASE/$1"
+    if [ -z "$RECIPES_DOWNLOAD" ] || ! cp -- "$RECIPES_DOWNLOAD/$1" "$R_WORK/$1" 2> /dev/null; then
+      fail "download failed: $R_BASE/$1"
+    fi
+  else
+    "${FETCH[@]}" --max-filesize "$2" -o "$R_WORK/$1" "$R_BASE/$1" || fail "download failed: $R_BASE/$1"
+  fi
+  [ "$(wc -c < "$R_WORK/$1")" -le "$2" ] || fail "download too large: $R_BASE/$1"
+}
+
+# recipes_manifest <file> <version> <provider>: the signed manifest, line by line, into R_PATH, R_SHA
+# and R_KIND (the step's marker, or file), R_N entries in order. The release, target and min-helper
+# must fit this call, this server and this helper; each path once.
+recipes_manifest() {
+  local line='' n=0 release='' target='' min='' i p
+  local head_re='^(release|target|min-helper) (.+)$' ver_re='[0-9]+\.[0-9]+\.[0-9]+'
+  local step_re="^step ([0-9a-f]{64}) (first-boot|always|window) $ver_re $ver_re [a-z,-]+ (.+\.sh)$"
+  local file_re='^file ([0-9a-f]{64}) (.+)$'
+  R_PATH=() R_SHA=() R_KIND=()
+  {
+  IFS= read -r line || true
+  [ "$line" = 'format 1' ] || fail "not a format 1 manifest: $line"
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ $line =~ $head_re ]]; then
+      case "${BASH_REMATCH[1]}" in
+        release) [ -z "$release" ] || fail "release is set twice in the manifest"; release=${BASH_REMATCH[2]} ;;
+        target) [ -z "$target" ] || fail "target is set twice in the manifest"; target=${BASH_REMATCH[2]} ;;
+        min-helper) [ -z "$min" ] || fail "min-helper is set twice in the manifest"; min=${BASH_REMATCH[2]} ;;
+      esac
+      continue
+    elif [[ $line =~ $step_re ]]; then
+      R_SHA[n]=${BASH_REMATCH[1]} R_KIND[n]=${BASH_REMATCH[2]} R_PATH[n]=${BASH_REMATCH[3]}
+    elif [[ $line =~ $file_re ]]; then
+      R_SHA[n]=${BASH_REMATCH[1]} R_KIND[n]=file R_PATH[n]=${BASH_REMATCH[2]}
+    else
+      fail "invalid line in the manifest: $line"
+    fi
+    [ $n -lt 200 ] || fail "more than 200 files in the manifest"
+    p=${R_PATH[n]}
+    [[ $p =~ $RECIPE_PATH_RE ]] || fail "a manifest path that is absolute, has . or .., or can't be read safely: $p"
+    for ((i = 0; i < n; i++)); do
+      [ "${R_PATH[i]}" != "$p" ] || fail "a path twice in the manifest: $p"
+    done
+    n=$((n + 1))
+  done
+  } < "$1"
+  R_N=$n
+  [ "$release" = "$2" ] || fail "the manifest is for release $release, not $2"
+  [ "$target" = "$3 $R_OS" ] || fail "the manifest is for $target, not $3 $R_OS"
+  [[ $min =~ $SEMVER_RE ]] || fail "invalid min-helper in the manifest: $min"
+  ! version_lt "$VERSION" "$min" || fail "recipes $2 needs eeploi-helper $min or newer, this is $VERSION"
+  for p in "$RECIPE_START" "$RECIPE_VALUES"; do
+    if ! recipes_index "$p" || [ "${R_KIND[R_I]}" != file ]; then fail "no $p in the manifest"; fi
+  done
+}
+
+# recipes_index <path>: R_I is that path's entry in the manifest; false when it has none.
+recipes_index() {
+  for ((R_I = 0; R_I < R_N; R_I++)); do
+    [ "${R_PATH[R_I]}" != "$1" ] || return 0
+  done
+  return 1
+}
+
+# recipes_is_check <i>: entry i is a check, a file <step>.check.sh.
+recipes_is_check() { [[ ${R_KIND[$1]} == file && ${R_PATH[$1]} == *.check.sh ]]; }
+
+# recipes_runs <i>: entry i is a file a run uses: an always step, start.sh, values.sh or a check.
+recipes_runs() {
+  [[ ${R_KIND[$1]} == always ]] || recipes_is_check "$1" \
+    || { [[ ${R_KIND[$1]} == file ]] && [[ ${R_PATH[$1]} == "$RECIPE_START" || ${R_PATH[$1]} == "$RECIPE_VALUES" ]]; }
+}
+
+# recipes_unpack <package>: the package unzipped once (8 MB at most), only plain files and folders in
+# it, then every file the manifest lists read out of it one by one into $R_WORK/files, never unpacked
+# as it is. Each must match its SHA-256. In the files a run uses, the only placeholders are the values
+# recipes_render fills in, and never in bash's own braces (${user}, $x{user}), which it would fill in too.
+recipes_unpack() {
+  local i p f found tar="$R_WORK/package.tar"
+  local values_re='^\{(user|port|php|version|name)\}$'
+  # shellcheck disable=SC2016 # the $ is in a regex
+  local bash_re='[$A-Za-z0-9_]\{[a-z_]+\}' value_in_bash_re='[$A-Za-z0-9_]\{(user|port|php|version|name)\}'
+  gzip -dc < "$1" 2> /dev/null | head -c 8388609 > "$tar" || true
+  [ "$(wc -c < "$tar")" -le 8388608 ] || fail "the package is too large unpacked"
+  tar -tvf "$tar" > "$R_WORK/package.list" 2> /dev/null || fail "cannot read the package"
+  ! cut -c1 "$R_WORK/package.list" | grep -qv '^[-d]$' || fail "the package holds a link or another file that is not a plain file"
+  R_FILES="$R_WORK/files"
+  for ((i = 0; i < R_N; i++)); do
+    p=${R_PATH[i]}
+    f="$R_FILES/$p"
+    mkdir -p -- "${f%/*}"
+    tar -xOf "$tar" -- "$p" > "$f" 2> /dev/null || fail "cannot read $p from the package"
+    [ "$(wc -c < "$f")" -le 1048576 ] || fail "a file too large in the package: $p"
+    [ "$(sha256sum < "$f" | cut -d' ' -f1)" = "${R_SHA[i]}" ] || fail "changed file: $p (its SHA-256 is not the manifest's)"
+    recipes_runs "$i" || continue
+    ! grep -qE "$value_in_bash_re" "$f" || fail "a value in bash's own braces, which recipe-run can't fill in safely: $p"
+    while IFS= read -r found; do
+      [ -z "$found" ] || [[ $found =~ $values_re ]] || fail "a placeholder recipe-run can't fill in: $found in $p"
+    done <<< "$(sed -E "s/$bash_re//g" "$f" | grep -oE '\{[a-z_]+\}' || true)"
+  done
+}
+
+# recipes_render <file>...: those files of the release, an empty line between each, the values filled in
+# (the ones recipes_unpack allows).
+recipes_render() {
+  local f
+  for f; do
+    [ "$f" = "$1" ] || echo
+    sed -e "s/{user}/$R_USER/g; s/{port}/$R_PORT/g; s/{php}/$R_PHP/g; s/{version}/$R_VERSION/g; s/{name}/recipe-run/g" "$R_FILES/$f"
+  done
+}
+
+# recipes_exec <path> <script>: run the script of a step or check as root, from /, with a clean
+# environment and no stdin; what it prints goes to stderr. A dry run prints it, and it fails only when
+# EEPLOI_HELPER_RECIPES_RESULTS has "fail <path>".
+recipes_exec() {
+  if [ -n "$DRY" ]; then
+    echo "run: $1" >&2
+    sed 's/^/  /' "$2" >&2
+    [ -z "$RECIPES_RESULTS" ] || ! grep -qxF -- "fail $1" "$RECIPES_RESULTS"
+    return
+  fi
+  ( cd / && exec env -i PATH="$PATH" HOME=/root LC_ALL=C TMPDIR=/tmp /bin/bash "$2" ) < /dev/null >&2 8>&-
+}
+
+# recipes_check <check>: run one check under set -e, after the values.
+recipes_check() {
+  local script="$R_WORK/check.sh"
+  {
+    echo '#!/usr/bin/env bash'
+    recipes_render "$RECIPE_VALUES"
+    echo
+    echo 'set -euo pipefail'
+    # shellcheck disable=SC2016 # for the check's shell
+    echo 'trap '\''echo "  $BASH_COMMAND" >&2'\'' ERR'
+    recipes_render "$1"
+  } > "$script"
+  recipes_exec "$1" "$script"
+}
+
+# audit <text>: one line in the system log (a dry run prints it on stderr).
+audit() {
+  if [ -n "$DRY" ]; then echo "log: eeploi-helper: $*" >&2; else logger -t eeploi-helper -- "$*" 2> /dev/null || true; fi
 }
 
 # vhost_conf <domain> <user> <socket>: eeploi's one vhost, HTTPS only behind Cloudflare, built here from
@@ -960,13 +1248,7 @@ shift
 # Every call that can change something goes to the system log: who, the subcommand and its
 # arguments, never what comes on stdin (a certificate, a command, a file). A dry run says so
 # on stderr instead.
-if [ "$command" != "version" ]; then
-  if [ -n "$DRY" ]; then
-    echo "log: eeploi-helper: $CALLER: $command $*" >&2
-  else
-    logger -t eeploi-helper -- "$CALLER: $command $*" 2> /dev/null || true
-  fi
-fi
+[ "$command" = "version" ] || audit "$CALLER: $command $*"
 
 case "$command" in
   version)
@@ -1611,16 +1893,11 @@ case "$command" in
 
   self-update)
     [ $# -eq 1 ] || fail "usage: self-update <version>"
-    semver='^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
-    [[ $1 =~ $semver ]] || fail "invalid version: $1"
+    [[ $1 =~ $SEMVER_RE ]] || fail "invalid version: $1"
     version_lt "$VERSION" "$1" || fail "only a newer version: $VERSION is installed, $1 is not newer"
-    key_re='^RW[A-Za-z0-9+/]{54}$'
-    case "$PUBKEY" in *REPLACE_WITH_RELEASE_KEY*) fail "no release key in this build (PUBKEY is the placeholder), self-update refused" ;; esac
-    [[ $PUBKEY =~ $key_re ]] || fail "invalid release key in this build, self-update refused"
+    release_key "$PUBKEY" release PUBKEY self-update
     url="$RELEASES/v$1/eeploi-helper"
-    # -q first: curl reads no curlrc.
-    fetch=(curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https'
-      --connect-timeout 10 --max-time 120 --max-filesize 1048576)
+    fetch=("${FETCH[@]}" --max-filesize 1048576)
     if [ -n "$DRY" ]; then
       echo "download: $url"
       echo "download: $url.minisig"
@@ -1632,13 +1909,13 @@ case "$command" in
       exit 0
     fi
     command -v curl > /dev/null || fail "curl not found"
-    command -v minisign > /dev/null || fail "minisign not found"
+    command -v "$MINISIGN" > /dev/null || fail "minisign not found"
     work=$(mktemp -d)
     TMP_PATHS="$TMP_PATHS $work"
     for f in eeploi-helper eeploi-helper.minisig; do
       "${fetch[@]}" -o "$work/$f" "$RELEASES/v$1/$f" || fail "download failed: $RELEASES/v$1/$f"
     done
-    minisign -V -q -P "$PUBKEY" -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
+    "$MINISIGN" -V -q -P "$PUBKEY" -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
       || fail "signature check failed, nothing changed"
     bash -n "$work/eeploi-helper" || fail "the new helper is not valid bash, nothing changed"
     got=$(env -i PATH="$PATH" SUDO_USER="$CALLER" bash "$work/eeploi-helper" version 2>&1) \
@@ -1652,6 +1929,69 @@ case "$command" in
     mv -f "$new" "$INSTALL_PATH"
     echo "eeploi-helper $VERSION -> $1"
     exit 0 ;;
+
+  recipe-run)
+    [ $# -eq 2 ] || fail "usage: recipe-run <version> <provider>"
+    [[ $1 =~ $SEMVER_RE ]] || fail "invalid version: $1"
+    [[ $2 =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]] || fail "invalid provider: $2"
+    release_key "$RECIPES_PUBKEY" recipes RECIPES_PUBKEY recipe-run
+    recipes_conf
+    os_target
+    for tool in "$MINISIGN" tar gzip sha256sum; do command -v "$tool" > /dev/null || fail "$tool not found"; done
+    [ -n "$DRY" ] || for tool in curl flock; do command -v "$tool" > /dev/null || fail "$tool not found"; done
+    recipes_lock
+    recipes_state
+    # A release older than the last good one here is refused; the same one may run again.
+    [ -z "$R_LAST" ] || ! version_lt "$1" "$R_LAST" || fail "recipes $R_LAST ran here, $1 is older: refused"
+    R_BASE="$RECIPES_RELEASES/v$1"
+    R_WORK=$(mktemp -d)
+    TMP_PATHS="$TMP_PATHS $R_WORK"
+    manifest="recipes-$1-$2-$R_OS.manifest"
+    package="recipes-$1.tar.gz"
+    # Nothing else is downloaded or read before the signature checks out.
+    recipes_fetch "$manifest" 65536
+    recipes_fetch "$manifest.minisig" 4096
+    [ -z "$DRY" ] || echo "check: minisign -V -q -P $RECIPES_PUBKEY -m $manifest -x $manifest.minisig"
+    "$MINISIGN" -V -q -P "$RECIPES_PUBKEY" -m "$R_WORK/$manifest" -x "$R_WORK/$manifest.minisig" > /dev/null 2>&1 \
+      || fail "signature check failed: $manifest, nothing ran"
+    recipes_manifest "$R_WORK/$manifest" "$1" "$2"
+    recipes_fetch "$package" 4194304
+    recipes_unpack "$R_WORK/$package"
+    echo "recipe-run $1 $2 $R_OS"
+    # The always steps, in order: one that is new or changed here runs, and so does one whose check
+    # fails now. After a failed step the rest don't run.
+    failed=0 kept='' FAIL_EXIT=1
+    for ((i = 0; i < R_N; i++)); do
+      [ "${R_KIND[i]}" = always ] || continue
+      p=${R_PATH[i]} sha=${R_SHA[i]}
+      if [ $failed -eq 1 ]; then echo "step skipped $p"; continue; fi
+      state='ran'
+      case $'\n'"$R_RAN" in
+        *$'\n'"$sha $p"$'\n'*)
+          check=${p%.sh}.check.sh
+          if ! recipes_index "$check" || ! recipes_is_check "$R_I" || recipes_check "$check"; then state='same'; fi ;;
+      esac
+      if [ "$state" = ran ]; then
+        recipes_render "$RECIPE_START" "$RECIPE_VALUES" "$p" > "$R_WORK/step.sh"
+        recipes_exec "$p" "$R_WORK/step.sh" || { state='failed'; failed=1; }
+      fi
+      echo "step $state $p"
+      audit "$CALLER: recipe-run $1: step $state $p"
+      kept="$kept$sha $p"$'\n'
+    done
+    # Then every check, read-only, each on its own.
+    checks=0
+    for ((i = 0; i < R_N; i++)); do
+      recipes_is_check "$i" || continue
+      p=${R_PATH[i]}
+      if recipes_check "$p"; then echo "check ok $p"; else echo "check failed $p"; checks=1; fi
+    done
+    # The state only after every step went well; a failed run runs its steps again next time.
+    [ $failed -eq 1 ] || recipes_state_write "$1" "$kept"
+    if [ $failed -eq 0 ] && [ $checks -eq 0 ]; then result=ok; else result=failed; fi
+    echo "result $result"
+    audit "$CALLER: recipe-run $1: result $result"
+    [ "$result" = ok ] || exit 1 ;;
 
   *)
     fail "unknown subcommand: $command" ;;
