@@ -703,7 +703,7 @@ recipes_manifest() {
     fi
     [ $n -lt 200 ] || fail "more than 200 files in the manifest"
     p=${R_PATH[n]}
-    [[ $p =~ $RECIPE_PATH_RE ]] || fail "a manifest path that is absolute, has . or .., or can't be read safely: $p"
+    [[ $p =~ $RECIPE_PATH_RE ]] || fail "a manifest path that is absolute, has a part that starts with . or -, or can't be read safely: $p"
     for ((i = 0; i < n; i++)); do
       [ "${R_PATH[i]}" != "$p" ] || fail "a path twice in the manifest: $p"
     done
