@@ -1989,11 +1989,12 @@ cp -R "$WORK/rsrc/." "$WORK/rsrc-git"
 cp -R "$WORK/rel-good" "$WORK/rel-git"
 git -C "$WORK/rsrc-git" archive --format=tar.gz -o "$WORK/rel-git/recipes-0.4.0.tar.gz" HEAD
 RDL="$WORK/rel-git" recipe ok "a package made by git archive" "result ok" recipe-run 0.4.0 hetzner
-# big_release <name> <bytes>: the good source with a fingerprint of that size, as a release of its own.
+# big_release <name> <bytes> [<fill>]: the good source with a fingerprint of that size (# or the fill
+# byte), as a release of its own.
 big_release() {
   mkdir -p "$WORK/rsrc-$1"
   cp -R "$WORK/rsrc/." "$WORK/rsrc-$1"
-  head -c "$2" /dev/zero | tr '\0' '#' > "$WORK/rsrc-$1/stack/fingerprint.sh"
+  head -c "$2" /dev/zero | tr '\0' "${3:-#}" > "$WORK/rsrc-$1/stack/fingerprint.sh"
   RSRC="$WORK/rsrc-$1" release "$1"
 }
 big_release bigfile 1048577
@@ -2031,10 +2032,7 @@ pax_record() {
 # put in the package as a sparse file (pax, GNU sparse 1.0) that takes up one block there.
 sparse_release() {
   local pkg="$WORK/rel-$1/recipes-0.4.0.tar" pax="$WORK/pax-$1" map="$WORK/map-$1"
-  mkdir -p "$WORK/rsrc-$1"
-  cp -R "$WORK/rsrc/." "$WORK/rsrc-$1"
-  head -c "$2" /dev/zero > "$WORK/rsrc-$1/stack/fingerprint.sh"
-  RSRC="$WORK/rsrc-$1" release "$1"
+  big_release "$1" "$2" '\0'
   {
     pax_record GNU.sparse.major=1
     pax_record GNU.sparse.minor=0
@@ -2048,11 +2046,11 @@ sparse_release() {
   tar_data "$pkg" "$pax"
   tar_block "$pkg" GNUSparseFile.0/fingerprint.sh 512 0
   tar_data "$pkg" "$map"
-  # shellcheck disable=SC2046,SC2086 # the paths have no spaces
-  (cd "$WORK/rsrc-$1" && COPYFILE_DISABLE=1 tar -cf - $(cut -d' ' -f2 <<< "$RELEASE_STEPS") \
-    ${RELEASE_FILES/stack\/fingerprint.sh/} 2> /dev/null) >> "$pkg"
+  # Then the other files: gzip reads two streams one after the other as one.
   gzip -c "$pkg" > "$pkg.gz"
-  rm "$pkg"
+  RELEASE_FILES=${RELEASE_FILES/stack\/fingerprint.sh/} rpack "$WORK/rsrc-$1" "$pkg.rest.gz"
+  cat "$pkg.rest.gz" >> "$pkg.gz"
+  rm "$pkg" "$pkg.rest.gz"
 }
 sparse_release sparsebig 16777216
 sparse_release sparsefull 1048576
