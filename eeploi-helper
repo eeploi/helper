@@ -536,12 +536,16 @@ version_lt() {
   (( a3 < b3 ))
 }
 
-# release_key <key> <what> <variable> <subcommand>: a minisign public key, not the placeholder.
+# release_key <key> <what> <variable>: a minisign public key, not the placeholder.
 release_key() {
   local re='^RW[A-Za-z0-9+/]{54}$'
-  case "$1" in *REPLACE_WITH_*) fail "no $2 key in this build ($3 is the placeholder), $4 refused" ;; esac
-  [[ $1 =~ $re ]] || fail "invalid $2 key in this build, $4 refused"
+  case "$1" in *REPLACE_WITH_*) fail "no $2 key in this build ($3 is the placeholder), $command refused" ;; esac
+  [[ $1 =~ $re ]] || fail "invalid $2 key in this build, $command refused"
 }
+
+# dry_result <line>: a dry run's stand-in for recipe-run, true when EEPLOI_HELPER_RECIPES_RESULTS has
+# that line.
+dry_result() { [ -n "$RECIPES_RESULTS" ] && grep -qxF -- "$1" "$RECIPES_RESULTS"; }
 
 # Every recipes release has these files: a step runs after both, a check after the values.
 RECIPE_START=stack/start.sh
@@ -614,7 +618,7 @@ recipes_lock() {
   root_dir "$RECIPES_STATE"
   if [ -n "$DRY" ]; then
     echo "lock: $RECIPES_STATE/.lock"
-    [ -z "$RECIPES_RESULTS" ] || ! grep -qxF locked "$RECIPES_RESULTS" || fail "another recipe-run is running"
+    ! dry_result locked || fail "another recipe-run is running"
     return 0
   fi
   exec 8> "$RECIPES_STATE/.lock"
@@ -777,8 +781,8 @@ recipes_exec() {
   if [ -n "$DRY" ]; then
     echo "run: $1" >&2
     sed 's/^/  /' "$2" >&2
-    [ -z "$RECIPES_RESULTS" ] || ! grep -qxF -- "fail $1" "$RECIPES_RESULTS"
-    return
+    if dry_result "fail $1"; then return 1; fi
+    return 0
   fi
   ( cd / && exec env -i PATH="$PATH" HOME=/root LC_ALL=C TMPDIR=/tmp /bin/bash "$2" ) < /dev/null >&2 8>&-
 }
@@ -1902,7 +1906,7 @@ case "$command" in
     [ $# -eq 1 ] || fail "usage: self-update <version>"
     [[ $1 =~ $SEMVER_RE ]] || fail "invalid version: $1"
     version_lt "$VERSION" "$1" || fail "only a newer version: $VERSION is installed, $1 is not newer"
-    release_key "$PUBKEY" release PUBKEY self-update
+    release_key "$PUBKEY" release PUBKEY
     url="$RELEASES/v$1/eeploi-helper"
     fetch=("${FETCH[@]}" --max-filesize 1048576)
     if [ -n "$DRY" ]; then
@@ -1941,11 +1945,12 @@ case "$command" in
     [ $# -eq 2 ] || fail "usage: recipe-run <version> <provider>"
     [[ $1 =~ $SEMVER_RE ]] || fail "invalid version: $1"
     [[ $2 =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]] || fail "invalid provider: $2"
-    release_key "$RECIPES_PUBKEY" recipes RECIPES_PUBKEY recipe-run
+    release_key "$RECIPES_PUBKEY" recipes RECIPES_PUBKEY
     recipes_conf
     os_target
-    for tool in "$MINISIGN" tar gzip sha256sum; do command -v "$tool" > /dev/null || fail "$tool not found"; done
-    [ -n "$DRY" ] || for tool in curl flock; do command -v "$tool" > /dev/null || fail "$tool not found"; done
+    tools=("$MINISIGN" tar gzip sha256sum)
+    [ -n "$DRY" ] || tools+=(curl flock)
+    for tool in "${tools[@]}"; do command -v "$tool" > /dev/null || fail "$tool not found"; done
     recipes_lock
     recipes_state
     # A release older than the last good one here is refused; the same one may run again.

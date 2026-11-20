@@ -1969,17 +1969,6 @@ RDL="$WORK/rel-git" recipe ok "a package made by git archive" "result ok" recipe
 RDL="$WORK/rel-extra" recipe ok "a file the manifest doesn't list is never read" "result ok" recipe-run 0.4.0 hetzner
 absent "the extra file never runs" "echo extra"
 # Placeholders: only the values, and only in the files a run uses.
-mkdir -p "$WORK/rsrc-place"
-cp -R "$WORK/rsrc/." "$WORK/rsrc-place"
-RSRC="$WORK/rsrc-place" rfile stack/09-logs.sh 'echo {ranges}\n'
-RSRC="$WORK/rsrc-place" release place
-mkdir -p "$WORK/rsrc-placecheck"
-cp -R "$WORK/rsrc/." "$WORK/rsrc-placecheck"
-RSRC="$WORK/rsrc-placecheck" rfile stack/07-updates.check.sh 'test {npm}\n'
-RSRC="$WORK/rsrc-placecheck" release placecheck
-RDL="$WORK/rel-place" recipe refuse "a placeholder in a step it can't fill in" "a placeholder recipe-run can't fill in: {ranges} in stack/09-logs.sh" recipe-run 0.4.0 hetzner
-nothing_ran "a placeholder in a step it can't fill in"
-RDL="$WORK/rel-placecheck" recipe refuse "a placeholder in a check it can't fill in" "a placeholder recipe-run can't fill in: {npm} in stack/07-updates.check.sh" recipe-run 0.4.0 hetzner
 # place_release <name> <path> <text>: the good source with one file changed, as a release of its own.
 place_release() {
   mkdir -p "$WORK/rsrc-$1"
@@ -1987,6 +1976,11 @@ place_release() {
   RSRC="$WORK/rsrc-$1" rfile "$2" "$3"
   RSRC="$WORK/rsrc-$1" release "$1"
 }
+place_release place stack/09-logs.sh 'echo {ranges}\n'
+place_release placecheck stack/07-updates.check.sh 'test {npm}\n'
+RDL="$WORK/rel-place" recipe refuse "a placeholder in a step it can't fill in" "a placeholder recipe-run can't fill in: {ranges} in stack/09-logs.sh" recipe-run 0.4.0 hetzner
+nothing_ran "a placeholder in a step it can't fill in"
+RDL="$WORK/rel-placecheck" recipe refuse "a placeholder in a check it can't fill in" "a placeholder recipe-run can't fill in: {npm} in stack/07-updates.check.sh" recipe-run 0.4.0 hetzner
 place_release adjacent stack/09-logs.sh 'echo {user}{ranges}\n'
 # shellcheck disable=SC2016 # bash's own braces
 place_release inbash stack/09-logs.sh 'for user in a; do echo "${user}"; done\n'
