@@ -3,12 +3,13 @@
 # Run it yourself, in your own terminal: minisign asks for the key password, which is never
 # stored, passed in or logged. Every step after signing is checked against minisign.pub.
 # bin/release --check runs only the checks: no key, no signing, nothing published.
+# The secret key is ~/.minisign/eeploi-helper.key, or HELPER_KEY when set.
 # See RELEASING.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 REPO=eeploi/helper
-KEY="$HOME/.minisign/minisign.key"
+KEY="${HELPER_KEY:-$HOME/.minisign/eeploi-helper.key}"
 CHECK_ONLY=
 [ "${1:-}" != --check ] || CHECK_ONLY=1
 [ $# -eq 0 ] || [ -n "$CHECK_ONLY" ] || { echo "usage: bin/release [--check]" >&2; exit 64; }
@@ -96,7 +97,9 @@ fi
 [ -z "$CHECK_ONLY" ] || exit 0
 
 [ -t 0 ] || fail "run this in your own terminal: minisign asks for the key password"
-[ -f "$KEY" ] || fail "no secret key at $KEY"
+# The script runs from the repo root, and the shell does not expand a quoted ~.
+case "$KEY" in /*) ;; *) fail "HELPER_KEY must be an absolute path: $KEY" ;; esac
+[ -f "$KEY" ] || fail "no secret key at $KEY (set HELPER_KEY to use another)"
 
 say "Sign"
 rm -f eeploi-helper.minisig
