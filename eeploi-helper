@@ -552,8 +552,9 @@ dry_result() { [ -n "$RECIPES_RESULTS" ] && grep -qxF -- "$1" "$RECIPES_RESULTS"
 RECIPE_START=stack/start.sh
 RECIPE_VALUES=stack/values.sh
 
-# A path in a recipes release: relative, no . or .. parts, no empty part.
-RECIPE_PATH_RE='^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$'
+# A path in a recipes release: relative, no empty part, no part that starts with . (so no . or ..) or -.
+RECIPE_PART='[A-Za-z0-9_][A-Za-z0-9._-]*'
+RECIPE_PATH_RE="^$RECIPE_PART(/$RECIPE_PART)*\$"
 
 # recipes_conf: the values the steps use, from $ETC/recipes.conf, in R_USER, R_PORT and R_PHP. Written
 # at first boot, root's, parsed line by line, never sourced, each key once. DEPLOY_USER must be the

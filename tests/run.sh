@@ -1883,6 +1883,7 @@ remanifest absolute sed 's# stack/09-logs.sh$# /stack/09-logs.sh#'
 remanifest hidden sed 's# stack/fingerprint.sh$# stack/.fingerprint.sh#'
 remanifest double sed 's# stack/09-logs.sh$# stack//09-logs.sh#'
 remanifest space sed 's# stack/fingerprint.sh$# stack/finger print.sh#'
+remanifest dash sed 's# stack/fingerprint.sh$# -fingerprint.sh#'
 remanifest twice sed 's# stack/fingerprint.sh$# stack/09-logs.check.sh#'
 remanifest novalues sed '/ stack\/values.sh$/d'
 remanifest nostart sed '/ stack\/start.sh$/d'
@@ -1908,10 +1909,28 @@ RDL="$WORK/rel-unknown" recipe refuse "an unknown line" "invalid line in the man
 RDL="$WORK/rel-marker" recipe refuse "an unknown marker" "invalid line in the manifest" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-shortsha" recipe refuse "a short SHA-256" "invalid line in the manifest" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-cr" recipe refuse "a carriage return" "the manifest is for release 0.4.0"$'\r' recipe-run 0.4.0 hetzner
-for bad in dots dot absolute hidden double space; do
+for bad in dots dot absolute hidden double space dash; do
   RDL="$WORK/rel-$bad" recipe refuse "manifest path: $bad" "a manifest path that is absolute, has . or .., or can't be read safely" recipe-run 0.4.0 hetzner
   nothing_ran "manifest path: $bad"
 done
+remanifest partdash sed 's# stack/09-logs.sh$# stack/-09-logs.sh#'
+RDL="$WORK/rel-partdash" recipe refuse "manifest path: a later part starts with -" "a manifest path that is absolute, has . or .., or can't be read safely: stack/-09-logs.sh" recipe-run 0.4.0 hetzner
+nothing_ran "manifest path: a later part starts with -"
+# A part may start with _ or a digit, in a file and in a step (and so in the state).
+mkdir -p "$WORK/rsrc-lead"
+cp -R "$WORK/rsrc/." "$WORK/rsrc-lead"
+RSRC="$WORK/rsrc-lead" rfile _lead.sh 'echo lead\n'
+RSRC="$WORK/rsrc-lead" rfile 9lead.sh 'echo lead\n'
+RSRC="$WORK/rsrc-lead" rfile _stack/9-lead.sh 'echo lead-step\n'
+RELEASE_STEPS="$RELEASE_STEPS
+always _stack/9-lead.sh" RELEASE_FILES="$RELEASE_FILES _lead.sh 9lead.sh" RSRC="$WORK/rsrc-lead" release lead
+RDL="$WORK/rel-lead" recipe ok "manifest paths starting with _ and a digit" "result ok" recipe-run 0.4.0 hetzner
+SHA_LEAD=$(rsha "$WORK/rsrc-lead/_stack/9-lead.sh")
+RDL="$WORK/rel-lead" recipe ok "a step under _ and a digit, in the state" "  step $SHA_LEAD _stack/9-lead.sh" recipe-run 0.4.0 hetzner
+state_dir lead "release 0.4.0\nstep $SHA_LEAD _stack/9-lead.sh\n"
+RSTATE="$WORK/recipes-lead" RDL="$WORK/rel-lead" ERR_TO=/dev/null recipe ok "the state reads it back" "step same _stack/9-lead.sh" recipe-run 0.4.0 hetzner
+state_dir partdash "release 0.4.0\nstep $SHA_A stack/-07-updates.sh\n"
+RSTATE="$WORK/recipes-partdash" recipe refuse "state: a part starts with -" "invalid line in $WORK/recipes-partdash/state" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-twice" recipe refuse "a path twice" "a path twice in the manifest: stack/09-logs.check.sh" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-novalues" recipe refuse "no values.sh" "no stack/values.sh in the manifest" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-nostart" recipe refuse "no start.sh" "no stack/start.sh in the manifest" recipe-run 0.4.0 hetzner
