@@ -2005,6 +2005,7 @@ RDL="$WORK/rel-fullfile" recipe ok "a file of 1 MB" "result ok" recipe-run 0.4.0
 # tar_block <file> <name> <size> <type>: a tar header, appended to the file.
 tar_block() {
   local h="$WORK/tar-header" sum
+  [ ${#2} -le 100 ] || { echo "tar_block: name too long: $2" >&2; exit 1; }
   {
     printf '%s' "$2"
     head -c $((100 - ${#2})) /dev/zero
@@ -2025,7 +2026,7 @@ tar_data() {
 # pax_record <key=value>: a pax header line, its length first.
 pax_record() {
   local n=$((${#1} + 3))
-  [ ${#n} -eq $((n - ${#1} - 2)) ] || n=$((n + 1))
+  while [ $((${#1} + 2 + ${#n})) -ne "$n" ]; do n=$((${#1} + 2 + ${#n})); done
   printf '%d %s\n' "$n" "$1"
 }
 # sparse_release <name> <bytes>: the good release with stack/fingerprint.sh as that many zero bytes,
@@ -2054,7 +2055,8 @@ sparse_release() {
 }
 sparse_release sparsebig 16777216
 sparse_release sparsefull 1048576
-# The file size limit stands in for a full disk: a file read out in full before the cap fails on it.
+# Read out in full before the cap, the file fails on the file size limit (a stand-in for a full disk)
+# with GNU tar; bsdtar left the hole out of the file, so its SHA-256 was wrong.
 FSIZE=$(ulimit -S -f)
 ulimit -S -f 4096
 RDL="$WORK/rel-sparsebig" recipe refuse "a sparse file over 1 MB" "a file too large in the package: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
@@ -2064,6 +2066,10 @@ ulimit -S -f "$FSIZE"
 # A path under a file the manifest lists: it can't be read out.
 remanifest underfile awk -v sha="$SHA_A" '{ print } / stack\/start.sh$/ { print "file " sha " stack/start.sh/x" }'
 RDL="$WORK/rel-underfile" recipe refuse "a path under a file" "cannot read stack/start.sh/x from the package" recipe-run 0.4.0 hetzner
+# A path that is a folder of a file read before it.
+remanifest folderfile awk -v sha="$SHA_A" '{ print } / stack\/start.sh$/ { print "file " sha " stack" }'
+RDL="$WORK/rel-folderfile" recipe refuse "a path that is a folder" "cannot read stack from the package" recipe-run 0.4.0 hetzner
+absent "a path that is a folder: no size error" "integer expression"
 RDL="$WORK/rel-extra" recipe ok "a file the manifest doesn't list is never read" "result ok" recipe-run 0.4.0 hetzner
 absent "the extra file never runs" "echo extra"
 # Placeholders: only the values, and only in the files a run uses.
