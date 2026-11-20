@@ -2001,6 +2001,68 @@ big_release fullfile 1048576
 RDL="$WORK/rel-bigfile" recipe refuse "a file over 1 MB" "a file too large in the package: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
 nothing_ran "a file over 1 MB"
 RDL="$WORK/rel-fullfile" recipe ok "a file of 1 MB" "result ok" recipe-run 0.4.0 hetzner
+# tar_block <file> <name> <size> <type>: a tar header, appended to the file.
+tar_block() {
+  local h="$WORK/tar-header" sum
+  {
+    printf '%s' "$2"
+    head -c $((100 - ${#2})) /dev/zero
+    printf '%s\0%s\0%s\0%011o\0%011o\0        %s' 0000644 0000000 0000000 "$3" 0 "$4"
+    head -c 100 /dev/zero
+    printf 'ustar\0%s' 00
+    head -c 247 /dev/zero
+  } > "$h"
+  sum=$(od -An -tu1 -v "$h" | awk '{ for (i = 1; i <= NF; i++) s += $i } END { print s }')
+  printf '%06o\0 ' "$sum" | dd of="$h" bs=1 seek=148 conv=notrunc 2> /dev/null
+  cat "$h" >> "$1"
+}
+# tar_data <file> <data file>: the data, then zeros up to a whole block, appended to the file.
+tar_data() {
+  cat "$2" >> "$1"
+  head -c $(((512 - $(wc -c < "$2") % 512) % 512)) /dev/zero >> "$1"
+}
+# pax_record <key=value>: a pax header line, its length first.
+pax_record() {
+  local n=$((${#1} + 3))
+  [ ${#n} -eq $((n - ${#1} - 2)) ] || n=$((n + 1))
+  printf '%d %s\n' "$n" "$1"
+}
+# sparse_release <name> <bytes>: the good release with stack/fingerprint.sh as that many zero bytes,
+# put in the package as a sparse file (pax, GNU sparse 1.0) that takes up one block there.
+sparse_release() {
+  local pkg="$WORK/rel-$1/recipes-0.4.0.tar" pax="$WORK/pax-$1" map="$WORK/map-$1"
+  mkdir -p "$WORK/rsrc-$1"
+  cp -R "$WORK/rsrc/." "$WORK/rsrc-$1"
+  head -c "$2" /dev/zero > "$WORK/rsrc-$1/stack/fingerprint.sh"
+  RSRC="$WORK/rsrc-$1" release "$1"
+  {
+    pax_record GNU.sparse.major=1
+    pax_record GNU.sparse.minor=0
+    pax_record GNU.sparse.name=stack/fingerprint.sh
+    pax_record "GNU.sparse.realsize=$2"
+  } > "$pax"
+  # The map: one part, of no bytes, at the end; the rest is a hole.
+  printf '1\n%s\n0\n' "$2" > "$map"
+  : > "$pkg"
+  tar_block "$pkg" PaxHeaders/fingerprint.sh "$(wc -c < "$pax")" x
+  tar_data "$pkg" "$pax"
+  tar_block "$pkg" GNUSparseFile.0/fingerprint.sh 512 0
+  tar_data "$pkg" "$map"
+  # shellcheck disable=SC2046,SC2086 # the paths have no spaces
+  (cd "$WORK/rsrc-$1" && COPYFILE_DISABLE=1 tar -cf - $(cut -d' ' -f2 <<< "$RELEASE_STEPS") \
+    ${RELEASE_FILES/stack\/fingerprint.sh/} 2> /dev/null) >> "$pkg"
+  gzip -c "$pkg" > "$pkg.gz"
+  rm "$pkg"
+}
+sparse_release sparsebig 16777216
+sparse_release sparsefull 1048576
+# The file size limit stands in for a full disk: a file read out in full before the cap fails on it.
+FSIZE=$(ulimit -S -f)
+ulimit -S -f 4096
+RDL="$WORK/rel-sparsebig" recipe refuse "a sparse file over 1 MB" "a file too large in the package: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
+nothing_ran "a sparse file over 1 MB"
+RDL="$WORK/rel-sparsefull" recipe ok "a sparse file of 1 MB" "result ok" recipe-run 0.4.0 hetzner
+ulimit -S -f "$FSIZE"
 # A path under a file the manifest lists: it can't be read out.
 remanifest underfile awk -v sha="$SHA_A" '{ print } / stack\/start.sh$/ { print "file " sha " stack/start.sh/x" }'
 RDL="$WORK/rel-underfile" recipe refuse "a path under a file" "cannot read stack/start.sh/x from the package" recipe-run 0.4.0 hetzner

@@ -739,10 +739,11 @@ recipes_runs() {
 
 # recipes_unpack <package>: the package unzipped once (8 MB at most), only plain files and folders in
 # it, then every file the manifest lists read out of it one by one into $R_WORK/files, never unpacked
-# as it is. Each must match its SHA-256. In the files a run uses, the only placeholders are the values
+# as it is and cut off past 1 MB while it is read (a sparse file unpacks to more than it takes up in the
+# package). Each must match its SHA-256. In the files a run uses, the only placeholders are the values
 # recipes_render fills in, and never in bash's own braces (${user}, $x{user}), which it would fill in too.
 recipes_unpack() {
-  local i p f found tar="$R_WORK/package.tar"
+  local i p f found unread tar="$R_WORK/package.tar"
   local values_re='^\{(user|port|php|version|name)\}$'
   # shellcheck disable=SC2016 # the $ is in a regex
   local bash_re='[$A-Za-z0-9_]\{[a-z_]+\}' value_in_bash_re='[$A-Za-z0-9_]\{(user|port|php|version|name)\}'
@@ -755,8 +756,10 @@ recipes_unpack() {
     p=${R_PATH[i]}
     f="$R_FILES/$p"
     mkdir -p -- "${f%/*}" 2> /dev/null || fail "cannot read $p from the package"
-    tar -xOf "$tar" -- "$p" > "$f" 2> /dev/null || fail "cannot read $p from the package"
+    unread=
+    tar -xOf "$tar" -- "$p" 2> /dev/null | head -c 1048577 > "$f" || unread=1
     [ "$(wc -c < "$f")" -le 1048576 ] || fail "a file too large in the package: $p"
+    [ -z "$unread" ] || fail "cannot read $p from the package"
     [ "$(sha256sum < "$f" | cut -d' ' -f1)" = "${R_SHA[i]}" ] || fail "changed file: $p (its SHA-256 is not the manifest's)"
     recipes_runs "$i" || continue
     ! grep -qE "$value_in_bash_re" "$f" || fail "a value in bash's own braces, which recipe-run can't fill in safely: $p"
