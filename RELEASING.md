@@ -7,10 +7,10 @@ For the owner. Signing always happens on your own machine, never in CI.
 1. Create the key pair:
 
    ```bash
-   minisign -G -p minisign.pub -s ~/.minisign/minisign.key
+   minisign -G -p minisign.pub -s ~/.minisign/eeploi-helper.key
    ```
 
-   Use a strong passphrase.
+   Use a strong passphrase. `bin/release` reads the secret key from that path; set `HELPER_KEY` to another absolute path to use another.
 2. Keep the secret key offline: on an encrypted disk, with a backup on the USB recovery kit. Never in this repo, GitHub, eeploi.com or a password manager that syncs to a server.
 3. Put the public key (the second line of `minisign.pub`, starting with `RW`) in three places:
    - `PUBKEY` near the top of `eeploi-helper`
