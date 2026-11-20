@@ -2045,7 +2045,15 @@ $B
   PHP=8.4
   . /etc/os-release; [ \"${D}VERSION_ID\" = \"26.04\" ]
 $B
+  set -euo pipefail
   echo logs ${D}DEPLOY_USER" recipe-run 0.4.0 hetzner
+# start.sh without set -e: the step still runs under it.
+place_release nosete stack/start.sh '#!/usr/bin/env bash\n# eeploi provisioning for {name}.\n'
+RDL="$WORK/rel-nosete" recipe ok "a step under set -e, whatever start.sh sets" "  PHP=8.4
+  . /etc/os-release; [ \"${D}VERSION_ID\" = \"26.04\" ]
+$B
+  set -euo pipefail
+  echo apt-retries" recipe-run 0.4.0 hetzner
 ETC_DIR="$WORK/etc-recipes-port" recipe ok "the values from recipes.conf" "SSH_PORT=10000
   PHP=8.3" recipe-run 0.4.0 hetzner
 recipe ok "bash's own braces stay" "echo \"${D}{distro_id}\" \"${D}nrconf{restart}\"" recipe-run 0.4.0 hetzner

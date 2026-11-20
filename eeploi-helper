@@ -547,7 +547,8 @@ release_key() {
 # that line.
 dry_result() { [ -n "$RECIPES_RESULTS" ] && grep -qxF -- "$1" "$RECIPES_RESULTS"; }
 
-# Every recipes release has these files: a step runs after both, a check after the values.
+# Every recipes release has these files: a step runs after both, a check after the values, each
+# then under set -euo pipefail.
 RECIPE_START=stack/start.sh
 RECIPE_VALUES=stack/values.sh
 
@@ -1988,7 +1989,13 @@ case "$command" in
           if ! recipes_index "$check" || ! recipes_is_check "$R_I" || recipes_check "$check"; then state='same'; fi ;;
       esac
       if [ "$state" = ran ]; then
-        recipes_render "$RECIPE_START" "$RECIPE_VALUES" "$p" > "$R_WORK/step.sh"
+        # Under set -e whatever start.sh sets, as a check is.
+        {
+          recipes_render "$RECIPE_START" "$RECIPE_VALUES"
+          echo
+          echo 'set -euo pipefail'
+          recipes_render "$p"
+        } > "$R_WORK/step.sh"
         recipes_exec "$p" "$R_WORK/step.sh" || { state='failed'; failed=1; }
       fi
       echo "step $state $p"
