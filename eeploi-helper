@@ -621,7 +621,7 @@ recipes_lock() {
     ! dry_result locked || fail "another recipe-run is running"
     return 0
   fi
-  exec 8> "$RECIPES_STATE/.lock"
+  exec 8> "$RECIPES_STATE/.lock" || fail "cannot open $RECIPES_STATE/.lock"
   flock -n 8 || fail "another recipe-run is running"
 }
 
@@ -752,7 +752,7 @@ recipes_unpack() {
   for ((i = 0; i < R_N; i++)); do
     p=${R_PATH[i]}
     f="$R_FILES/$p"
-    mkdir -p -- "${f%/*}"
+    mkdir -p -- "${f%/*}" 2> /dev/null || fail "cannot read $p from the package"
     tar -xOf "$tar" -- "$p" > "$f" 2> /dev/null || fail "cannot read $p from the package"
     [ "$(wc -c < "$f")" -le 1048576 ] || fail "a file too large in the package: $p"
     [ "$(sha256sum < "$f" | cut -d' ' -f1)" = "${R_SHA[i]}" ] || fail "changed file: $p (its SHA-256 is not the manifest's)"
@@ -1956,7 +1956,7 @@ case "$command" in
     # A release older than the last good one here is refused; the same one may run again.
     [ -z "$R_LAST" ] || ! version_lt "$1" "$R_LAST" || fail "recipes $R_LAST ran here, $1 is older: refused"
     R_BASE="$RECIPES_RELEASES/v$1"
-    R_WORK=$(mktemp -d)
+    R_WORK=$(mktemp -d) || fail "cannot make a work folder"
     TMP_PATHS="$TMP_PATHS $R_WORK"
     manifest="recipes-$1-$2-$R_OS.manifest"
     package="recipes-$1.tar.gz"
@@ -1976,7 +1976,11 @@ case "$command" in
     for ((i = 0; i < R_N; i++)); do
       [ "${R_KIND[i]}" = always ] || continue
       p=${R_PATH[i]} sha=${R_SHA[i]}
-      if [ $failed -eq 1 ]; then echo "step skipped $p"; continue; fi
+      if [ $failed -eq 1 ]; then
+        echo "step skipped $p"
+        audit "$CALLER: recipe-run $1: step skipped $p"
+        continue
+      fi
       state='ran'
       case $'\n'"$R_RAN" in
         *$'\n'"$sha $p"$'\n'*)

@@ -343,7 +343,9 @@ BIN="$WORK/keyed-helper" refuse "older patch" "only a newer version" self-update
 BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.1.1
 BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.2.0
 BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
-BIN="$WORK/keyed-helper" ok "numbers, not text" "download:" self-update 1.1.10
+# Pinned versions, so these hold whatever VERSION is: as text, 1.0.10 sorts before 1.0.9.
+sed "s#^VERSION=.*#VERSION='1.0.9'#" "$WORK/keyed-helper" > "$WORK/v109-helper"
+BIN="$WORK/v109-helper" ok "numbers, not text" "download:" self-update 1.0.10
 sed "s#^VERSION=.*#VERSION='1.2.10'#" "$WORK/keyed-helper" > "$WORK/v1210-helper"
 BIN="$WORK/v1210-helper" refuse "numbers, not text (older)" "only a newer version" self-update 1.2.9
 BIN="$WORK/v1210-helper" ok "numbers, not text (newer)" "download:" self-update 1.2.11
@@ -1966,6 +1968,21 @@ cp -R "$WORK/rsrc/." "$WORK/rsrc-git"
 cp -R "$WORK/rel-good" "$WORK/rel-git"
 git -C "$WORK/rsrc-git" archive --format=tar.gz -o "$WORK/rel-git/recipes-0.4.0.tar.gz" HEAD
 RDL="$WORK/rel-git" recipe ok "a package made by git archive" "result ok" recipe-run 0.4.0 hetzner
+# big_release <name> <bytes>: the good source with a fingerprint of that size, as a release of its own.
+big_release() {
+  mkdir -p "$WORK/rsrc-$1"
+  cp -R "$WORK/rsrc/." "$WORK/rsrc-$1"
+  head -c "$2" /dev/zero | tr '\0' '#' > "$WORK/rsrc-$1/stack/fingerprint.sh"
+  RSRC="$WORK/rsrc-$1" release "$1"
+}
+big_release bigfile 1048577
+big_release fullfile 1048576
+RDL="$WORK/rel-bigfile" recipe refuse "a file over 1 MB" "a file too large in the package: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
+nothing_ran "a file over 1 MB"
+RDL="$WORK/rel-fullfile" recipe ok "a file of 1 MB" "result ok" recipe-run 0.4.0 hetzner
+# A path under a file the manifest lists: it can't be read out.
+remanifest underfile awk -v sha="$SHA_A" '{ print } / stack\/start.sh$/ { print "file " sha " stack/start.sh/x" }'
+RDL="$WORK/rel-underfile" recipe refuse "a path under a file" "cannot read stack/start.sh/x from the package" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-extra" recipe ok "a file the manifest doesn't list is never read" "result ok" recipe-run 0.4.0 hetzner
 absent "the extra file never runs" "echo extra"
 # Placeholders: only the values, and only in the files a run uses.
@@ -2073,6 +2090,7 @@ RRES="$WORK/results-step" ERR_TO=/dev/null recipe fails "after a failed step, th
 result failed" recipe-run 0.4.0 hetzner
 RRES="$WORK/results-step" recipe fails "a failed step never runs the next one" "result failed" recipe-run 0.4.0 hetzner
 absent "the step after a failed one does not run" "run: stack/09-logs.sh"$'\n'
+RRES="$WORK/results-step" recipe fails "a skipped step in the system log" "log: eeploi-helper: eeploi: recipe-run 0.4.0: step skipped stack/09-logs.sh" recipe-run 0.4.0 hetzner
 absent "no state after a failed step" "write: "
 printf 'fail stack/07-updates.check.sh\n' > "$WORK/results-check"
 RRES="$WORK/results-check" ERR_TO=/dev/null recipe fails "a failed check" "check ok stack/00-apt-retries.check.sh
