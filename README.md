@@ -197,7 +197,7 @@ Going back, or installing the same version again, is not possible: an older rele
 
 ## Recipes
 
-A server eeploi creates is built at its first boot by the steps of an [eeploi recipes](https://github.com/eeploi/recipes) release. `recipe-run` brings a later release to that server:
+A server eeploi creates is built at its first boot by the steps of an [eeploi recipes](https://github.com/eeploi/recipes) release. `recipe-run` updates that server to a newer release:
 
 ```bash
 sudo eeploi-helper recipe-run 0.4.0 hetzner
