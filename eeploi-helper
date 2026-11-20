@@ -12,8 +12,9 @@ VERSION='1.1.0'
 # The minisign public key releases are signed with (minisign.pub, key id A2C97024AB6219A8).
 PUBKEY='RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA'
 RELEASES='https://github.com/eeploi/helper/releases/download'
-# The minisign public key recipes releases are signed with, apart from the helper's own.
-RECIPES_PUBKEY='RWS...REPLACE_WITH_RECIPES_KEY'
+# The minisign public key recipes releases are signed with (key id D03C6EB200F583F7), apart from
+# the helper's own.
+RECIPES_PUBKEY='RWT3g/UAsm480Ibrzxyna96ZDXOB5syhhY8q5+bir9rhKkA02c3rqRkD'
 RECIPES_RELEASES='https://github.com/eeploi/recipes/releases/download'
 # Downloads: HTTPS only, also after a redirect; -q first, so curl reads no curlrc. Each caller adds
 # --max-filesize.
@@ -36,7 +37,8 @@ CALLER="${SUDO_USER:-}"
 # EEPLOI_HELPER_NGINX_LOGS for nginx's log folder, EEPLOI_HELPER_OS_RELEASE for os-release,
 # EEPLOI_HELPER_RECIPES_STATE for recipe-run's state folder, EEPLOI_HELPER_RECIPES_DOWNLOAD for the
 # recipes release (a folder with its files) and EEPLOI_HELPER_RECIPES_RESULTS for which steps and
-# checks fail ("fail <path>" lines), EEPLOI_HELPER_MINISIGN for a minisign outside PATH.
+# checks fail ("fail <path>" lines) and whether another run holds the lock ("locked"),
+# EEPLOI_HELPER_MINISIGN for a minisign outside PATH.
 ETC=/etc/eeploi
 NGINX_CONF=/etc/nginx/nginx.conf
 NGINX_LOGS=/var/log/nginx
@@ -605,11 +607,16 @@ os_target() {
   R_OS="$id-$version" R_VERSION=$version
 }
 
-# recipes_lock: one recipe-run at a time (fd 8), in the root-owned state folder.
+# recipes_lock: one recipe-run at a time (fd 8), in the root-owned state folder. A dry run prints it,
+# and finds it taken when EEPLOI_HELPER_RECIPES_RESULTS has "locked".
 recipes_lock() {
-  [ -z "$DRY" ] || return 0
   root_dir "${RECIPES_STATE%/*}"
   root_dir "$RECIPES_STATE"
+  if [ -n "$DRY" ]; then
+    echo "lock: $RECIPES_STATE/.lock"
+    [ -z "$RECIPES_RESULTS" ] || ! grep -qxF locked "$RECIPES_RESULTS" || fail "another recipe-run is running"
+    return 0
+  fi
   exec 8> "$RECIPES_STATE/.lock"
   flock -n 8 || fail "another recipe-run is running"
 }

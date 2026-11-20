@@ -239,7 +239,7 @@ In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point t
 
 `EEPLOI_HELPER_SYSTEM` points to a file with what the site-user checks would find on the server: `passwd <getent passwd line>`, `group <getent group line>`, `id <user>:<id -G output>`, `path <path that exists>` and `active <running unit>`. Without it, none of them exist. A dry run prints every file it would write, the registry included.
 
-For `recipe-run`: `EEPLOI_HELPER_OS_RELEASE` points to a test `os-release`, `EEPLOI_HELPER_RECIPES_STATE` to a test state folder, `EEPLOI_HELPER_RECIPES_DOWNLOAD` to a folder with the release's files (copied in place of the download, then checked as usual), `EEPLOI_HELPER_RECIPES_RESULTS` to a file of `fail <path>` lines for the steps and checks that fail, and `EEPLOI_HELPER_MINISIGN` to a `minisign` outside `PATH`. A dry run never runs a step or check: it prints each script.
+For `recipe-run`: `EEPLOI_HELPER_OS_RELEASE` points to a test `os-release`, `EEPLOI_HELPER_RECIPES_STATE` to a test state folder, `EEPLOI_HELPER_RECIPES_DOWNLOAD` to a folder with the release's files (copied in place of the download, then checked as usual), `EEPLOI_HELPER_RECIPES_RESULTS` to a file of `fail <path>` lines for the steps and checks that fail (and a `locked` line when another run holds the lock), and `EEPLOI_HELPER_MINISIGN` to a `minisign` outside `PATH`. A dry run never runs a step or check: it prints each script.
 
 ## Tests
 

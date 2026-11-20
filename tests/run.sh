@@ -1664,7 +1664,13 @@ recipe ok "its signature" "download: https://github.com/eeploi/recipes/releases/
 recipe ok "the package" "download: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0.tar.gz" recipe-run 0.4.0 hetzner
 recipe ok "verified with the recipes key, not the helper's" "check: minisign -V -q -P $TEST_KEY -m recipes-0.4.0-hetzner-ubuntu-26.04.manifest" recipe-run 0.4.0 hetzner
 recipe ok "logged" "log: eeploi-helper: eeploi: recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
-BIN="$HELPER" recipe refuse "placeholder recipes key" "no recipes key in this build (RECIPES_PUBKEY is the placeholder), recipe-run refused" recipe-run 0.4.0 hetzner
+sed "s#^RECIPES_PUBKEY=.*#RECIPES_PUBKEY='RWS...REPLACE_WITH_RECIPES_KEY'#" "$HELPER" > "$WORK/recipes-placeholder-helper"
+BIN="$WORK/recipes-placeholder-helper" recipe refuse "placeholder recipes key" "no recipes key in this build (RECIPES_PUBKEY is the placeholder), recipe-run refused" recipe-run 0.4.0 hetzner
+# The helper itself carries the real recipes key: a release signed with the test key fails its check.
+REAL_RECIPES_KEY=$(sed -n "s/^RECIPES_PUBKEY='\\(.*\\)'$/\\1/p" "$HELPER")
+BIN="$HELPER" recipe refuse "the built-in recipes key" "check: minisign -V -q -P $REAL_RECIPES_KEY -m" recipe-run 0.4.0 hetzner
+BIN="$HELPER" recipe refuse "the built-in key refuses a test release" "signature check failed: recipes-0.4.0-hetzner-ubuntu-26.04.manifest, nothing ran" recipe-run 0.4.0 hetzner
+check "the built-in recipes key is not the test key" test "$REAL_RECIPES_KEY" != "$TEST_KEY"
 BIN="$WORK/recipes-badkey-helper" recipe refuse "malformed recipes key" "invalid recipes key in this build, recipe-run refused" recipe-run 0.4.0 hetzner
 recipe refuse "no arguments" "usage: recipe-run <version> <provider>" recipe-run
 recipe refuse "no provider" "usage: recipe-run <version> <provider>" recipe-run 0.4.0
@@ -1817,6 +1823,17 @@ done
 RSTATE="$WORK/recipes-writable" recipe refuse "state writable by others" "untrusted recipes state" recipe-run 0.4.0 hetzner
 RSTATE="$WORK/recipes-link" recipe refuse "state is a link" "untrusted recipes state" recipe-run 0.4.0 hetzner
 
+echo "== recipe-run: one at a time"
+recipe ok "the lock, before the state and any download" "lock: $WORK/recipes-none/.lock
+download: " recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-new/state" recipe ok "a new state folder, root's" "run: install -d -o root -g root -m 755 $WORK/recipes-new
+run: install -d -o root -g root -m 755 $WORK/recipes-new/state
+lock: $WORK/recipes-new/state/.lock" recipe-run 0.4.0 hetzner
+printf 'locked\n' > "$WORK/results-locked"
+RRES="$WORK/results-locked" recipe refuse "another run holds the lock" "another recipe-run is running" recipe-run 0.4.0 hetzner
+nothing_ran "another run holds the lock"
+absent "another run holds the lock: nothing is downloaded" "download: "
+
 echo "== recipe-run: the signature"
 M=recipes-0.4.0-hetzner-ubuntu-26.04.manifest
 cp -R "$WORK/rel-good" "$WORK/rel-forged"
@@ -1941,6 +1958,14 @@ nothing_ran "a package too large unpacked"
 RDL="$WORK/rel-missing" recipe refuse "a file not in the package" "cannot read stack/09-logs.check.sh from the package" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-nopackage" recipe refuse "no package" "download failed: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0.tar.gz" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-notgzip" recipe refuse "not a package" "cannot read" recipe-run 0.4.0 hetzner
+# The package as the recipes build it: git archive, with its pax header.
+mkdir -p "$WORK/rsrc-git"
+cp -R "$WORK/rsrc/." "$WORK/rsrc-git"
+(cd "$WORK/rsrc-git" && git init -q && git add -A \
+  && git -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false commit -qm test)
+cp -R "$WORK/rel-good" "$WORK/rel-git"
+git -C "$WORK/rsrc-git" archive --format=tar.gz -o "$WORK/rel-git/recipes-0.4.0.tar.gz" HEAD
+RDL="$WORK/rel-git" recipe ok "a package made by git archive" "result ok" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-extra" recipe ok "a file the manifest doesn't list is never read" "result ok" recipe-run 0.4.0 hetzner
 absent "the extra file never runs" "echo extra"
 # Placeholders: only the values, and only in the files a run uses.
