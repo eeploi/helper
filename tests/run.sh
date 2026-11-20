@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for eeploi-helper: bash -n, shellcheck (when installed) and many dry-run cases.
-# No extra dependencies. Never run as root: nothing here needs it.
+# Needs minisign, for recipe-run's signatures with a test key. Never run as root: nothing here needs it.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -124,6 +124,8 @@ account() {
 } > "$WORK/system"
 grep -v redis-server "$WORK/system" > "$WORK/system-no-redis"
 { cat "$WORK/system"; echo 'active eeploi-redis@shop_example.service'; } > "$WORK/system-redis-on"
+# minisign for recipe-run, wherever it is: the helper's own PATH may not have it.
+MINISIGN_BIN=$(command -v minisign || echo minisign)
 # A copy with a well-formed (fake) release key, to test self-update past the key check.
 FAKE_KEY='RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
@@ -131,7 +133,9 @@ sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
 # call <args...>: run the helper in dry-run mode. Settings (temporary per call):
 #   IN (stdin), AS (SUDO_USER, default eeploi), ETC_DIR (default etc-sites), NGINX (nginx.conf), BIN (helper file),
 #   DRYRUN (1 or empty), DBSTATE (what db-create's checks find), SYS (what the server has, default system),
-#   VHOST (the vhost vhost-set-root rewrites), LOGS (nginx's log folder)
+#   VHOST (the vhost vhost-set-root rewrites), LOGS (nginx's log folder), OSREL (os-release),
+#   RSTATE (recipe-run's state folder), RDL (the recipes release, a folder), RRES (steps and checks that fail),
+#   ERR_TO (where stderr goes, default with stdout: /dev/null to read stdout alone)
 call() {
   local dry=${DRYRUN-1}
   OUT=$(printf '%s' "${IN:-}" | env -i PATH="$PATH" \
@@ -142,7 +146,12 @@ call() {
     EEPLOI_HELPER_SYSTEM="${SYS-$WORK/system}" \
     EEPLOI_HELPER_VHOST="${VHOST:-}" \
     EEPLOI_HELPER_NGINX_LOGS="${LOGS:-$WORK/log-nginx}" \
-    bash "${BIN:-$HELPER}" "$@" 2>&1)
+    EEPLOI_HELPER_OS_RELEASE="${OSREL:-$WORK/os-release}" \
+    EEPLOI_HELPER_RECIPES_STATE="${RSTATE:-$WORK/recipes-none}" \
+    EEPLOI_HELPER_RECIPES_DOWNLOAD="${RDL:-$WORK/rel-good}" \
+    EEPLOI_HELPER_RECIPES_RESULTS="${RRES:-}" \
+    EEPLOI_HELPER_MINISIGN="$MINISIGN_BIN" \
+    bash "${BIN:-$HELPER}" "$@" 2> "${ERR_TO:-/dev/stdout}")
   CODE=$?
 }
 
@@ -173,6 +182,25 @@ refuse() {
 $OUT"; fi
 }
 
+# fails <name> <expected output> <args...>: exit 1 (it ran, and a step or check failed) and the output
+# contains the text.
+fails() {
+  local name=$1 expected=$2
+  shift 2
+  call "$@"
+  if [ "$CODE" -eq 1 ] && [[ $OUT == *"$expected"* ]]; then pass; else failure "$name" "exit $CODE, expected 1 and: $expected
+$OUT"; fi
+}
+
+# absent <name> <text>: the output of the last call does not contain the text.
+absent() {
+  if [[ $OUT != *"$2"* ]]; then pass; else failure "$1" "has: $2
+$OUT"; fi
+}
+
+# nothing_ran <name>: the last call ran no step or check.
+nothing_ran() { absent "$1: nothing runs" "run: "; }
+
 check() {
   local name=$1
   shift
@@ -189,7 +217,7 @@ else
 fi
 
 echo "== existing subcommands"
-ok "version" "1.0.4" version
+ok "version" "1.1.0" version
 ok "nginx-test" "run: nginx -t" nginx-test
 ok "nginx-reload" "run: service nginx reload" nginx-reload
 ok "php-fpm" "run: service php8.4-fpm reload" php-fpm-reload 8.4
@@ -309,12 +337,15 @@ lacks "env not read by root" "run: dd " env-install /home/ploi/a/.env $SITE/.env
 lacks "storage not read by root" "run: tar " storage-copy /home/forge/a/storage $SITE/storage shop_example
 ok "storage read as forge" "run: runuser -u forge -- tar -C /home/forge/a/storage -cf - ." storage-copy /home/forge/a/storage $SITE/storage shop_example
 # self-update: strictly newer, compared by number.
-BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.0.4
+BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.1.0
 BIN="$WORK/keyed-helper" refuse "older version" "only a newer version" self-update 0.99.99
-BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.0.5
-BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.1.0
+BIN="$WORK/keyed-helper" refuse "older patch" "only a newer version" self-update 1.0.5
+BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.1.1
+BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.2.0
 BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
-BIN="$WORK/keyed-helper" ok "numbers, not text" "download:" self-update 1.0.10
+# Pinned versions, so these hold whatever VERSION is: as text, 1.0.10 sorts before 1.0.9.
+sed "s#^VERSION=.*#VERSION='1.0.9'#" "$WORK/keyed-helper" > "$WORK/v109-helper"
+BIN="$WORK/v109-helper" ok "numbers, not text" "download:" self-update 1.0.10
 sed "s#^VERSION=.*#VERSION='1.2.10'#" "$WORK/keyed-helper" > "$WORK/v1210-helper"
 BIN="$WORK/v1210-helper" refuse "numbers, not text (older)" "only a newer version" self-update 1.2.9
 BIN="$WORK/v1210-helper" ok "numbers, not text (newer)" "download:" self-update 1.2.11
@@ -329,7 +360,7 @@ BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-upd
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version
 AS=deploy refuse "deploy without config" "run through sudo" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.0.4" version
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.1.0" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy copies into a site home" "runuser -u shop_example -- sh -c" env-install /home/ploi/a/.env $SITE/.env shop_example
 AS=deploy ETC_DIR="$WORK/etc-conf" refuse "the deploy user is not a site user" "reserved name, not a site user: deploy" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
 ETC_DIR="$WORK/etc-conf" refuse "eeploi refused when another user deploys" "run through sudo as the deploy user deploy" version
@@ -1536,6 +1567,566 @@ for sub in redis-create redis-start redis-stop; do
 done
 refuse "redis-start extra argument" "usage" redis-start shop_example now
 refuse "redis-stop extra argument" "usage" redis-stop shop_example now
+
+echo "== recipe-run: arguments and the recipes key"
+check "minisign, for the recipe-run tests" command -v minisign
+# A test key pair for recipes releases, made here (never the real one), and a copy of the helper with it.
+RKEY="$WORK/recipes-key"
+minisign -G -W -p "$RKEY.pub" -s "$RKEY.sec" > /dev/null
+minisign -G -W -p "$RKEY-other.pub" -s "$RKEY-other.sec" > /dev/null
+TEST_KEY=$(sed -n 2p "$RKEY.pub")
+sed "s#^RECIPES_PUBKEY=.*#RECIPES_PUBKEY='$TEST_KEY'#" "$HELPER" > "$WORK/recipes-helper"
+sed "s#^RECIPES_PUBKEY=.*#RECIPES_PUBKEY='RWQ-not-a-key'#" "$HELPER" > "$WORK/recipes-badkey-helper"
+# The files of a test release, as the recipes lay them out. Never run: a dry run only prints them.
+# rfile <path> <text>: one file in the release's source folder ($WORK/rsrc, or RSRC).
+rfile() {
+  local src=${RSRC:-$WORK/rsrc}
+  mkdir -p "$src/$(dirname "$1")"
+  printf '%b' "$2" > "$src/$1"
+}
+rfile stack/start.sh '#!/usr/bin/env bash\n# eeploi provisioning for {name}. Run once as root on a fresh Ubuntu {version}.\nset -euo pipefail\n'
+# The $ in the test files is for their own shell: a dry run never runs them.
+# shellcheck disable=SC2016
+rfile stack/values.sh 'DEPLOY_USER={user}\nSSH_PORT={port}\nPHP={php}\n. /etc/os-release; [ "$VERSION_ID" = "{version}" ]\n'
+rfile first-boot/start.sh 'curl {report_url}\n'
+rfile first-boot/00-lock-root.sh 'echo lock-root {report_url}\n'
+rfile first-boot/00-lock-root.check.sh 'echo check-lock-root\n'
+rfile stack/00-apt-retries.sh 'echo apt-retries\n'
+rfile stack/00-apt-retries.check.sh 'echo check-apt-retries\n'
+rfile ubuntu-26.04/01-packages.sh 'apt-get install {database}\n'
+# shellcheck disable=SC2016 # bash's own braces, not placeholders
+rfile stack/07-updates.sh 'echo "${distro_id}" "$nrconf{restart}"\n'
+# shellcheck disable=SC2016
+rfile stack/07-updates.check.sh 'echo check-updates $PHP\n'
+# shellcheck disable=SC2016
+rfile stack/09-logs.sh 'echo logs $DEPLOY_USER\n'
+rfile stack/09-logs.check.sh 'echo check-logs\n'
+rfile stack/fingerprint.sh 'echo fingerprint\n'
+RELEASE_STEPS='first-boot first-boot/00-lock-root.sh
+always stack/00-apt-retries.sh
+window ubuntu-26.04/01-packages.sh
+always stack/07-updates.sh
+always stack/09-logs.sh'
+RELEASE_FILES='stack/start.sh first-boot/start.sh stack/values.sh first-boot/00-lock-root.check.sh stack/00-apt-retries.check.sh stack/07-updates.check.sh stack/09-logs.check.sh stack/fingerprint.sh'
+rsha() { sha256sum < "$1" | cut -d' ' -f1; }
+# rsign <manifest> [<key>]: its .minisig, with the test key or another.
+rsign() {
+  rm -f "$1.minisig"
+  minisign -S -s "${2:-$RKEY.sec}" -m "$1" > /dev/null
+}
+# release <name> [<version> [<provider> [<os> [<min-helper>]]]]: a signed release of the source folder
+# in $WORK/rel-<name>: the package, the manifest and its signature.
+release() {
+  local dir="$WORK/rel-$1" v=${2:-0.4.0} provider=${3:-hetzner} os=${4:-ubuntu-26.04} min=${5:-1.1.0}
+  local src=${RSRC:-$WORK/rsrc} m marker path f
+  mkdir -p "$dir"
+  m="$dir/recipes-$v-$provider-$os.manifest"
+  {
+    printf 'format 1\nrelease %s\ntarget %s %s\nmin-helper %s\n' "$v" "$provider" "$os" "$min"
+    while read -r marker path; do echo "step $(rsha "$src/$path") $marker 0.1.0 0.4.0 - $path"; done <<< "$RELEASE_STEPS"
+    for f in $RELEASE_FILES; do echo "file $(rsha "$src/$f") $f"; done
+  } > "$m"
+  rpack "$src" "$dir/recipes-$v.tar.gz"
+  rsign "$m"
+}
+# rpack <source folder> <package> [<more paths>]: the release's files from the folder, as a package.
+rpack() {
+  # shellcheck disable=SC2046,SC2086 # the paths have no spaces
+  (cd "$1" && COPYFILE_DISABLE=1 tar -czf "$2" $(cut -d' ' -f2 <<< "$RELEASE_STEPS") $RELEASE_FILES ${3:-} 2> /dev/null)
+}
+# remanifest <name> <command...>: the good release, its manifest changed by the command (a filter),
+# then signed again.
+remanifest() {
+  local name=$1 m="$WORK/rel-$1/recipes-0.4.0-hetzner-ubuntu-26.04.manifest"
+  shift
+  cp -R "$WORK/rel-good" "$WORK/rel-$name"
+  "$@" < "$WORK/rel-good/${m##*/}" > "$m"
+  rsign "$m"
+}
+release good
+release os24 0.4.0 hetzner ubuntu-24.04
+release do2 0.4.0 do-2
+release v041 0.4.1
+release v0101 0.10.1
+# recipes_dir <name> <recipes.conf text> [<helper.conf text>]: an /etc/eeploi of its own.
+recipes_dir() {
+  mkdir -p "$WORK/etc-recipes-$1"
+  chmod 755 "$WORK/etc-recipes-$1"
+  printf '%b' "$2" > "$WORK/etc-recipes-$1/recipes.conf"
+  [ -z "${3:-}" ] || printf '%b' "$3" > "$WORK/etc-recipes-$1/helper.conf"
+}
+recipes_dir good '# Written by step 0 of the eeploi recipes. KEY=value, each key once.\nDEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.4\n'
+printf 'NAME="Ubuntu"\nVERSION_ID="26.04"\nID=ubuntu\nID_LIKE=debian\nPRETTY_NAME="Ubuntu 26.04 LTS"\n' > "$WORK/os-release"
+mkdir -p "$WORK/recipes-none"
+# recipe <ok|refuse> <name> <expected> <args...>: with the good values file and the fake recipes key.
+recipe() { local kind=$1; shift; ETC_DIR=${ETC_DIR:-$WORK/etc-recipes-good} BIN=${BIN:-$WORK/recipes-helper} "$kind" "$@"; }
+recipe ok "first line" "recipe-run 0.4.0 hetzner ubuntu-26.04" recipe-run 0.4.0 hetzner
+recipe ok "manifest for the provider and OS" "download: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0-hetzner-ubuntu-26.04.manifest" recipe-run 0.4.0 hetzner
+recipe ok "its signature" "download: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0-hetzner-ubuntu-26.04.manifest.minisig" recipe-run 0.4.0 hetzner
+recipe ok "the package" "download: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0.tar.gz" recipe-run 0.4.0 hetzner
+recipe ok "verified with the recipes key, not the helper's" "check: minisign -V -q -P $TEST_KEY -m recipes-0.4.0-hetzner-ubuntu-26.04.manifest" recipe-run 0.4.0 hetzner
+recipe ok "logged" "log: eeploi-helper: eeploi: recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
+sed "s#^RECIPES_PUBKEY=.*#RECIPES_PUBKEY='RWS...REPLACE_WITH_RECIPES_KEY'#" "$HELPER" > "$WORK/recipes-placeholder-helper"
+BIN="$WORK/recipes-placeholder-helper" recipe refuse "placeholder recipes key" "no recipes key in this build (RECIPES_PUBKEY is the placeholder), recipe-run refused" recipe-run 0.4.0 hetzner
+# The helper itself carries the real recipes key: a release signed with the test key fails its check.
+REAL_RECIPES_KEY=$(sed -n "s/^RECIPES_PUBKEY='\\(.*\\)'$/\\1/p" "$HELPER")
+BIN="$HELPER" recipe refuse "the built-in recipes key" "check: minisign -V -q -P $REAL_RECIPES_KEY -m" recipe-run 0.4.0 hetzner
+BIN="$HELPER" recipe refuse "the built-in key refuses a test release" "signature check failed: recipes-0.4.0-hetzner-ubuntu-26.04.manifest, nothing ran" recipe-run 0.4.0 hetzner
+check "the built-in recipes key is not the test key" test "$REAL_RECIPES_KEY" != "$TEST_KEY"
+BIN="$WORK/recipes-badkey-helper" recipe refuse "malformed recipes key" "invalid recipes key in this build, recipe-run refused" recipe-run 0.4.0 hetzner
+recipe refuse "no arguments" "usage: recipe-run <version> <provider>" recipe-run
+recipe refuse "no provider" "usage: recipe-run <version> <provider>" recipe-run 0.4.0
+recipe refuse "extra argument" "usage: recipe-run <version> <provider>" recipe-run 0.4.0 hetzner x
+for v in 0.4 v0.4.0 0.4.0.1 00.4.0 0.04.0 '0.4.0 ' '0.4.0;id' 10000.0.0 ''; do
+  recipe refuse "version '$v'" "invalid version: $v" recipe-run "$v" hetzner
+done
+for p in Hetzner -hetzner hetzner- 'het zner' ../x 'a/b' '' "$(printf 'a%.0s' {1..33})"; do
+  recipe refuse "provider '$p'" "invalid provider: $p" recipe-run 0.4.0 "$p"
+done
+RDL="$WORK/rel-do2" recipe ok "provider with a dash and digits" "recipe-run 0.4.0 do-2 ubuntu-26.04" recipe-run 0.4.0 do-2
+AS=ploi recipe refuse "only the deploy user" "$GATE" recipe-run 0.4.0 hetzner
+
+echo "== recipe-run: the values file"
+recipes_dir deploy 'DEPLOY_USER=deploy\nSSH_PORT=22\nPHP=8.4\n' 'DEPLOY_USER=deploy\n'
+recipes_dir port 'DEPLOY_USER=eeploi\nSSH_PORT=10000\nPHP=8.3\n'
+recipes_dir porttop 'PHP=8.4\nSSH_PORT=32767\nDEPLOY_USER=eeploi\n'
+recipes_dir mismatch 'DEPLOY_USER=deploy\nSSH_PORT=22\nPHP=8.4\n'
+recipes_dir mismatch2 'DEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.4\n' 'DEPLOY_USER=deploy\n'
+recipes_dir root 'DEPLOY_USER=root\nSSH_PORT=22\nPHP=8.4\n'
+recipes_dir baduser 'DEPLOY_USER=Eeploi\nSSH_PORT=22\nPHP=8.4\n'
+recipes_dir extra 'DEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.4\nPATH=/tmp\n'
+recipes_dir space 'DEPLOY_USER=eeploi\nSSH_PORT = 22\nPHP=8.4\n'
+recipes_dir export 'DEPLOY_USER=eeploi\nexport SSH_PORT=22\nPHP=8.4\n'
+# shellcheck disable=SC2016 # the literal $(id) is the point: it must never run
+recipes_dir inject 'DEPLOY_USER=eeploi\nSSH_PORT=$(id)\nPHP=8.4\n'
+recipes_dir quoted 'DEPLOY_USER=eeploi\nSSH_PORT="22"\nPHP=8.4\n'
+recipes_dir cr 'DEPLOY_USER=eeploi\nSSH_PORT=22\r\nPHP=8.4\n'
+recipes_dir twiceuser 'DEPLOY_USER=eeploi\nDEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.4\n'
+recipes_dir twiceport 'DEPLOY_USER=eeploi\nSSH_PORT=22\nSSH_PORT=10000\nPHP=8.4\n'
+recipes_dir twicephp 'DEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.4\nPHP=8.4\n'
+recipes_dir nouser 'SSH_PORT=22\nPHP=8.4\n'
+recipes_dir noport 'DEPLOY_USER=eeploi\nPHP=8.4\n'
+recipes_dir nophp 'DEPLOY_USER=eeploi\nSSH_PORT=22\n'
+recipes_dir empty ''
+recipes_dir badphp 'DEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.40\n'
+recipes_dir nonl 'DEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.4'
+recipes_dir writable 'DEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.4\n'
+chmod 666 "$WORK/etc-recipes-writable/recipes.conf"
+recipes_dir openfolder 'DEPLOY_USER=eeploi\nSSH_PORT=22\nPHP=8.4\n'
+chmod 777 "$WORK/etc-recipes-openfolder"
+mkdir -p "$WORK/etc-recipes-link" "$WORK/etc-recipes-folder/recipes.conf"
+chmod 755 "$WORK/etc-recipes-link" "$WORK/etc-recipes-folder"
+ln -s "$WORK/etc-recipes-good/recipes.conf" "$WORK/etc-recipes-link/recipes.conf"
+ETC_DIR="$WORK/etc-recipes-deploy" AS=deploy recipe ok "DEPLOY_USER from helper.conf" "recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-port" recipe ok "SSH port 10000" "recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-porttop" recipe ok "SSH port 32767, keys in any order" "recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-nonl" recipe ok "no newline at the end" "recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-sites" recipe refuse "no values file (a taken-over server)" "recipes.conf: this server was not built from a recipe that writes it, recipe-run refused" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-mismatch" recipe refuse "DEPLOY_USER differs from the helper's" "DEPLOY_USER is deploy in $WORK/etc-recipes-mismatch/recipes.conf but eeploi for the helper" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-mismatch2" AS=deploy recipe refuse "DEPLOY_USER differs from helper.conf" "DEPLOY_USER is eeploi in $WORK/etc-recipes-mismatch2/recipes.conf but deploy for the helper" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-root" recipe refuse "DEPLOY_USER root" "invalid DEPLOY_USER in $WORK/etc-recipes-root/recipes.conf: root" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-baduser" recipe refuse "DEPLOY_USER with a capital" "invalid DEPLOY_USER" recipe-run 0.4.0 hetzner
+for bad in extra space export inject quoted cr; do
+  ETC_DIR="$WORK/etc-recipes-$bad" recipe refuse "values file: line ($bad)" "invalid " recipe-run 0.4.0 hetzner
+done
+ETC_DIR="$WORK/etc-recipes-extra" recipe refuse "values file: another key" "invalid line in $WORK/etc-recipes-extra/recipes.conf: PATH=/tmp" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-inject" recipe refuse "values file: a command, never run" "invalid SSH_PORT" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-twiceuser" recipe refuse "DEPLOY_USER twice" "DEPLOY_USER is set twice" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-twiceport" recipe refuse "SSH_PORT twice" "SSH_PORT is set twice" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-twicephp" recipe refuse "PHP twice" "PHP is set twice" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-nouser" recipe refuse "no DEPLOY_USER" "no DEPLOY_USER in" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-noport" recipe refuse "no SSH_PORT" "no SSH_PORT in" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-nophp" recipe refuse "no PHP" "no PHP in" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-empty" recipe refuse "empty values file" "no DEPLOY_USER in" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-badphp" recipe refuse "PHP 8.40" "invalid PHP in $WORK/etc-recipes-badphp/recipes.conf: 8.40" recipe-run 0.4.0 hetzner
+for port in 21 23 2222 9999 32768 65535 010000 022 0 ''; do
+  recipes_dir "port-$port" "DEPLOY_USER=eeploi\nSSH_PORT=$port\nPHP=8.4\n"
+  ETC_DIR="$WORK/etc-recipes-port-$port" recipe refuse "SSH port '$port'" "invalid SSH_PORT in $WORK/etc-recipes-port-$port/recipes.conf: $port (22, or 10000 to 32767)" recipe-run 0.4.0 hetzner
+done
+ETC_DIR="$WORK/etc-recipes-writable" recipe refuse "values file writable by others" "untrusted values file" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-openfolder" recipe refuse "values file in an open folder" "untrusted values file" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-link" recipe refuse "values file is a link" "untrusted values file" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-folder" recipe refuse "values file is a folder" "untrusted values file" recipe-run 0.4.0 hetzner
+
+echo "== recipe-run: this server's OS"
+mkdir -p "$WORK/os"
+chmod 755 "$WORK/os"
+printf 'ID=ubuntu\nVERSION_ID=24.04\n' > "$WORK/os/plain"
+ln -s "$WORK/os/plain" "$WORK/os/link"
+printf 'ID=ubuntu\nVERSION_ID="26.04\n' > "$WORK/os/open-quote"
+printf 'ID=ubuntu\nVERSION_ID=26.04"\n' > "$WORK/os/close-quote"
+printf "ID=ubuntu\nVERSION_ID='26.04'\n" > "$WORK/os/single"
+printf 'ID=ubuntu\nVERSION_ID=26.04\nID=debian\n' > "$WORK/os/twice-id"
+printf 'ID=ubuntu\nVERSION_ID=26.04\nVERSION_ID=24.04\n' > "$WORK/os/twice-version"
+printf 'ID=ubuntu\n' > "$WORK/os/no-version"
+printf 'VERSION_ID=26.04\n' > "$WORK/os/no-id"
+# shellcheck disable=SC2016 # the literal $(id) is the point: it must never run
+printf 'ID=ubuntu-$(id)\nVERSION_ID=26.04\n' > "$WORK/os/inject"
+printf 'ID=../x\nVERSION_ID=26.04\n' > "$WORK/os/dots"
+printf 'ID=ubuntu\nVERSION_ID=26.04\n' > "$WORK/os/writable"
+chmod 666 "$WORK/os/writable"
+OSREL="$WORK/os/plain" RDL="$WORK/rel-os24" recipe ok "os-release without quotes" "recipe-run 0.4.0 hetzner ubuntu-24.04" recipe-run 0.4.0 hetzner
+OSREL="$WORK/os/plain" RDL="$WORK/rel-os24" recipe ok "the manifest of this OS" "recipes-0.4.0-hetzner-ubuntu-24.04.manifest" recipe-run 0.4.0 hetzner
+# shellcheck disable=SC2016 # the step's own $VERSION_ID
+OSREL="$WORK/os/plain" RDL="$WORK/rel-os24" recipe ok "the OS's version in the steps" '[ "$VERSION_ID" = "24.04" ]' recipe-run 0.4.0 hetzner
+OSREL="$WORK/os/link" RDL="$WORK/rel-os24" recipe ok "os-release is a link, as on Ubuntu" "recipe-run 0.4.0 hetzner ubuntu-24.04" recipe-run 0.4.0 hetzner
+OSREL="$WORK/os/plain" recipe refuse "no release for this OS" "download failed: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0-hetzner-ubuntu-24.04.manifest" recipe-run 0.4.0 hetzner
+nothing_ran "no release for this OS"
+# The manifest of ubuntu-26.04, under the name of ubuntu-24.04.
+mkdir -p "$WORK/rel-renamed"
+for f in "" .minisig; do cp "$WORK/rel-good/recipes-0.4.0-hetzner-ubuntu-26.04.manifest$f" "$WORK/rel-renamed/recipes-0.4.0-hetzner-ubuntu-24.04.manifest$f"; done
+cp "$WORK/rel-good/recipes-0.4.0.tar.gz" "$WORK/rel-renamed/"
+OSREL="$WORK/os/plain" RDL="$WORK/rel-renamed" recipe refuse "a manifest for another OS" "the manifest is for hetzner ubuntu-26.04, not hetzner ubuntu-24.04" recipe-run 0.4.0 hetzner
+nothing_ran "a manifest for another OS"
+for bad in open-quote close-quote single inject dots; do
+  OSREL="$WORK/os/$bad" recipe refuse "os-release: $bad" "cannot read os-release" recipe-run 0.4.0 hetzner
+done
+OSREL="$WORK/os/twice-id" recipe refuse "os-release: ID twice" "ID is set twice" recipe-run 0.4.0 hetzner
+OSREL="$WORK/os/twice-version" recipe refuse "os-release: VERSION_ID twice" "VERSION_ID is set twice" recipe-run 0.4.0 hetzner
+OSREL="$WORK/os/no-version" recipe refuse "os-release: no VERSION_ID" "no ID or VERSION_ID" recipe-run 0.4.0 hetzner
+OSREL="$WORK/os/no-id" recipe refuse "os-release: no ID" "no ID or VERSION_ID" recipe-run 0.4.0 hetzner
+OSREL="$WORK/os/writable" recipe refuse "os-release writable by others" "untrusted or missing os-release" recipe-run 0.4.0 hetzner
+OSREL="$WORK/os/none" recipe refuse "no os-release" "untrusted or missing os-release" recipe-run 0.4.0 hetzner
+
+echo "== recipe-run: the last good run here"
+SHA_A=$(printf 'a%.0s' {1..64})
+# state_dir <name> <state text>: a state folder of its own.
+state_dir() {
+  mkdir -p "$WORK/recipes-$1"
+  chmod 755 "$WORK/recipes-$1"
+  printf '%b' "$2" > "$WORK/recipes-$1/state"
+}
+state_dir last "# Written by eeploi-helper (recipe-run)\nrelease 0.4.0\nstep $SHA_A stack/07-updates.sh\nstep $SHA_A ubuntu-26.04/01-packages.sh\n"
+state_dir only "release 0.10.0\n"
+state_dir norelease "step $SHA_A stack/07-updates.sh\n"
+state_dir twice "release 0.4.0\nrelease 0.5.0\n"
+state_dir badrelease "release 0.4\n"
+state_dir dots "release 0.4.0\nstep $SHA_A stack/../07-updates.sh\n"
+state_dir absolute "release 0.4.0\nstep $SHA_A /stack/07-updates.sh\n"
+state_dir shortsha "release 0.4.0\nstep ${SHA_A%a} stack/07-updates.sh\n"
+state_dir upper "release 0.4.0\nstep $(printf 'A%.0s' {1..64}) stack/07-updates.sh\n"
+state_dir other "release 0.4.0\nrun $SHA_A stack/07-updates.sh\n"
+state_dir writable "release 0.4.0\n"
+chmod 666 "$WORK/recipes-writable/state"
+mkdir -p "$WORK/recipes-link"
+chmod 755 "$WORK/recipes-link"
+ln -s "$WORK/recipes-last/state" "$WORK/recipes-link/state"
+recipe ok "first run here" "recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-last" recipe ok "the same release again" "recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-last" RDL="$WORK/rel-v041" recipe ok "a newer release" "recipe-run 0.4.1 hetzner" recipe-run 0.4.1 hetzner
+RSTATE="$WORK/recipes-last" recipe refuse "an older release" "recipes 0.4.0 ran here, 0.3.9 is older: refused" recipe-run 0.3.9 hetzner
+RSTATE="$WORK/recipes-only" RDL="$WORK/rel-v0101" recipe ok "compared by number" "recipe-run 0.10.1 hetzner" recipe-run 0.10.1 hetzner
+RSTATE="$WORK/recipes-only" recipe refuse "compared by number, not text" "recipes 0.10.0 ran here, 0.9.0 is older" recipe-run 0.9.0 hetzner
+RSTATE="$WORK/recipes-norelease" recipe refuse "state without a release" "no release in" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-twice" recipe refuse "state: release twice" "release is set twice" recipe-run 0.4.0 hetzner
+for bad in badrelease dots absolute shortsha upper other; do
+  RSTATE="$WORK/recipes-$bad" recipe refuse "state: $bad" "invalid line in $WORK/recipes-$bad/state" recipe-run 0.4.0 hetzner
+done
+RSTATE="$WORK/recipes-writable" recipe refuse "state writable by others" "untrusted recipes state" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-link" recipe refuse "state is a link" "untrusted recipes state" recipe-run 0.4.0 hetzner
+
+echo "== recipe-run: one at a time"
+recipe ok "the lock, before the state and any download" "lock: $WORK/recipes-none/.lock
+download: " recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-new/state" recipe ok "a new state folder, root's" "run: install -d -o root -g root -m 755 $WORK/recipes-new
+run: install -d -o root -g root -m 755 $WORK/recipes-new/state
+lock: $WORK/recipes-new/state/.lock" recipe-run 0.4.0 hetzner
+printf 'locked\n' > "$WORK/results-locked"
+RRES="$WORK/results-locked" recipe refuse "another run holds the lock" "another recipe-run is running" recipe-run 0.4.0 hetzner
+nothing_ran "another run holds the lock"
+absent "another run holds the lock: nothing is downloaded" "download: "
+
+echo "== recipe-run: the signature"
+M=recipes-0.4.0-hetzner-ubuntu-26.04.manifest
+cp -R "$WORK/rel-good" "$WORK/rel-forged"
+printf 'step %s always 0.1.0 0.4.0 - stack/09-logs.sh\n' "$SHA_A" >> "$WORK/rel-forged/$M"
+cp -R "$WORK/rel-good" "$WORK/rel-otherkey"
+rsign "$WORK/rel-otherkey/$M" "$RKEY-other.sec"
+cp -R "$WORK/rel-good" "$WORK/rel-nosig"
+rm "$WORK/rel-nosig/$M.minisig"
+cp -R "$WORK/rel-good" "$WORK/rel-badsig"
+printf 'not a signature\n' > "$WORK/rel-badsig/$M.minisig"
+cp -R "$WORK/rel-good" "$WORK/rel-bigsig"
+head -c 5000 /dev/zero | tr '\0' a > "$WORK/rel-bigsig/$M.minisig"
+for bad in forged otherkey badsig; do
+  RDL="$WORK/rel-$bad" recipe refuse "signature: $bad" "signature check failed: $M, nothing ran" recipe-run 0.4.0 hetzner
+  nothing_ran "signature: $bad"
+  absent "signature: $bad: the package is not downloaded" "recipes-0.4.0.tar.gz"
+done
+RDL="$WORK/rel-nosig" recipe refuse "no signature" "download failed: https://github.com/eeploi/recipes/releases/download/v0.4.0/$M.minisig" recipe-run 0.4.0 hetzner
+nothing_ran "no signature"
+RDL="$WORK/rel-bigsig" recipe refuse "signature too large" "download too large: https://github.com/eeploi/recipes/releases/download/v0.4.0/$M.minisig" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-good" recipe refuse "another provider's release is not there" "download failed: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0-other-ubuntu-26.04.manifest" recipe-run 0.4.0 other
+RDL="$WORK/rel-good" recipe refuse "a release that is not there" "download failed" recipe-run 0.4.2 hetzner
+
+echo "== recipe-run: the manifest"
+remanifest release sed 's/^release 0.4.0$/release 0.4.1/'
+remanifest provider sed 's/^target hetzner /target other /'
+remanifest min-high sed 's/^min-helper .*/min-helper 1.2.0/'
+remanifest min-low sed 's/^min-helper .*/min-helper 0.9.0/'
+remanifest min-bad sed 's/^min-helper .*/min-helper 1.1/'
+remanifest format2 sed 's/^format 1$/format 2/'
+remanifest noformat sed '/^format 1$/d'
+# shellcheck disable=SC2016 # awk's own $0
+remanifest formatlate awk 'NR == 1 { f = $0; next } { print } NR == 2 { print f }'
+remanifest release2 sed '/^release /p'
+remanifest target2 sed '/^target /p'
+remanifest min2 sed '/^min-helper /p'
+remanifest norelease sed '/^release /d'
+remanifest notarget sed '/^target /d'
+remanifest nomin sed '/^min-helper /d'
+remanifest unknown awk '{ print } /^min-helper / { print "run stack/x.sh" }'
+remanifest marker sed 's/ always \(.*\) stack\/09-logs.sh$/ later \1 stack\/09-logs.sh/'
+remanifest dots sed 's# stack/09-logs.sh$# stack/../stack/09-logs.sh#'
+remanifest dot sed 's# stack/09-logs.sh$# stack/./09-logs.sh#'
+remanifest absolute sed 's# stack/09-logs.sh$# /stack/09-logs.sh#'
+remanifest hidden sed 's# stack/fingerprint.sh$# stack/.fingerprint.sh#'
+remanifest double sed 's# stack/09-logs.sh$# stack//09-logs.sh#'
+remanifest space sed 's# stack/fingerprint.sh$# stack/finger print.sh#'
+remanifest dash sed 's# stack/fingerprint.sh$# -fingerprint.sh#'
+remanifest partdash sed 's# stack/09-logs.sh$# stack/-09-logs.sh#'
+remanifest twice sed 's# stack/fingerprint.sh$# stack/09-logs.check.sh#'
+remanifest novalues sed '/ stack\/values.sh$/d'
+remanifest nostart sed '/ stack\/start.sh$/d'
+remanifest startstep sed 's#^file \([0-9a-f]*\) stack/start.sh$#step \1 always 0.1.0 0.1.0 - stack/start.sh#'
+remanifest shortsha sed 's/^\(file [0-9a-f]\{63\}\)[0-9a-f] /\1 /'
+# shellcheck disable=SC2016 # awk's own $0
+remanifest cr awk '{ if ($0 == "release 0.4.0") printf "%s\r\n", $0; else print }'
+RDL="$WORK/rel-min-low" recipe ok "min-helper lower than this helper" "result ok" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-release" recipe refuse "manifest of another release" "the manifest is for release 0.4.1, not 0.4.0" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-provider" recipe refuse "manifest of another provider" "the manifest is for other ubuntu-26.04, not hetzner ubuntu-26.04" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-min-high" recipe refuse "min-helper higher than this helper" "recipes 0.4.0 needs eeploi-helper 1.2.0 or newer, this is 1.1.0" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-min-bad" recipe refuse "min-helper not a version" "invalid min-helper in the manifest: 1.1" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-nomin" recipe refuse "no min-helper" "invalid min-helper in the manifest" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-norelease" recipe refuse "no release line" "the manifest is for release , not 0.4.0" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-notarget" recipe refuse "no target line" "the manifest is for , not hetzner ubuntu-26.04" recipe-run 0.4.0 hetzner
+for bad in format2 noformat formatlate; do
+  RDL="$WORK/rel-$bad" recipe refuse "manifest format: $bad" "not a format 1 manifest" recipe-run 0.4.0 hetzner
+done
+RDL="$WORK/rel-release2" recipe refuse "release twice" "release is set twice in the manifest" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-target2" recipe refuse "target twice" "target is set twice in the manifest" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-min2" recipe refuse "min-helper twice" "min-helper is set twice in the manifest" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-unknown" recipe refuse "an unknown line" "invalid line in the manifest: run stack/x.sh" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-marker" recipe refuse "an unknown marker" "invalid line in the manifest" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-shortsha" recipe refuse "a short SHA-256" "invalid line in the manifest" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-cr" recipe refuse "a carriage return" "the manifest is for release 0.4.0"$'\r' recipe-run 0.4.0 hetzner
+for bad in dots dot absolute hidden double space dash partdash; do
+  RDL="$WORK/rel-$bad" recipe refuse "manifest path: $bad" "a manifest path that is absolute, has a part that starts with . or -, or can't be read safely" recipe-run 0.4.0 hetzner
+  nothing_ran "manifest path: $bad"
+done
+# A part may start with _ or a digit, in a file and in a step (and so in the state).
+mkdir -p "$WORK/rsrc-lead"
+cp -R "$WORK/rsrc/." "$WORK/rsrc-lead"
+RSRC="$WORK/rsrc-lead" rfile _lead.sh 'echo lead\n'
+RSRC="$WORK/rsrc-lead" rfile 9lead.sh 'echo lead\n'
+RSRC="$WORK/rsrc-lead" rfile _stack/9-lead.sh 'echo lead-step\n'
+RELEASE_STEPS="$RELEASE_STEPS
+always _stack/9-lead.sh" RELEASE_FILES="$RELEASE_FILES _lead.sh 9lead.sh" RSRC="$WORK/rsrc-lead" release lead
+RDL="$WORK/rel-lead" recipe ok "manifest paths starting with _ and a digit" "result ok" recipe-run 0.4.0 hetzner
+SHA_LEAD=$(rsha "$WORK/rsrc-lead/_stack/9-lead.sh")
+RDL="$WORK/rel-lead" recipe ok "a step under _ and a digit, in the state" "  step $SHA_LEAD _stack/9-lead.sh" recipe-run 0.4.0 hetzner
+state_dir lead "release 0.4.0\nstep $SHA_LEAD _stack/9-lead.sh\n"
+RSTATE="$WORK/recipes-lead" RDL="$WORK/rel-lead" ERR_TO=/dev/null recipe ok "the state reads it back" "step same _stack/9-lead.sh" recipe-run 0.4.0 hetzner
+state_dir partdash "release 0.4.0\nstep $SHA_A stack/-07-updates.sh\n"
+state_dir dash "release 0.4.0\nstep $SHA_A -stack/07-updates.sh\n"
+state_dir hidden "release 0.4.0\nstep $SHA_A stack/.07-updates.sh\n"
+for bad in partdash dash hidden; do
+  RSTATE="$WORK/recipes-$bad" recipe refuse "state: a part that starts with - or . ($bad)" "invalid line in $WORK/recipes-$bad/state" recipe-run 0.4.0 hetzner
+done
+RDL="$WORK/rel-twice" recipe refuse "a path twice" "a path twice in the manifest: stack/09-logs.check.sh" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-novalues" recipe refuse "no values.sh" "no stack/values.sh in the manifest" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-nostart" recipe refuse "no start.sh" "no stack/start.sh in the manifest" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-startstep" recipe refuse "start.sh as a step" "no stack/start.sh in the manifest" recipe-run 0.4.0 hetzner
+cp -R "$WORK/rel-good" "$WORK/rel-bigmanifest"
+head -c 70000 /dev/zero | tr '\0' '#' >> "$WORK/rel-bigmanifest/$M"
+rsign "$WORK/rel-bigmanifest/$M"
+RDL="$WORK/rel-bigmanifest" recipe refuse "manifest too large" "download too large: https://github.com/eeploi/recipes/releases/download/v0.4.0/$M" recipe-run 0.4.0 hetzner
+nothing_ran "manifest too large"
+
+echo "== recipe-run: the package"
+# package <name> <change in the source> [<more paths>]: the good manifest, with a package made from a
+# changed source.
+package() {
+  local src="$WORK/rsrc-$1"
+  cp -R "$WORK/rsrc" "$src"
+  (cd "$src" && eval "$2")
+  cp -R "$WORK/rel-good" "$WORK/rel-$1"
+  rpack "$src" "$WORK/rel-$1/recipes-0.4.0.tar.gz" "${3:-}"
+}
+package changed 'printf "echo changed\n" >> stack/07-updates.sh'
+package changedcheck 'printf "rm -rf /\n" > stack/09-logs.check.sh'
+package changedunused 'printf "x\n" >> stack/fingerprint.sh'
+package link 'rm stack/09-logs.sh && ln -s 00-apt-retries.sh stack/09-logs.sh'
+package missing 'rm stack/09-logs.check.sh'
+package extra 'printf "echo extra\n" > stack/extra.sh' stack/extra.sh
+package linkextra 'ln -s 00-apt-retries.sh stack/other.sh' stack/other.sh
+package hardlink 'ln stack/09-logs.sh stack/other.sh' stack/other.sh
+package huge 'head -c 9000000 /dev/zero > stack/huge.sh' stack/huge.sh
+cp -R "$WORK/rel-good" "$WORK/rel-nopackage"
+rm "$WORK/rel-nopackage/recipes-0.4.0.tar.gz"
+cp -R "$WORK/rel-good" "$WORK/rel-notgzip"
+printf 'not a package\n' > "$WORK/rel-notgzip/recipes-0.4.0.tar.gz"
+RDL="$WORK/rel-changed" recipe refuse "a changed step" "changed file: stack/07-updates.sh (its SHA-256 is not the manifest's)" recipe-run 0.4.0 hetzner
+nothing_ran "a changed step"
+RDL="$WORK/rel-changedcheck" recipe refuse "a changed check" "changed file: stack/09-logs.check.sh" recipe-run 0.4.0 hetzner
+nothing_ran "a changed check"
+RDL="$WORK/rel-changedunused" recipe refuse "a changed file that never runs" "changed file: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
+LINK_MSG="the package holds a link or another file that is not a plain file"
+RDL="$WORK/rel-link" recipe refuse "a link in the package" "$LINK_MSG" recipe-run 0.4.0 hetzner
+nothing_ran "a link in the package"
+RDL="$WORK/rel-linkextra" recipe refuse "a link the manifest doesn't list" "$LINK_MSG" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-hardlink" recipe refuse "a hard link in the package" "$LINK_MSG" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-huge" recipe refuse "a package too large unpacked" "the package is too large unpacked" recipe-run 0.4.0 hetzner
+nothing_ran "a package too large unpacked"
+RDL="$WORK/rel-missing" recipe refuse "a file not in the package" "cannot read stack/09-logs.check.sh from the package" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-nopackage" recipe refuse "no package" "download failed: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0.tar.gz" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-notgzip" recipe refuse "not a package" "cannot read" recipe-run 0.4.0 hetzner
+# The package as the recipes build it: git archive, with its pax header.
+mkdir -p "$WORK/rsrc-git"
+cp -R "$WORK/rsrc/." "$WORK/rsrc-git"
+(cd "$WORK/rsrc-git" && git init -q && git add -A \
+  && git -c user.name=test -c user.email=test@example.com -c commit.gpgsign=false commit -qm test)
+cp -R "$WORK/rel-good" "$WORK/rel-git"
+git -C "$WORK/rsrc-git" archive --format=tar.gz -o "$WORK/rel-git/recipes-0.4.0.tar.gz" HEAD
+RDL="$WORK/rel-git" recipe ok "a package made by git archive" "result ok" recipe-run 0.4.0 hetzner
+# big_release <name> <bytes>: the good source with a fingerprint of that size, as a release of its own.
+big_release() {
+  mkdir -p "$WORK/rsrc-$1"
+  cp -R "$WORK/rsrc/." "$WORK/rsrc-$1"
+  head -c "$2" /dev/zero | tr '\0' '#' > "$WORK/rsrc-$1/stack/fingerprint.sh"
+  RSRC="$WORK/rsrc-$1" release "$1"
+}
+big_release bigfile 1048577
+big_release fullfile 1048576
+RDL="$WORK/rel-bigfile" recipe refuse "a file over 1 MB" "a file too large in the package: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
+nothing_ran "a file over 1 MB"
+RDL="$WORK/rel-fullfile" recipe ok "a file of 1 MB" "result ok" recipe-run 0.4.0 hetzner
+# A path under a file the manifest lists: it can't be read out.
+remanifest underfile awk -v sha="$SHA_A" '{ print } / stack\/start.sh$/ { print "file " sha " stack/start.sh/x" }'
+RDL="$WORK/rel-underfile" recipe refuse "a path under a file" "cannot read stack/start.sh/x from the package" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-extra" recipe ok "a file the manifest doesn't list is never read" "result ok" recipe-run 0.4.0 hetzner
+absent "the extra file never runs" "echo extra"
+# Placeholders: only the values, and only in the files a run uses.
+# place_release <name> <path> <text>: the good source with one file changed, as a release of its own.
+place_release() {
+  mkdir -p "$WORK/rsrc-$1"
+  cp -R "$WORK/rsrc/." "$WORK/rsrc-$1"
+  RSRC="$WORK/rsrc-$1" rfile "$2" "$3"
+  RSRC="$WORK/rsrc-$1" release "$1"
+}
+place_release place stack/09-logs.sh 'echo {ranges}\n'
+place_release placecheck stack/07-updates.check.sh 'test {npm}\n'
+RDL="$WORK/rel-place" recipe refuse "a placeholder in a step it can't fill in" "a placeholder recipe-run can't fill in: {ranges} in stack/09-logs.sh" recipe-run 0.4.0 hetzner
+nothing_ran "a placeholder in a step it can't fill in"
+RDL="$WORK/rel-placecheck" recipe refuse "a placeholder in a check it can't fill in" "a placeholder recipe-run can't fill in: {npm} in stack/07-updates.check.sh" recipe-run 0.4.0 hetzner
+place_release adjacent stack/09-logs.sh 'echo {user}{ranges}\n'
+# shellcheck disable=SC2016 # bash's own braces
+place_release inbash stack/09-logs.sh 'for user in a; do echo "${user}"; done\n'
+# shellcheck disable=SC2016 # bash's own braces
+place_release inword stack/07-updates.check.sh 'echo x{port}\n'
+place_release adjacentok stack/09-logs.sh 'echo {user}{port}\n'
+RDL="$WORK/rel-adjacent" recipe refuse "a placeholder right after a value" "a placeholder recipe-run can't fill in: {ranges} in stack/09-logs.sh" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-inbash" recipe refuse "a value in bash's braces" "a value in bash's own braces, which recipe-run can't fill in safely: stack/09-logs.sh" recipe-run 0.4.0 hetzner
+nothing_ran "a value in bash's braces"
+RDL="$WORK/rel-inword" recipe refuse "a value right after a word" "a value in bash's own braces, which recipe-run can't fill in safely: stack/07-updates.check.sh" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-adjacentok" recipe ok "two values side by side" "echo eeploi22" recipe-run 0.4.0 hetzner
+awk 'NR <= 4 { print; next } NR == 5 { for (i = 0; i < 201; i++) printf "file %064d stack/f%d.sh\n", 0, i }' \
+  "$WORK/rel-good/$M" > "$WORK/manifest-many"
+mkdir -p "$WORK/rel-many"
+cp "$WORK/manifest-many" "$WORK/rel-many/$M"
+rsign "$WORK/rel-many/$M"
+RDL="$WORK/rel-many" recipe refuse "more than 200 files" "more than 200 files in the manifest" recipe-run 0.4.0 hetzner
+
+echo "== recipe-run: the run"
+# What eeploi.com reads: stdout alone. A dry run's own lines are on stdout too, the steps' on stderr.
+B='  '
+ERR_TO=/dev/null recipe ok "a first run runs every always step" "recipe-run 0.4.0 hetzner ubuntu-26.04
+step ran stack/00-apt-retries.sh
+step ran stack/07-updates.sh
+step ran stack/09-logs.sh
+check ok" recipe-run 0.4.0 hetzner
+ERR_TO=/dev/null recipe ok "then every check, in order" "check ok first-boot/00-lock-root.check.sh
+check ok stack/00-apt-retries.check.sh
+check ok stack/07-updates.check.sh
+check ok stack/09-logs.check.sh" recipe-run 0.4.0 hetzner
+# The dry run prints the state it would write before the last line.
+ERR_TO=/dev/null recipe ok "the last line" "write: $WORK/recipes-none/state (644)
+result ok" recipe-run 0.4.0 hetzner
+recipe lacks "never a first-boot step" "run: first-boot/00-lock-root.sh"$'\n' recipe-run 0.4.0 hetzner
+recipe lacks "never a window step" "ubuntu-26.04/01-packages.sh" recipe-run 0.4.0 hetzner
+recipe lacks "never first-boot's start" "report_url" recipe-run 0.4.0 hetzner
+recipe lacks "never the fingerprint" "run: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
+recipe ok "a step after start.sh and the values" "run: stack/09-logs.sh
+  #!/usr/bin/env bash
+  # eeploi provisioning for recipe-run. Run once as root on a fresh Ubuntu 26.04.
+  set -euo pipefail
+$B
+  DEPLOY_USER=eeploi
+  SSH_PORT=22
+  PHP=8.4
+  . /etc/os-release; [ \"${D}VERSION_ID\" = \"26.04\" ]
+$B
+  set -euo pipefail
+  echo logs ${D}DEPLOY_USER" recipe-run 0.4.0 hetzner
+# start.sh without set -e: the step still runs under it.
+place_release nosete stack/start.sh '#!/usr/bin/env bash\n# eeploi provisioning for {name}.\n'
+RDL="$WORK/rel-nosete" recipe ok "a step under set -e, whatever start.sh sets" "  PHP=8.4
+  . /etc/os-release; [ \"${D}VERSION_ID\" = \"26.04\" ]
+$B
+  set -euo pipefail
+  echo apt-retries" recipe-run 0.4.0 hetzner
+ETC_DIR="$WORK/etc-recipes-port" recipe ok "the values from recipes.conf" "SSH_PORT=10000
+  PHP=8.3" recipe-run 0.4.0 hetzner
+recipe ok "bash's own braces stay" "echo \"${D}{distro_id}\" \"${D}nrconf{restart}\"" recipe-run 0.4.0 hetzner
+recipe ok "a check after the values, under set -e" "run: stack/07-updates.check.sh
+  #!/usr/bin/env bash
+  DEPLOY_USER=eeploi
+  SSH_PORT=22
+  PHP=8.4
+  . /etc/os-release; [ \"${D}VERSION_ID\" = \"26.04\" ]
+$B
+  set -euo pipefail
+  trap 'echo \"  ${D}BASH_COMMAND\" >&2' ERR
+  echo check-updates ${D}PHP" recipe-run 0.4.0 hetzner
+recipe ok "an audit line per step" "log: eeploi-helper: eeploi: recipe-run 0.4.0: step ran stack/07-updates.sh" recipe-run 0.4.0 hetzner
+recipe ok "an audit line per run" "log: eeploi-helper: eeploi: recipe-run 0.4.0: result ok" recipe-run 0.4.0 hetzner
+SHA_APT=$(rsha "$WORK/rsrc/stack/00-apt-retries.sh")
+SHA_UPD=$(rsha "$WORK/rsrc/stack/07-updates.sh")
+SHA_LOGS=$(rsha "$WORK/rsrc/stack/09-logs.sh")
+recipe ok "the state after a good run" "  release 0.4.0
+  step $SHA_APT stack/00-apt-retries.sh
+  step $SHA_UPD stack/07-updates.sh
+  step $SHA_LOGS stack/09-logs.sh
+write: $WORK/recipes-none/state (644)" recipe-run 0.4.0 hetzner
+state_dir same "release 0.4.0\nstep $SHA_APT stack/00-apt-retries.sh\nstep $SHA_UPD stack/07-updates.sh\nstep $SHA_LOGS stack/09-logs.sh\n"
+state_dir changed "release 0.3.0\nstep $SHA_APT stack/00-apt-retries.sh\nstep $SHA_A stack/07-updates.sh\nstep $SHA_LOGS stack/09-logs.sh\n"
+RSTATE="$WORK/recipes-same" ERR_TO=/dev/null recipe ok "unchanged steps don't run again" "step same stack/00-apt-retries.sh
+step same stack/07-updates.sh
+step same stack/09-logs.sh" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-same" recipe lacks "unchanged: no step runs" "run: stack/07-updates.sh"$'\n' recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-changed" ERR_TO=/dev/null recipe ok "only the changed step runs" "step same stack/00-apt-retries.sh
+step ran stack/07-updates.sh
+step same stack/09-logs.sh" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-changed" recipe ok "the changed step's new hash in the state" "  step $SHA_UPD stack/07-updates.sh" recipe-run 0.4.0 hetzner
+printf 'fail stack/09-logs.check.sh\n' > "$WORK/results-drift"
+RSTATE="$WORK/recipes-same" RRES="$WORK/results-drift" ERR_TO=/dev/null recipe fails "an unchanged step whose check fails runs again" "step same stack/07-updates.sh
+step ran stack/09-logs.sh" recipe-run 0.4.0 hetzner
+printf 'fail stack/07-updates.sh\n' > "$WORK/results-step"
+RRES="$WORK/results-step" ERR_TO=/dev/null recipe fails "a failed step stops the steps after it" "step ran stack/00-apt-retries.sh
+step failed stack/07-updates.sh
+step skipped stack/09-logs.sh" recipe-run 0.4.0 hetzner
+RRES="$WORK/results-step" ERR_TO=/dev/null recipe fails "after a failed step, the checks still run" "check ok stack/09-logs.check.sh
+result failed" recipe-run 0.4.0 hetzner
+RRES="$WORK/results-step" recipe fails "a failed step never runs the next one" "result failed" recipe-run 0.4.0 hetzner
+absent "the step after a failed one does not run" "run: stack/09-logs.sh"$'\n'
+RRES="$WORK/results-step" recipe fails "a skipped step in the system log" "log: eeploi-helper: eeploi: recipe-run 0.4.0: step skipped stack/09-logs.sh" recipe-run 0.4.0 hetzner
+absent "no state after a failed step" "write: "
+printf 'fail stack/07-updates.check.sh\n' > "$WORK/results-check"
+RRES="$WORK/results-check" ERR_TO=/dev/null recipe fails "a failed check" "check ok stack/00-apt-retries.check.sh
+check failed stack/07-updates.check.sh
+check ok stack/09-logs.check.sh" recipe-run 0.4.0 hetzner
+RRES="$WORK/results-check" ERR_TO=/dev/null recipe fails "a failed check fails the run" "result failed" recipe-run 0.4.0 hetzner
+RRES="$WORK/results-check" recipe fails "a failed check keeps the steps' state" "write: $WORK/recipes-none/state (644)" recipe-run 0.4.0 hetzner
 
 echo "== system log"
 ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com

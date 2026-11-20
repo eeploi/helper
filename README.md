@@ -56,6 +56,7 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 | `db-create <engine> <name> <user> <socket\|password>` | Creates a database and its user on the local MySQL, MariaDB or Postgres. `socket`: the user logs in over the socket as the site user of the same name, with no password. `password`: password login, with the password from stdin. The user gets that one database, nothing else. See [Databases](#databases) |
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
 | `self-update <version>` | Installs a signed release (see below). Only a newer one |
+| `recipe-run <version> <provider>` | Runs the `always` steps of a signed [eeploi recipes](https://github.com/eeploi/recipes) release that are new or changed on this server, then every check. See [Recipes](#recipes). Deploy user only |
 
 Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi`, the deploy user's, and `/srv/eeploi/<user>` of a site user.
 
@@ -130,6 +131,7 @@ Two optional files, both owned by root and not writable by anyone else. The help
 |---|---|
 | `/etc/eeploi/helper.conf` | `DEPLOY_USER=<user>`, when the deploy user is not `eeploi`. Only that line and comments are allowed. The file is read, never run |
 | `/etc/eeploi/new-server` | Marker written when eeploi created the server. Without it, `firewall-close-22` refuses. On a server you bring yourself, eeploi never touches the SSH port or the firewall |
+| `/etc/eeploi/recipes.conf` | The values the recipes use, written at the first boot: `DEPLOY_USER=<user>` (the same as the helper's), `SSH_PORT=<port>` (`22`, or `10000` to `32767`) and `PHP=<version>` (`N.N`), each once, and comments. Read line by line, never run. Without it, `recipe-run` refuses |
 
 The helper writes two folders there itself: `/etc/eeploi/sites` (the registry, see [Site users](#site-users)) and `/etc/eeploi/redis`. The same rules apply to them.
 
@@ -193,6 +195,38 @@ sudo eeploi-helper self-update 1.1.0
 
 Going back, or installing the same version again, is not possible: an older release may still have a bug a newer one fixed. The sudo rule never changes: it names the path, not the content.
 
+## Recipes
+
+A server eeploi creates is built at its first boot by the steps of an [eeploi recipes](https://github.com/eeploi/recipes) release. `recipe-run` updates that server to a newer release:
+
+```bash
+sudo eeploi-helper recipe-run 0.4.0 hetzner
+```
+
+1. Checks the version (`x.y.z`) and the provider (`a-z`, `0-9` and `-`), reads `/etc/eeploi/recipes.conf` (see [Settings on the server](#settings-on-the-server)) and this server's OS from `/etc/os-release` (`ID` and `VERSION_ID`, read line by line, never run), such as `ubuntu-26.04`.
+2. Refuses a release older than the last one that ran well here. The same release may run again.
+3. Downloads the release's manifest for that provider and OS, `recipes-<version>-<provider>-<os>.manifest`, and its `.minisig` from GitHub, and checks the signature with the recipes key built into the helper (`RECIPES_PUBKEY`, a key of its own, apart from the helper's). A bad signature stops it: nothing else is downloaded, nothing runs.
+4. Reads the manifest line by line: `format 1`, the `release` asked for, the `target` `<provider> <os>` of this server, a `min-helper` no newer than this helper, then a `step` line per step in run order (its SHA-256, its marker `first-boot`, `always` or `window`, and its path) and a `file` line per other file. A path that is absolute, has an empty part or a part that starts with `.` or `-` (so no `.` or `..`), or appears twice is refused.
+5. Downloads the package `recipes-<version>.tar.gz` (4 MB at most, 8 MB unzipped, at most 200 files in the manifest). A package with a link or any other file that is not a plain file or folder is refused. Reads every file the manifest lists out of it, one by one, into a folder of its own; the package is never unpacked as it is. Each file must match its SHA-256, so a changed or a missing file is refused before anything runs. The files a run uses may hold no placeholder but `{user}`, `{port}`, `{php}`, `{version}` and `{name}`, and those never in bash's own braces (`${user}`).
+6. Runs the `always` steps in order, each as `stack/start.sh`, `stack/values.sh` and the step under `set -euo pipefail`, with the values from `recipes.conf` and the OS filled in: a step that is new or changed since the last good run here, and an unchanged one whose check fails now. `first-boot` and `window` steps never run. A failed step stops the steps after it.
+7. Runs every check of the release, each on its own after the values, under `set -euo pipefail`. Checks only read.
+8. After every step went well, writes `/var/lib/eeploi/recipes/state` (root-owned): the release and the SHA-256 of each step.
+
+Steps and checks run as root, from `/`, with a clean environment and no stdin. What they print goes to stderr. One `recipe-run` at a time. stdout has only these lines, and a line per step and per run goes to the system log:
+
+```
+recipe-run 0.4.0 hetzner ubuntu-26.04
+step same stack/06-fail2ban.sh
+step ran stack/07-updates.sh
+step failed stack/09-logs.sh
+step skipped <each step after a failed one>
+check ok stack/07-updates.check.sh
+check failed stack/09-logs.check.sh
+result failed
+```
+
+Exit `0`: every step and check went well. `1`: a step or check failed, or the run stopped after its steps started (then there may be no `result` line). `64`: refused, nothing ran. A server built before the recipes wrote `recipes.conf`, or one eeploi took over, has no such file and is refused.
+
 ## Dry run
 
 `EEPLOI_HELPER_DRY_RUN=1` checks every argument and prints what the helper would run or write. It changes nothing. sudo drops the variable, so it is for tests only.
@@ -205,13 +239,15 @@ In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point t
 
 `EEPLOI_HELPER_SYSTEM` points to a file with what the site-user checks would find on the server: `passwd <getent passwd line>`, `group <getent group line>`, `id <user>:<id -G output>`, `path <path that exists>` and `active <running unit>`. Without it, none of them exist. A dry run prints every file it would write, the registry included.
 
+For `recipe-run`: `EEPLOI_HELPER_OS_RELEASE` points to a test `os-release`, `EEPLOI_HELPER_RECIPES_STATE` to a test state folder, `EEPLOI_HELPER_RECIPES_DOWNLOAD` to a folder with the release's files (copied in place of the download, then checked as usual), `EEPLOI_HELPER_RECIPES_RESULTS` to a file of `fail <path>` lines for the steps and checks that fail (and a `locked` line when another run holds the lock), and `EEPLOI_HELPER_MINISIGN` to a `minisign` outside `PATH`. A dry run never runs a step or check: it prints each script.
+
 ## Tests
 
 ```bash
 bash tests/run.sh
 ```
 
-Plain bash, no extra tools. Runs `bash -n`, `shellcheck` when installed, and the dry-run cases. CI runs it on every push.
+Plain bash and `minisign`: the `recipe-run` cases sign test releases with a key pair made for the run. Runs `bash -n`, `shellcheck` when installed, and the dry-run cases. CI runs it on every push.
 
 ## Security model
 
@@ -221,6 +257,7 @@ Plain bash, no extra tools. Runs `bash -n`, `shellcheck` when installed, and the
 - **Called through sudo.** The helper refuses to run unless `SUDO_USER` is an allowed user.
 - **Fixed environment.** The first line is `#!/bin/bash`, never a `bash` found on `PATH`. `PATH`, `TMPDIR`, `HOME` (`/root`), the locale (`LC_ALL=C`) and the umask are set by the helper, not taken from the caller. `curl` reads no curlrc.
 - **Signed releases.** Every release is signed with minisign. The helper only installs a release signed with the key built into it.
+- **Signed recipes.** `recipe-run` runs only steps from a recipes release signed with the recipes key built into the helper, each file checked against the signed manifest. The values come from a root-owned file on the server, never from the caller.
 - **The signing key is offline.** It never touches GitHub or eeploi.com. A hacked eeploi.com or GitHub account still cannot ship a helper your server accepts.
 
 Found a problem? See [SECURITY.md](SECURITY.md).

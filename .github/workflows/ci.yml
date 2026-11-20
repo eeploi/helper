@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install shellcheck
         run: command -v shellcheck || (sudo apt-get update && sudo apt-get install -y shellcheck)
+      - name: Install minisign
+        run: command -v minisign || (sudo apt-get update && sudo apt-get install -y minisign)
       - name: shellcheck
         run: shellcheck eeploi-helper tests/run.sh bin/release
       - name: bash -n
