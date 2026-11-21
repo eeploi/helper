@@ -1989,11 +1989,12 @@ cp -R "$WORK/rsrc/." "$WORK/rsrc-git"
 cp -R "$WORK/rel-good" "$WORK/rel-git"
 git -C "$WORK/rsrc-git" archive --format=tar.gz -o "$WORK/rel-git/recipes-0.4.0.tar.gz" HEAD
 RDL="$WORK/rel-git" recipe ok "a package made by git archive" "result ok" recipe-run 0.4.0 hetzner
-# big_release <name> <bytes>: the good source with a fingerprint of that size, as a release of its own.
+# big_release <name> <bytes> [<fill>]: the good source with a fingerprint of that size (# or the fill
+# byte), as a release of its own.
 big_release() {
   mkdir -p "$WORK/rsrc-$1"
   cp -R "$WORK/rsrc/." "$WORK/rsrc-$1"
-  head -c "$2" /dev/zero | tr '\0' '#' > "$WORK/rsrc-$1/stack/fingerprint.sh"
+  head -c "$2" /dev/zero | tr '\0' "${3:-#}" > "$WORK/rsrc-$1/stack/fingerprint.sh"
   RSRC="$WORK/rsrc-$1" release "$1"
 }
 big_release bigfile 1048577
@@ -2001,9 +2002,74 @@ big_release fullfile 1048576
 RDL="$WORK/rel-bigfile" recipe refuse "a file over 1 MB" "a file too large in the package: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
 nothing_ran "a file over 1 MB"
 RDL="$WORK/rel-fullfile" recipe ok "a file of 1 MB" "result ok" recipe-run 0.4.0 hetzner
+# tar_block <file> <name> <size> <type>: a tar header, appended to the file.
+tar_block() {
+  local h="$WORK/tar-header" sum
+  [ ${#2} -le 100 ] || { echo "tar_block: name too long: $2" >&2; exit 1; }
+  {
+    printf '%s' "$2"
+    head -c $((100 - ${#2})) /dev/zero
+    printf '%s\0%s\0%s\0%011o\0%011o\0        %s' 0000644 0000000 0000000 "$3" 0 "$4"
+    head -c 100 /dev/zero
+    printf 'ustar\0%s' 00
+    head -c 247 /dev/zero
+  } > "$h"
+  sum=$(od -An -tu1 -v "$h" | awk '{ for (i = 1; i <= NF; i++) s += $i } END { print s }')
+  printf '%06o\0 ' "$sum" | dd of="$h" bs=1 seek=148 conv=notrunc 2> /dev/null
+  cat "$h" >> "$1"
+}
+# tar_data <file> <data file>: the data, then zeros up to a whole block, appended to the file.
+tar_data() {
+  cat "$2" >> "$1"
+  head -c $(((512 - $(wc -c < "$2") % 512) % 512)) /dev/zero >> "$1"
+}
+# pax_record <key=value>: a pax header line, its length first.
+pax_record() {
+  local n=$((${#1} + 3))
+  while [ $((${#1} + 2 + ${#n})) -ne "$n" ]; do n=$((${#1} + 2 + ${#n})); done
+  printf '%d %s\n' "$n" "$1"
+}
+# sparse_release <name> <bytes>: the good release with stack/fingerprint.sh as that many zero bytes,
+# put in the package as a sparse file (pax, GNU sparse 1.0) that takes up one block there.
+sparse_release() {
+  local pkg="$WORK/rel-$1/recipes-0.4.0.tar" pax="$WORK/pax-$1" map="$WORK/map-$1"
+  big_release "$1" "$2" '\0'
+  {
+    pax_record GNU.sparse.major=1
+    pax_record GNU.sparse.minor=0
+    pax_record GNU.sparse.name=stack/fingerprint.sh
+    pax_record "GNU.sparse.realsize=$2"
+  } > "$pax"
+  # The map: one part, of no bytes, at the end; the rest is a hole.
+  printf '1\n%s\n0\n' "$2" > "$map"
+  : > "$pkg"
+  tar_block "$pkg" PaxHeaders/fingerprint.sh "$(wc -c < "$pax")" x
+  tar_data "$pkg" "$pax"
+  tar_block "$pkg" GNUSparseFile.0/fingerprint.sh 512 0
+  tar_data "$pkg" "$map"
+  # Then the other files: gzip reads two streams one after the other as one.
+  gzip -c "$pkg" > "$pkg.gz"
+  RELEASE_FILES=${RELEASE_FILES/stack\/fingerprint.sh/} rpack "$WORK/rsrc-$1" "$pkg.rest.gz"
+  cat "$pkg.rest.gz" >> "$pkg.gz"
+  rm "$pkg" "$pkg.rest.gz"
+}
+sparse_release sparsebig 16777216
+sparse_release sparsefull 1048576
+# Read out in full before the cap, the file fails on the file size limit (a stand-in for a full disk)
+# with GNU tar; bsdtar left the hole out of the file, so its SHA-256 was wrong.
+FSIZE=$(ulimit -S -f)
+ulimit -S -f 4096
+RDL="$WORK/rel-sparsebig" recipe refuse "a sparse file over 1 MB" "a file too large in the package: stack/fingerprint.sh" recipe-run 0.4.0 hetzner
+nothing_ran "a sparse file over 1 MB"
+RDL="$WORK/rel-sparsefull" recipe ok "a sparse file of 1 MB" "result ok" recipe-run 0.4.0 hetzner
+ulimit -S -f "$FSIZE"
 # A path under a file the manifest lists: it can't be read out.
 remanifest underfile awk -v sha="$SHA_A" '{ print } / stack\/start.sh$/ { print "file " sha " stack/start.sh/x" }'
 RDL="$WORK/rel-underfile" recipe refuse "a path under a file" "cannot read stack/start.sh/x from the package" recipe-run 0.4.0 hetzner
+# A path that is a folder of a file read before it.
+remanifest folderfile awk -v sha="$SHA_A" '{ print } / stack\/start.sh$/ { print "file " sha " stack" }'
+RDL="$WORK/rel-folderfile" recipe refuse "a path that is a folder" "cannot read stack from the package" recipe-run 0.4.0 hetzner
+absent "a path that is a folder: no size error" "integer expression"
 RDL="$WORK/rel-extra" recipe ok "a file the manifest doesn't list is never read" "result ok" recipe-run 0.4.0 hetzner
 absent "the extra file never runs" "echo extra"
 # Placeholders: only the values, and only in the files a run uses.
