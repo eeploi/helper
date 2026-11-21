@@ -501,9 +501,12 @@ BIN="$WORK/keyed-helper" ok "verify with the built-in key" "run: minisign -V -H 
 # Only a prehashed (ED) signature: every check runs minisign with VERIFY (-H), which the dry runs print and
 # recipe-run's legacy signature test runs for real; bin/release checks through its own verify, with -H too.
 check "one set of minisign flags, with -H" grep -qxF 'VERIFY=(-V -H -q)' "$HELPER"
-check "every signature check uses it" bash -c "! grep -E 'minisign -V|MINISIGN\"? -V' '$HELPER'"
+# Every line that runs $MINISIGN runs it with VERIFY, and no minisign command is written out with its own flags.
+check "every minisign run uses it" test "$(grep -F "\"${D}MINISIGN\"" "$HELPER" | grep -vF -e "command -v \"${D}MINISIGN\"" -e "(\"${D}MINISIGN\"" \
+  | grep -cvF "\"${D}MINISIGN\" \"${D}{VERIFY[@]}\"")" -eq 0
+check "no minisign flags outside VERIFY" test "$(grep -cE '(^|[^A-Za-z_])minisign +-' "$HELPER")" -eq 0
 check "bin/release verifies with -H" grep -qF 'verify() { minisign -V -H -p minisign.pub "$@"; }' "$ROOT/bin/release"
-check "bin/release has no other check" test "$(grep -c 'minisign -V' "$ROOT/bin/release")" -eq 1
+check "bin/release has no other check" test "$(grep -cE 'minisign( +-[A-Za-z]+)* +-[A-Za-z]*V' "$ROOT/bin/release")" -eq 1
 BIN="$WORK/keyed-helper" ok "version check" "check: <download>/eeploi-helper version = 1.2.3" self-update 1.2.3
 BIN="$WORK/keyed-helper" ok "install" "install: /usr/local/sbin/eeploi-helper (root:root 755)" self-update 1.2.3
 BIN="$WORK/keyed-helper" refuse "bad version with a key" "invalid version" self-update 1.2.3.4

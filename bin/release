@@ -106,7 +106,7 @@ case "$KEY" in /*) ;; *) fail "HELPER_KEY must be an absolute path: $KEY" ;; esa
 say "Sign"
 rm -f eeploi-helper.minisig
 minisign -S -s "$KEY" -m eeploi-helper -t "eeploi-helper $version"
-verified=$(verify -m eeploi-helper) || fail "the signature does not verify against minisign.pub"
+verified=$(verify -m eeploi-helper) || fail "the signature does not verify against minisign.pub as a prehashed signature (a legacy one is refused)"
 grep -qxF "Trusted comment: eeploi-helper $version" <<< "$verified" || fail "the signature's trusted comment is not eeploi-helper $version"
 cp eeploi-helper "$work/signed"
 
