@@ -48,6 +48,8 @@ run_tests() {
   return "$status"
 }
 fail() { printf 'release: %s\n' "$*" >&2; exit 1; }
+# verify <minisign args...>: against minisign.pub, a prehashed (ED) signature only, as the helper checks it.
+verify() { minisign -V -H -p minisign.pub "$@"; }
 confirm() {
   local answer
   read -r -p "$1 [y/N] " answer
@@ -104,7 +106,7 @@ case "$KEY" in /*) ;; *) fail "HELPER_KEY must be an absolute path: $KEY" ;; esa
 say "Sign"
 rm -f eeploi-helper.minisig
 minisign -S -s "$KEY" -m eeploi-helper -t "eeploi-helper $version"
-verified=$(minisign -V -p minisign.pub -m eeploi-helper) || fail "the signature does not verify against minisign.pub"
+verified=$(verify -m eeploi-helper) || fail "the signature does not verify against minisign.pub as a prehashed signature (a legacy one is refused)"
 grep -qxF "Trusted comment: eeploi-helper $version" <<< "$verified" || fail "the signature's trusted comment is not eeploi-helper $version"
 cp eeploi-helper "$work/signed"
 
@@ -136,7 +138,7 @@ say "Verify the published files"
 step "downloading them again"
 gh release download "$tag" -R "$REPO" -D "$work" -p eeploi-helper -p eeploi-helper.minisig
 cmp -s "$work/eeploi-helper" eeploi-helper || fail "the published eeploi-helper is not this file"
-minisign -V -q -p minisign.pub -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
+verify -q -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
   || fail "the published signature does not verify"
 [ "$(git ls-remote origin "refs/tags/$tag^{}" | cut -f1)" = "$head" ] || fail "$tag on GitHub is not $commit"
 

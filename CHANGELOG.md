@@ -8,6 +8,7 @@ Updates a server eeploi built to a newer signed recipes release.
 
 - New subcommand `recipe-run <version> <provider>`: downloads a signed recipes release, checks its signature with a recipes key built into the helper and every file against the signed manifest, runs the `always` steps that are new or changed on this server (and an unchanged one whose check fails), then every check. Values come from `/etc/eeploi/recipes.conf`; the last good run is kept in `/var/lib/eeploi/recipes/state`. See README, Recipes.
 - Changed: tests need `minisign`.
+- Changed: `self-update` and `recipe-run` accept only prehashed minisign signatures (`minisign -V -H`); a legacy signature is refused.
 
 ## 1.0.4 (2026-11-17)
 

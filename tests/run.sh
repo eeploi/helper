@@ -487,7 +487,7 @@ refuse "socket arguments" "usage" vhost-set-socket example.com /run/php/php8.4-f
 echo "== self-update"
 sed "s#^PUBKEY=.*#PUBKEY='RWS...REPLACE_WITH_RELEASE_KEY'#" "$HELPER" > "$WORK/placeholder-helper"
 BIN="$WORK/placeholder-helper" refuse "placeholder key" "PUBKEY is the placeholder" self-update 1.2.3
-ok "verify with the release key" "run: minisign -V -q -P $(sed -n "s/^PUBKEY='\\(.*\\)'$/\\1/p" "$HELPER")" self-update 1.2.3
+ok "verify with the release key" "run: minisign -V -H -q -P $(sed -n "s/^PUBKEY='\\(.*\\)'$/\\1/p" "$HELPER")" self-update 1.2.3
 refuse "bad version" "invalid version" self-update 1.2
 refuse "version with v" "invalid version" self-update v1.2.3
 refuse "version with leading zero" "invalid version" self-update 01.2.3
@@ -497,7 +497,16 @@ refuse "version with a newline" "invalid version" self-update $'1.2.3\nid'
 refuse "no version" "usage" self-update
 BIN="$WORK/keyed-helper" ok "download url" "download: https://github.com/eeploi/helper/releases/download/v1.2.3/eeploi-helper" self-update 1.2.3
 BIN="$WORK/keyed-helper" ok "signature url" "download: https://github.com/eeploi/helper/releases/download/v1.2.3/eeploi-helper.minisig" self-update 1.2.3
-BIN="$WORK/keyed-helper" ok "verify with the built-in key" "run: minisign -V -q -P $FAKE_KEY" self-update 1.2.3
+BIN="$WORK/keyed-helper" ok "verify with the built-in key" "run: minisign -V -H -q -P $FAKE_KEY" self-update 1.2.3
+# Only a prehashed (ED) signature: every check runs minisign with VERIFY (-H), which the dry runs print and
+# recipe-run's legacy signature test runs for real; bin/release checks through its own verify, with -H too.
+check "one set of minisign flags, with -H" grep -qxF 'VERIFY=(-V -H -q)' "$HELPER"
+# Every line that runs $MINISIGN runs it with VERIFY, and no minisign command is written out with its own flags.
+check "every minisign run uses it" test "$(grep -F "\"${D}MINISIGN\"" "$HELPER" | grep -vF -e "command -v \"${D}MINISIGN\"" -e "(\"${D}MINISIGN\"" \
+  | grep -cvF "\"${D}MINISIGN\" \"${D}{VERIFY[@]}\"")" -eq 0
+check "no minisign flags outside VERIFY" test "$(grep -cE '(^|[^A-Za-z_])minisign +-' "$HELPER")" -eq 0
+check "bin/release verifies with -H" grep -qF 'verify() { minisign -V -H -p minisign.pub "$@"; }' "$ROOT/bin/release"
+check "bin/release has no other check" test "$(grep -cE 'minisign( +-[A-Za-z]+)* +-[A-Za-z]*V' "$ROOT/bin/release")" -eq 1
 BIN="$WORK/keyed-helper" ok "version check" "check: <download>/eeploi-helper version = 1.2.3" self-update 1.2.3
 BIN="$WORK/keyed-helper" ok "install" "install: /usr/local/sbin/eeploi-helper (root:root 755)" self-update 1.2.3
 BIN="$WORK/keyed-helper" refuse "bad version with a key" "invalid version" self-update 1.2.3.4
@@ -1609,10 +1618,10 @@ always stack/07-updates.sh
 always stack/09-logs.sh'
 RELEASE_FILES='stack/start.sh first-boot/start.sh stack/values.sh first-boot/00-lock-root.check.sh stack/00-apt-retries.check.sh stack/07-updates.check.sh stack/09-logs.check.sh stack/fingerprint.sh'
 rsha() { sha256sum < "$1" | cut -d' ' -f1; }
-# rsign <manifest> [<key>]: its .minisig, with the test key or another.
+# rsign <manifest> [<key> [<minisign flags...>]]: its .minisig, with the test key or another.
 rsign() {
   rm -f "$1.minisig"
-  minisign -S -s "${2:-$RKEY.sec}" -m "$1" > /dev/null
+  minisign -S -s "${2:-$RKEY.sec}" "${@:3}" -m "$1" > /dev/null
 }
 # release <name> [<version> [<provider> [<os> [<min-helper>]]]]: a signed release of the source folder
 # in $WORK/rel-<name>: the package, the manifest and its signature.
@@ -1664,13 +1673,13 @@ recipe ok "first line" "recipe-run 0.4.0 hetzner ubuntu-26.04" recipe-run 0.4.0 
 recipe ok "manifest for the provider and OS" "download: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0-hetzner-ubuntu-26.04.manifest" recipe-run 0.4.0 hetzner
 recipe ok "its signature" "download: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0-hetzner-ubuntu-26.04.manifest.minisig" recipe-run 0.4.0 hetzner
 recipe ok "the package" "download: https://github.com/eeploi/recipes/releases/download/v0.4.0/recipes-0.4.0.tar.gz" recipe-run 0.4.0 hetzner
-recipe ok "verified with the recipes key, not the helper's" "check: minisign -V -q -P $TEST_KEY -m recipes-0.4.0-hetzner-ubuntu-26.04.manifest" recipe-run 0.4.0 hetzner
+recipe ok "verified with the recipes key, not the helper's" "check: minisign -V -H -q -P $TEST_KEY -m recipes-0.4.0-hetzner-ubuntu-26.04.manifest" recipe-run 0.4.0 hetzner
 recipe ok "logged" "log: eeploi-helper: eeploi: recipe-run 0.4.0 hetzner" recipe-run 0.4.0 hetzner
 sed "s#^RECIPES_PUBKEY=.*#RECIPES_PUBKEY='RWS...REPLACE_WITH_RECIPES_KEY'#" "$HELPER" > "$WORK/recipes-placeholder-helper"
 BIN="$WORK/recipes-placeholder-helper" recipe refuse "placeholder recipes key" "no recipes key in this build (RECIPES_PUBKEY is the placeholder), recipe-run refused" recipe-run 0.4.0 hetzner
 # The helper itself carries the real recipes key: a release signed with the test key fails its check.
 REAL_RECIPES_KEY=$(sed -n "s/^RECIPES_PUBKEY='\\(.*\\)'$/\\1/p" "$HELPER")
-BIN="$HELPER" recipe refuse "the built-in recipes key" "check: minisign -V -q -P $REAL_RECIPES_KEY -m" recipe-run 0.4.0 hetzner
+BIN="$HELPER" recipe refuse "the built-in recipes key" "check: minisign -V -H -q -P $REAL_RECIPES_KEY -m" recipe-run 0.4.0 hetzner
 BIN="$HELPER" recipe refuse "the built-in key refuses a test release" "signature check failed: recipes-0.4.0-hetzner-ubuntu-26.04.manifest, nothing ran" recipe-run 0.4.0 hetzner
 check "the built-in recipes key is not the test key" test "$REAL_RECIPES_KEY" != "$TEST_KEY"
 BIN="$WORK/recipes-badkey-helper" recipe refuse "malformed recipes key" "invalid recipes key in this build, recipe-run refused" recipe-run 0.4.0 hetzner
@@ -1848,7 +1857,11 @@ cp -R "$WORK/rel-good" "$WORK/rel-badsig"
 printf 'not a signature\n' > "$WORK/rel-badsig/$M.minisig"
 cp -R "$WORK/rel-good" "$WORK/rel-bigsig"
 head -c 5000 /dev/zero | tr '\0' a > "$WORK/rel-bigsig/$M.minisig"
-for bad in forged otherkey badsig; do
+# A legacy (Ed) signature with the right key: refused, only a prehashed (ED) one is accepted.
+cp -R "$WORK/rel-good" "$WORK/rel-legacy"
+rsign "$WORK/rel-legacy/$M" "$RKEY.sec" -l
+check "the legacy signature is good without -H" minisign -V -q -P "$TEST_KEY" -m "$WORK/rel-legacy/$M"
+for bad in forged otherkey badsig legacy; do
   RDL="$WORK/rel-$bad" recipe refuse "signature: $bad" "signature check failed: $M, nothing ran" recipe-run 0.4.0 hetzner
   nothing_ran "signature: $bad"
   absent "signature: $bad: the package is not downloaded" "recipes-0.4.0.tar.gz"
