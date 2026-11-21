@@ -167,7 +167,7 @@ You need `curl` and `minisign` (`apt install minisign`).
 VERSION=1.0.2
 curl -fLO https://github.com/eeploi/helper/releases/download/v$VERSION/eeploi-helper
 curl -fLO https://github.com/eeploi/helper/releases/download/v$VERSION/eeploi-helper.minisig
-minisign -Vm eeploi-helper -P RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA
+minisign -VHm eeploi-helper -P RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA
 sudo install -o root -g root -m 755 eeploi-helper /usr/local/sbin/eeploi-helper
 ```
 
