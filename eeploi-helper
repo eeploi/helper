@@ -50,6 +50,8 @@ VHOST_STAND_IN=
 RECIPES_DOWNLOAD=
 RECIPES_RESULTS=
 MINISIGN=minisign
+# Every signature check: -H accepts only a prehashed (ED) signature, a legacy (Ed) one is refused.
+VERIFY=(-V -H -q)
 if [ -n "$DRY" ]; then
   MINISIGN="${EEPLOI_HELPER_MINISIGN:-$MINISIGN}"
   RECIPES_DOWNLOAD="${EEPLOI_HELPER_RECIPES_DOWNLOAD:-}"
@@ -1920,7 +1922,7 @@ case "$command" in
       echo "download: $url"
       echo "download: $url.minisig"
       echo "run: ${fetch[*]} -o <download>/<file> <url>"
-      echo "run: minisign -V -H -q -P $PUBKEY -m <download>/eeploi-helper -x <download>/eeploi-helper.minisig"
+      echo "run: minisign ${VERIFY[*]} -P $PUBKEY -m <download>/eeploi-helper -x <download>/eeploi-helper.minisig"
       echo "run: bash -n <download>/eeploi-helper"
       echo "check: <download>/eeploi-helper version = $1"
       echo "install: $INSTALL_PATH (root:root 755)"
@@ -1933,8 +1935,7 @@ case "$command" in
     for f in eeploi-helper eeploi-helper.minisig; do
       "${fetch[@]}" -o "$work/$f" "$RELEASES/v$1/$f" || fail "download failed: $RELEASES/v$1/$f"
     done
-    # -H: only a prehashed (ED) signature; a legacy (Ed) one is refused.
-    "$MINISIGN" -V -H -q -P "$PUBKEY" -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
+    "$MINISIGN" "${VERIFY[@]}" -P "$PUBKEY" -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
       || fail "signature check failed, nothing changed"
     bash -n "$work/eeploi-helper" || fail "the new helper is not valid bash, nothing changed"
     got=$(env -i PATH="$PATH" SUDO_USER="$CALLER" bash "$work/eeploi-helper" version 2>&1) \
@@ -1971,9 +1972,8 @@ case "$command" in
     # Nothing else is downloaded or read before the signature checks out.
     recipes_fetch "$manifest" 65536
     recipes_fetch "$manifest.minisig" 4096
-    [ -z "$DRY" ] || echo "check: minisign -V -H -q -P $RECIPES_PUBKEY -m $manifest -x $manifest.minisig"
-    # -H: only a prehashed (ED) signature; a legacy (Ed) one is refused.
-    "$MINISIGN" -V -H -q -P "$RECIPES_PUBKEY" -m "$R_WORK/$manifest" -x "$R_WORK/$manifest.minisig" > /dev/null 2>&1 \
+    [ -z "$DRY" ] || echo "check: minisign ${VERIFY[*]} -P $RECIPES_PUBKEY -m $manifest -x $manifest.minisig"
+    "$MINISIGN" "${VERIFY[@]}" -P "$RECIPES_PUBKEY" -m "$R_WORK/$manifest" -x "$R_WORK/$manifest.minisig" > /dev/null 2>&1 \
       || fail "signature check failed: $manifest, nothing ran"
     recipes_manifest "$R_WORK/$manifest" "$1" "$2"
     recipes_fetch "$package" 4194304

@@ -498,12 +498,12 @@ refuse "no version" "usage" self-update
 BIN="$WORK/keyed-helper" ok "download url" "download: https://github.com/eeploi/helper/releases/download/v1.2.3/eeploi-helper" self-update 1.2.3
 BIN="$WORK/keyed-helper" ok "signature url" "download: https://github.com/eeploi/helper/releases/download/v1.2.3/eeploi-helper.minisig" self-update 1.2.3
 BIN="$WORK/keyed-helper" ok "verify with the built-in key" "run: minisign -V -H -q -P $FAKE_KEY" self-update 1.2.3
-# Only a prehashed (ED) signature: the real check asks minisign for -H too, so a legacy (Ed) one is refused.
-sed -n '/^  self-update)$/,/^  recipe-run)$/p' "$HELPER" > "$WORK/self-update.txt"
-check "self-update verifies with -H" grep -qF "\"${D}MINISIGN\" -V -H -q -P \"${D}PUBKEY\"" "$WORK/self-update.txt"
-check "self-update has no check without -H" bash -c "! grep -E 'MINISIGN\"? -V( -q)? -P' '$WORK/self-update.txt'"
-check "bin/release verifies with -H, both times" test "$(grep -c 'minisign -V -H ' "$ROOT/bin/release")" -eq 2
-check "bin/release has no check without -H" bash -c "! grep -E 'minisign -V( -q)? -p' '$ROOT/bin/release'"
+# Only a prehashed (ED) signature: every check runs minisign with VERIFY (-H), which the dry runs print and
+# recipe-run's legacy signature test runs for real; bin/release checks through its own verify, with -H too.
+check "one set of minisign flags, with -H" grep -qxF 'VERIFY=(-V -H -q)' "$HELPER"
+check "every signature check uses it" bash -c "! grep -E 'minisign -V|MINISIGN\"? -V' '$HELPER'"
+check "bin/release verifies with -H" grep -qF 'verify() { minisign -V -H -p minisign.pub "$@"; }' "$ROOT/bin/release"
+check "bin/release has no other check" test "$(grep -c 'minisign -V' "$ROOT/bin/release")" -eq 1
 BIN="$WORK/keyed-helper" ok "version check" "check: <download>/eeploi-helper version = 1.2.3" self-update 1.2.3
 BIN="$WORK/keyed-helper" ok "install" "install: /usr/local/sbin/eeploi-helper (root:root 755)" self-update 1.2.3
 BIN="$WORK/keyed-helper" refuse "bad version with a key" "invalid version" self-update 1.2.3.4
@@ -1615,10 +1615,10 @@ always stack/07-updates.sh
 always stack/09-logs.sh'
 RELEASE_FILES='stack/start.sh first-boot/start.sh stack/values.sh first-boot/00-lock-root.check.sh stack/00-apt-retries.check.sh stack/07-updates.check.sh stack/09-logs.check.sh stack/fingerprint.sh'
 rsha() { sha256sum < "$1" | cut -d' ' -f1; }
-# rsign <manifest> [<key>]: its .minisig, with the test key or another.
+# rsign <manifest> [<key> [<minisign flags...>]]: its .minisig, with the test key or another.
 rsign() {
   rm -f "$1.minisig"
-  minisign -S -s "${2:-$RKEY.sec}" -m "$1" > /dev/null
+  minisign -S -s "${2:-$RKEY.sec}" "${@:3}" -m "$1" > /dev/null
 }
 # release <name> [<version> [<provider> [<os> [<min-helper>]]]]: a signed release of the source folder
 # in $WORK/rel-<name>: the package, the manifest and its signature.
@@ -1856,10 +1856,7 @@ cp -R "$WORK/rel-good" "$WORK/rel-bigsig"
 head -c 5000 /dev/zero | tr '\0' a > "$WORK/rel-bigsig/$M.minisig"
 # A legacy (Ed) signature with the right key: refused, only a prehashed (ED) one is accepted.
 cp -R "$WORK/rel-good" "$WORK/rel-legacy"
-rm "$WORK/rel-legacy/$M.minisig"
-minisign -S -l -s "$RKEY.sec" -m "$WORK/rel-legacy/$M" > /dev/null
-check "the legacy signature is Ed" test "$(sed -n 2p "$WORK/rel-legacy/$M.minisig" | base64 -d 2> /dev/null | head -c 2)" = Ed
-check "the release signature is ED" test "$(sed -n 2p "$WORK/rel-good/$M.minisig" | base64 -d 2> /dev/null | head -c 2)" = ED
+rsign "$WORK/rel-legacy/$M" "$RKEY.sec" -l
 check "the legacy signature is good without -H" minisign -V -q -P "$TEST_KEY" -m "$WORK/rel-legacy/$M"
 for bad in forged otherkey badsig legacy; do
   RDL="$WORK/rel-$bad" recipe refuse "signature: $bad" "signature check failed: $M, nothing ran" recipe-run 0.4.0 hetzner
