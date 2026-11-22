@@ -1316,6 +1316,8 @@ REBOOT_LINE_RE="^rebooted ($DATE_PART)\$"
 
 # reboot_last: B_LAST, when the last reboot server-reboot started was, from $REBOOT_STATE, root's,
 # parsed line by line; empty when there is no file (no reboot started here yet).
+# A file it can't trust is refused. A trusted file it can't read (empty, a line it doesn't know, the
+# time twice) is ignored and logged: B_LAST is empty then too.
 reboot_last() {
   local file=$REBOOT_STATE line
   B_LAST=''
@@ -1324,22 +1326,26 @@ reboot_last() {
   # D-5: parsed line by line, never sourced.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
-    [[ $line =~ $REBOOT_LINE_RE ]] || fail "invalid line in $file: $line"
-    [ -z "$B_LAST" ] || fail "rebooted is set twice in $file"
-    B_LAST=${BASH_REMATCH[1]}
+    if [[ $line =~ $REBOOT_LINE_RE ]] && [ -z "$B_LAST" ]; then B_LAST=${BASH_REMATCH[1]}; else B_LAST=''; break; fi
   done < "$file"
-  [ -n "$B_LAST" ] || fail "no time in $file"
+  [ -n "$B_LAST" ] || audit "server-reboot: the last reboot time in $file can't be read, ignored"
 }
 
-# reboot_allowed: refuses a call within 15 minutes of the last reboot (a time in the future too, until
-# 15 minutes after it). A dry run takes now from EEPLOI_HELPER_NOW when set.
+# reboot_allowed: refuses a call within 15 minutes of the last reboot. A time more than 15 minutes
+# ahead of now, or one date can't read, is ignored and logged. A dry run takes now from
+# EEPLOI_HELPER_NOW when set.
 reboot_allowed() {
   local at now
   reboot_last
   [ -n "$B_LAST" ] || return 0
-  at=$(epoch_of "$B_LAST") || fail "cannot read the time in $REBOOT_STATE"
   if [ -n "$NOW" ]; then now=$(epoch_of "$NOW") || fail "cannot read the time now"; else now=$(date +%s); fi
-  [ "$now" -ge $((at + REBOOT_GAP)) ] || fail "the last reboot was at $B_LAST: the next is allowed from $(utc_at $((at + REBOOT_GAP)))"
+  if ! at=$(epoch_of "$B_LAST" 2> /dev/null); then
+    audit "server-reboot: the last reboot time in $REBOOT_STATE can't be read, ignored"
+  elif [ "$at" -gt $((now + REBOOT_GAP)) ]; then
+    audit "server-reboot: the last reboot time is in the future, ignored"
+  elif [ "$now" -lt $((at + REBOOT_GAP)) ]; then
+    fail "the last reboot was at $B_LAST: the next is allowed from $(utc_at $((at + REBOOT_GAP)))"
+  fi
 }
 
 # reboot_pending: a reboot server-reboot started is pending: its timer waits, or its service waits

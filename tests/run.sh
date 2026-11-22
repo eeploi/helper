@@ -2720,9 +2720,15 @@ rb last "$RB_HEAD"$'\nrebooted 2026-11-22T19:00:00Z\n'
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:10:00Z refuse "10 minutes after the last: refused, says when" \
   "the last reboot was at 2026-11-22T19:00:00Z: the next is allowed from 2026-11-22T19:15:00Z" server-reboot
 nothing_ran "10 minutes after the last"
+absent "10 minutes after the last: a time it reads, nothing ignored" "ignored"
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:14:59Z refuse "a second short of 15 minutes: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:00:00Z refuse "at the same second: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
-RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T18:00:00Z refuse "a last reboot in the future: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T18:45:00Z refuse "a last reboot 15 minutes ahead: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T18:44:59Z ok "a last reboot more than 15 minutes ahead: ignored, logged" \
+  "log: eeploi-helper: server-reboot: the last reboot time is in the future, ignored" server-reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T18:00:00Z ok "a last reboot an hour ahead: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-last/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due " server-reboot
+absent "a last reboot an hour ahead: not refused" "allowed from"
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:15:00Z ok "15 minutes after the last: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-last/reboot +%Y-%m-%dT%H:%M:%SZ
 reboot due " server-reboot
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-23T08:00:00Z ok "the next day: reboots" "reboot due " server-reboot
@@ -2743,16 +2749,28 @@ rb opendir $'rebooted 2026-11-22T19:00:00Z\n'
 chmod 777 "$WORK/reboot-opendir"
 RBOOT="$WORK/reboot-opendir/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "a folder writable by others: refused" "untrusted reboot state" server-reboot
 chmod 755 "$WORK/reboot-opendir"
-rb twice $'rebooted 2026-11-22T19:00:00Z\nrebooted 2026-11-22T19:20:00Z\n'
-RBOOT="$WORK/reboot-twice/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "two times: refused" "rebooted is set twice in $WORK/reboot-twice/reboot" server-reboot
-rb notime "$RB_HEAD"$'\n'
-RBOOT="$WORK/reboot-notime/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "no time: refused" "no time in $WORK/reboot-notime/reboot" server-reboot
 rb nonewline 'rebooted 2026-11-22T19:00:00Z'
 RBOOT="$WORK/reboot-nonewline/reboot" NOW_AT=2026-11-22T19:10:00Z refuse "a last line without a newline: read" "allowed from 2026-11-22T19:15:00Z" server-reboot
+# A trusted file it can't read is ignored and logged, and the reboot goes ahead, even 10 minutes after
+# the time in it.
+# dropped <name> <file content>: that content, 10 minutes after 19:00: reboots, and says it ignored the file.
+dropped() {
+  rb "$1" "$2"
+  RBOOT="$WORK/reboot-$1/reboot" NOW_AT=2026-11-22T19:10:00Z ok "$1: ignored, logged" \
+    "log: eeploi-helper: server-reboot: the last reboot time in $WORK/reboot-$1/reboot can't be read, ignored" server-reboot
+  RBOOT="$WORK/reboot-$1/reboot" NOW_AT=2026-11-22T19:10:00Z ok "$1: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-$1/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due " server-reboot
+}
+dropped empty ''
+dropped notime "$RB_HEAD"$'\n'
+dropped twice $'rebooted 2026-11-22T19:00:00Z\nrebooted 2026-11-22T19:05:00Z\n'
+dropped damaged $'rebooted 2026-11-22T19:00:00Z\nreboo\n'
+dropped baddate $'rebooted 2026-13-45T19:00:00Z\n'
+n=0
 # shellcheck disable=SC2016 # the literal $(id) is the point: it is no time
 for bad in 'rebooted 2026-11-22T19:00:00' 'rebooted 2026-11-22 19:00:00' 'rebooted 2026-11-22T19:00:00+01:00' 'rebooted $(id)' 'last=2026-11-22T19:00:00Z' ' rebooted 2026-11-22T19:00:00Z'; do
-  rb bad "$bad"$'\n'
-  RBOOT="$WORK/reboot-bad/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "an invalid line ($bad): refused" "invalid line in $WORK/reboot-bad/reboot" server-reboot
+  n=$((n + 1))
+  dropped "bad$n" "$bad"$'\n'
 done
 
 echo "== server-reboot: the unit's script"
