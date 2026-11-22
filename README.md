@@ -1,10 +1,10 @@
-# eeploi-helper
-
 <p align="center">
 <a href="https://github.com/eeploi/helper/actions/workflows/ci.yml"><img src="https://github.com/eeploi/helper/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
 <a href="https://github.com/eeploi/helper/releases/latest"><img src="https://img.shields.io/github/v/release/eeploi/helper" alt="Latest Release"></a>
 <a href="LICENSE.md"><img src="https://img.shields.io/github/license/eeploi/helper" alt="License"></a>
 </p>
+
+# eeploi-helper
 
 ## About
 
@@ -274,7 +274,7 @@ Contributions are welcome. See the [contribution guide](.github/CONTRIBUTING.md)
 
 ## Security Vulnerabilities
 
-Found a security problem? Report it privately, as [SECURITY.md](.github/SECURITY.md) describes. Never in a public issue.
+Please report a security problem privately, as described in [.github/SECURITY.md](.github/SECURITY.md). Never in a public issue.
 
 ## License
 
