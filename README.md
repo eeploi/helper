@@ -1,4 +1,12 @@
+<p align="center">
+<a href="https://github.com/eeploi/helper/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/eeploi/helper/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+<a href="https://github.com/eeploi/helper/releases/latest"><img src="https://img.shields.io/github/v/release/eeploi/helper" alt="Latest release"></a>
+<a href="LICENSE.md"><img src="https://img.shields.io/github/license/eeploi/helper" alt="License"></a>
+</p>
+
 # eeploi-helper
+
+## About
 
 The only command [eeploi](https://eeploi.com) may run as root on your server.
 
@@ -260,8 +268,14 @@ Plain bash and `minisign`: the `recipe-run` cases sign test releases with a key 
 - **Signed recipes.** `recipe-run` runs only steps from a recipes release signed with the recipes key built into the helper, each file checked against the signed manifest. The values come from a root-owned file on the server, never from the caller.
 - **The signing key is offline.** It never touches GitHub or eeploi.com. A hacked eeploi.com or GitHub account still cannot ship a helper your server accepts.
 
-Found a problem? See [SECURITY.md](SECURITY.md).
+## Contributing
+
+Thank you for considering a contribution. The [contribution guide](.github/CONTRIBUTING.md) says how.
+
+## Security Vulnerabilities
+
+Please report a security problem privately, as the [security policy](.github/SECURITY.md) describes, never in a public issue.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+eeploi-helper is open-sourced software licensed under the [MIT license](LICENSE.md).
