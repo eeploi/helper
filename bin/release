@@ -85,7 +85,7 @@ step "checking that $tag is new"
 [ "$found" = "release not found" ] || fail "could not ask GitHub for a release $tag: $found"
 
 step "shellcheck"
-shellcheck eeploi-helper tests/run.sh bin/release || fail "shellcheck found problems"
+shellcheck eeploi-helper tests/run.sh tests/decisions.sh bin/release || fail "shellcheck found problems"
 step "running the tests"
 # On a failure: what failed and why (cut short when much fails), then the end, also when run.sh itself broke.
 run_tests || { { sed -n '/^FAIL /,/^$/p' "$work/tests" | head -40; tail -20 "$work/tests"; } >&2; fail "tests fail: bash tests/run.sh"; }
@@ -134,4 +134,4 @@ verify -q -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
 
 say "Done"
 echo "eeploi-helper $version, $tag at $commit, SHA-256 $(sha256 eeploi-helper)."
-echo "Next: vendor it into eeploi.com (resources/helper/)."
+echo "Next: pin $version and its SHA-256 in eeploi.com."

@@ -2366,6 +2366,8 @@ rel_git -C "$REL/repo" tag -a v1.2.3 -m v1.2.3
 rel_git -C "$REL/repo" push -q origin refs/tags/v1.2.3
 rel_git -C "$REL/repo" tag -d v1.2.3 > /dev/null
 rel_check 1 "release: the tag of this version stops the checks" "release: v1.2.3 already exists: releases are immutable, release a new version"
+check "release: shellcheck on the same files as CI" test \
+  "$(sed -n 's/^shellcheck \(.*\) || fail .*/\1/p' "$ROOT/bin/release")" = "$(sed -n 's/^ *run: shellcheck //p' "$ROOT/.github/workflows/ci.yml")"
 check "release: no tag moved, no release file replaced" \
   test "$(grep -cE -e 'git push.*( -f|--force|--delete|:refs/|\+refs/)' -e 'git tag.*( -f|--force)' \
     -e 'gh release (upload|delete|edit)' -e 'gh api' -e '--clobber' "$ROOT/bin/release")" -eq 0
