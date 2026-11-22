@@ -2318,14 +2318,18 @@ RRES="$WORK/results-check" recipe fails "a failed check keeps the steps' state" 
 
 echo "== bin/release"
 # Tags and releases never change (D-26 in DECISIONS.md): bin/release --check in a copy, a repo with its own origin, and stubs for gh, minisign and shellcheck.
-# The copy's tests/run.sh only passes, so the tests don't run again inside it. RELEASE_EXISTS: gh finds the release.
+# The copy's tests/run.sh only passes, so the tests don't run again inside it. RELEASE_EXISTS: gh finds the release;
+# GH_ERROR: gh fails with that message instead of "release not found".
 REL="$WORK/release"
 mkdir -p "$REL/stubs" "$REL/repo/bin" "$REL/repo/tests"
 cat > "$REL/stubs/gh" << 'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "run list") echo "completed success" ;;
-  "release view") [ -n "${RELEASE_EXISTS:-}" ] ;;
+  "release view")
+    [ -z "${RELEASE_EXISTS:-}" ] || exit 0
+    echo "${GH_ERROR:-release not found}" >&2
+    exit 1 ;;
   *) exit 1 ;;
 esac
 EOF
@@ -2335,8 +2339,8 @@ chmod 755 "$REL/stubs"/*
 cp "$ROOT/bin/release" "$REL/repo/bin/release"
 printf "VERSION='1.2.3'\n" > "$REL/repo/eeploi-helper"
 echo 'exit 0' > "$REL/repo/tests/run.sh"
-# git without the user's own config (signing, hooks): only what these commands set.
-REL_ENV=(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+# git without the user's own config (signing, hooks), and never on the real repo (GIT_DIR from a hook, say).
+REL_ENV=(-u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
 rel_git() { env "${REL_ENV[@]}" git -c user.name=Test -c user.email=test@example.com "$@"; }
 rel_git init -q --bare "$REL/origin.git"
 rel_git -C "$REL/repo" init -q -b main
@@ -2355,13 +2359,16 @@ $OUT"; fi
 rel_check 0 "release: a new version passes the checks" "eeploi-helper 1.2.3 at $(rel_git -C "$REL/repo" rev-parse --short HEAD): v1.2.3 is new"
 RELEASE_EXISTS=1 rel_check 1 "release: a release of this version stops the checks" \
   "release: eeploi/helper already has a release v1.2.3, maybe a draft: releases are immutable, release a new version"
+GH_ERROR="HTTP 502: Bad Gateway" rel_check 1 "release: a gh error is no answer" \
+  "release: could not ask GitHub for a release v1.2.3: HTTP 502: Bad Gateway"
 # The tag only on GitHub: the checks fetch it.
 rel_git -C "$REL/repo" tag -a v1.2.3 -m v1.2.3
 rel_git -C "$REL/repo" push -q origin refs/tags/v1.2.3
 rel_git -C "$REL/repo" tag -d v1.2.3 > /dev/null
 rel_check 1 "release: the tag of this version stops the checks" "release: v1.2.3 already exists: releases are immutable, release a new version"
 check "release: no tag moved, no release file replaced" \
-  test "$(grep -cE -e 'push .*--force|--force .*push' -e '--clobber' -e 'tag .*-f( |$)' "$ROOT/bin/release")" -eq 0
+  test "$(grep -cE -e 'git push.*( -f|--force|--delete|:refs/|\+refs/)' -e 'git tag.*( -f|--force)' \
+    -e 'gh release (upload|delete|edit)' -e 'gh api' -e '--clobber' "$ROOT/bin/release")" -eq 0
 
 echo "== system log"
 ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com

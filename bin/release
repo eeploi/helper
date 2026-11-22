@@ -79,8 +79,10 @@ tag="v$version"
 step "checking that $tag is new"
 ! git rev-parse -q --verify "refs/tags/$tag" > /dev/null \
   || fail "$tag already exists: releases are immutable, release a new version"
-! gh release view "$tag" -R "$REPO" > /dev/null 2>&1 \
+! found=$(gh release view "$tag" -R "$REPO" 2>&1) \
   || fail "$REPO already has a release $tag, maybe a draft: releases are immutable, release a new version"
+# Only gh's "release not found" means none: any other error stops here, before the tag goes up.
+[ "$found" = "release not found" ] || fail "could not ask GitHub for a release $tag: $found"
 
 step "shellcheck"
 shellcheck eeploi-helper tests/run.sh bin/release || fail "shellcheck found problems"
@@ -116,7 +118,8 @@ cmp -s "$work/signed" "$work/checked" || fail "the signed eeploi-helper is not t
 cmp -s eeploi-helper "$work/signed" || fail "eeploi-helper changed since it was signed: nothing was published"
 step "pushing $tag"
 git tag -a "$tag" -m "$tag" "$head"
-git push -q origin "refs/tags/$tag"
+# A tag that never reached GitHub doesn't stay here, or the next run would take it for a released one.
+git push -q origin "refs/tags/$tag" || { git tag -d "$tag" > /dev/null; fail "could not push $tag: nothing was published"; }
 step "creating the release"
 gh release create "$tag" eeploi-helper eeploi-helper.minisig -R "$REPO" --verify-tag \
   --title "eeploi-helper $version" --notes "See CHANGELOG.md."
