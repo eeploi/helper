@@ -233,3 +233,61 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **Why:** a version names one file for good, so what a server or a caller pins can't change under it.
 - **Accepted:** a version is released once. `bin/release` stops at its checks when the `v<version>` tag or a published release of that version already exists (#29). It makes the release as a draft with no tag, checks the draft's files and signature, and only then publishes it, which makes the tag (#31). A run that stops before publishing leaves only a draft, which can be deleted, and the version stays free. A run that stops after publishing has released the version.
 - **Where:** `bin/release`
+
+## D-27: recipe-run keeps the checks and probes of the last good run
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, 1.2.0
+- **What:** after every step of a run went well, `recipe-run` keeps the release's checks (`*.check.sh`), probes (`*.probe.sh`) and `stack/values.sh`, as verified against the signed manifest, in `/var/lib/eeploi/recipes/kept`, root-owned, with a `list` of the release, its provider and OS, and each file's SHA-256 in manifest order. The new set is built beside the old one and swapped in just before the state is written. It replaces a set of an older release, of another provider or OS, or one the report can't use; the same release run again keeps the set it has. A run with a failed step keeps the set before it. A set that can't be written (a full disk, say) leaves the set before, says so on stderr, and doesn't stop the run.
+- **Why:** `server-report` then runs what last ran here, with no download, so it works without a network.
+- **Accepted:** a server where no `recipe-run` ran since 1.2.0 has no kept set, and its report shows no checks and no probes.
+- **Where:** `eeploi-helper`
+
+## D-28: server-report reads, and runs only what recipe-run kept
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, 1.2.0
+- **What:** `server-report [--json]` takes no other argument, writes nothing but a work folder in `/tmp` (removed on exit), restarts nothing and downloads nothing. It runs only the kept checks and probes: every folder and file of the set root-owned and not writable by others, every path by the manifest's rule, and every file's SHA-256 the one in the list. A set that fails any of this runs nothing: the report shows part 1 and the base, says the checks and probes were not run and why, and exits 1. Checks run as `recipe-run` runs them, probes as `bash <probe>` from `/` with `env -i`; each is stopped after 60 seconds and capped at 64 KB of output. It waits, with a shared lock, for a `recipe-run` that is running.
+- **Why:** a report must never change the server it reports on, and root runs only signed files that root alone can change.
+- **Accepted:** root can change the kept files, the state and the output. The report is for support, not proof.
+- **Where:** `eeploi-helper`
+
+## D-29: The first good run's time is never guessed
+
+- **Kind:** known limit
+- **Decided:** 2026-11-22, 1.2.0
+- **What:** since 1.2.0 the state holds when the first good `recipe-run` was (`first`) and when the last one ran (`ran`), in UTC. A state written before has neither: the next run writes `ran`, never `first`, and the report shows `not-recorded`. A server with no state shows `none`.
+- **Why:** an earlier time can't be read back from anything on the server that only eeploi writes, and cloud-init or a file's time could be anyone's.
+- **Where:** `eeploi-helper`
+
+## D-30: A probe's lines by pattern only, never its stderr
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, 1.2.0
+- **What:** `server-report` shows a probe's stdout lines that match `^[a-z][a-z0-9_-]* [[:print:]]*[^[:space:]]$`, at most 500, and counts the rest as not shown. Its stderr is never read. A probe that exits non-zero or prints more than 64 KB shows `probe failed` and no lines; one with no output shows `not-installed`.
+- **Why:** the probes keep secrets out by printing only their own keys (eeploi/recipes PROBES.md); the pattern is a second check, and an error message can quote a config line.
+- **Where:** `eeploi-helper`
+
+## D-31: Listening ports and failed units by name only
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, 1.2.0
+- **What:** the report's base shows each listening TCP port with the names of the processes on it (`ss -tlnpH`), never an address or a process id, and the failed units by name (`systemctl --failed`), never their description. A name outside a fixed set of characters is left out.
+- **Why:** that is enough to see what runs, on any Linux with systemd, and shows nothing about who connects.
+- **Where:** `eeploi-helper`
+
+## D-32: Without recipes.conf the checks don't run
+
+- **Kind:** known limit
+- **Decided:** 2026-11-22, 1.2.0
+- **What:** a check runs after `stack/values.sh` with the values from `/etc/eeploi/recipes.conf`, by `recipe-run`'s rules. Without that file, with one those rules refuse, or without a readable `os-release`, the report says the checks were not run and why, and exits 1. The probes, which take no values, still run.
+- **Why:** a check with values the helper guessed would report on another server than this one.
+- **Where:** `eeploi-helper`
+
+## D-33: server-report doesn't cover takeovers yet
+
+- **Kind:** known limit
+- **Decided:** 2026-11-22, 1.2.0
+- **What:** a server without `recipe-run` state shows "not set up by eeploi", part 1 and the base: no checks, no probes, no install date. Nothing keeps checks and probes on a server eeploi didn't build.
+- **Why:** the report is built for servers eeploi creates. The probes read any server, so a server set up another way can be added later without redoing this.
+- **Where:** `eeploi-helper`

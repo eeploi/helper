@@ -135,6 +135,7 @@ sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
 #   DRYRUN (1 or empty), DBSTATE (what db-create's checks find), SYS (what the server has, default system),
 #   VHOST (the vhost vhost-set-root rewrites), LOGS (nginx's log folder), OSREL (os-release),
 #   RSTATE (recipe-run's state folder), RDL (the recipes release, a folder), RRES (steps and checks that fail),
+#   NOW_AT (the time recipe-run writes), REP (what server-report reads from the system, a folder),
 #   ERR_TO (where stderr goes, default with stdout: /dev/null to read stdout alone)
 call() {
   local dry=${DRYRUN-1}
@@ -151,6 +152,8 @@ call() {
     EEPLOI_HELPER_RECIPES_DOWNLOAD="${RDL:-$WORK/rel-good}" \
     EEPLOI_HELPER_RECIPES_RESULTS="${RRES:-}" \
     EEPLOI_HELPER_MINISIGN="$MINISIGN_BIN" \
+    EEPLOI_HELPER_NOW="${NOW_AT:-}" \
+    EEPLOI_HELPER_REPORT="${REP:-}" \
     bash "${BIN:-$HELPER}" "$@" 2> "${ERR_TO:-/dev/stdout}")
   CODE=$?
 }
@@ -326,7 +329,7 @@ rm "$WORK/dec/DECISIONS.md"
 dec_refuse "decisions: no DECISIONS.md" "no DECISIONS.md"
 
 echo "== existing subcommands"
-ok "version" "1.1.0" version
+ok "version" "1.2.0" version
 ok "nginx-test" "run: nginx -t" nginx-test
 ok "nginx-reload" "run: service nginx reload" nginx-reload
 ok "php-fpm" "run: service php8.4-fpm reload" php-fpm-reload 8.4
@@ -446,11 +449,11 @@ lacks "env not read by root" "run: dd " env-install /home/ploi/a/.env $SITE/.env
 lacks "storage not read by root" "run: tar " storage-copy /home/forge/a/storage $SITE/storage shop_example
 ok "storage read as forge" "run: runuser -u forge -- tar -C /home/forge/a/storage -cf - ." storage-copy /home/forge/a/storage $SITE/storage shop_example
 # self-update: strictly newer, compared by number.
-BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.1.0
+BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.2.0
 BIN="$WORK/keyed-helper" refuse "older version" "only a newer version" self-update 0.99.99
-BIN="$WORK/keyed-helper" refuse "older patch" "only a newer version" self-update 1.0.5
-BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.1.1
-BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.2.0
+BIN="$WORK/keyed-helper" refuse "older patch" "only a newer version" self-update 1.1.5
+BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.2.1
+BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.3.0
 BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
 # Pinned versions, so these hold whatever VERSION is: as text, 1.0.10 sorts before 1.0.9.
 sed "s#^VERSION=.*#VERSION='1.0.9'#" "$WORK/keyed-helper" > "$WORK/v109-helper"
@@ -469,7 +472,7 @@ BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-upd
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version
 AS=deploy refuse "deploy without config" "run through sudo" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.1.0" version
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.2.0" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy copies into a site home" "runuser -u shop_example -- sh -c" env-install /home/ploi/a/.env $SITE/.env shop_example
 AS=deploy ETC_DIR="$WORK/etc-conf" refuse "the deploy user is not a site user" "reserved name, not a site user: deploy" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
 ETC_DIR="$WORK/etc-conf" refuse "eeploi refused when another user deploys" "run through sudo as the deploy user deploy" version
@@ -1984,7 +1987,7 @@ RDL="$WORK/rel-good" recipe refuse "a release that is not there" "download faile
 echo "== recipe-run: the manifest"
 remanifest release sed 's/^release 0.4.0$/release 0.4.1/'
 remanifest provider sed 's/^target hetzner /target other /'
-remanifest min-high sed 's/^min-helper .*/min-helper 1.2.0/'
+remanifest min-high sed 's/^min-helper .*/min-helper 1.3.0/'
 remanifest min-low sed 's/^min-helper .*/min-helper 0.9.0/'
 remanifest min-bad sed 's/^min-helper .*/min-helper 1.1/'
 remanifest format2 sed 's/^format 1$/format 2/'
@@ -2017,7 +2020,7 @@ remanifest cr awk '{ if ($0 == "release 0.4.0") printf "%s\r\n", $0; else print 
 RDL="$WORK/rel-min-low" recipe ok "min-helper lower than this helper" "result ok" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-release" recipe refuse "manifest of another release" "the manifest is for release 0.4.1, not 0.4.0" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-provider" recipe refuse "manifest of another provider" "the manifest is for other ubuntu-26.04, not hetzner ubuntu-26.04" recipe-run 0.4.0 hetzner
-RDL="$WORK/rel-min-high" recipe refuse "min-helper higher than this helper" "recipes 0.4.0 needs eeploi-helper 1.2.0 or newer, this is 1.1.0" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-min-high" recipe refuse "min-helper higher than this helper" "recipes 0.4.0 needs eeploi-helper 1.3.0 or newer, this is 1.2.0" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-min-bad" recipe refuse "min-helper not a version" "invalid min-helper in the manifest: 1.1" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-nomin" recipe refuse "no min-helper" "invalid min-helper in the manifest" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-norelease" recipe refuse "no release line" "the manifest is for release , not 0.4.0" recipe-run 0.4.0 hetzner
@@ -2315,6 +2318,316 @@ check failed stack/07-updates.check.sh
 check ok stack/09-logs.check.sh" recipe-run 0.4.0 hetzner
 RRES="$WORK/results-check" ERR_TO=/dev/null recipe fails "a failed check fails the run" "result failed" recipe-run 0.4.0 hetzner
 RRES="$WORK/results-check" recipe fails "a failed check keeps the steps' state" "write: $WORK/recipes-none/state (644)" recipe-run 0.4.0 hetzner
+
+echo "== recipe-run: the times in the state"
+NOW_AT=2026-11-22T10:00:00Z recipe ok "a first good run writes first and ran" "  first 2026-11-22T10:00:00Z
+  ran 2026-11-22T10:00:00Z
+  release 0.4.0" recipe-run 0.4.0 hetzner
+state_dir dated "first 2026-11-01T08:00:00Z\nran 2026-11-10T09:00:00Z\nrelease 0.4.0\nstep $SHA_APT stack/00-apt-retries.sh\n"
+RSTATE="$WORK/recipes-dated" NOW_AT=2026-11-22T10:00:00Z recipe ok "the first run's time is kept, ran is now" "  first 2026-11-01T08:00:00Z
+  ran 2026-11-22T10:00:00Z
+  release 0.4.0" recipe-run 0.4.0 hetzner
+# A state from 1.1.0 has no times: the next run writes ran, never a first it can't know.
+RSTATE="$WORK/recipes-same" NOW_AT=2026-11-22T10:00:00Z recipe ok "a 1.1.0 state gets ran" "  ran 2026-11-22T10:00:00Z" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-same" NOW_AT=2026-11-22T10:00:00Z recipe lacks "a 1.1.0 state never gets a first" "  first " recipe-run 0.4.0 hetzner
+state_dir firsttwice "first 2026-11-01T08:00:00Z\nfirst 2026-11-02T08:00:00Z\nrelease 0.4.0\n"
+state_dir rantwice "ran 2026-11-01T08:00:00Z\nran 2026-11-02T08:00:00Z\nrelease 0.4.0\n"
+state_dir baddate "first 2026-11-01 08:00\nrelease 0.4.0\n"
+state_dir localdate "ran 2026-11-01T08:00:00+01:00\nrelease 0.4.0\n"
+RSTATE="$WORK/recipes-firsttwice" recipe refuse "state: first twice" "first is set twice" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-rantwice" recipe refuse "state: ran twice" "ran is set twice" recipe-run 0.4.0 hetzner
+for bad in baddate localdate; do
+  RSTATE="$WORK/recipes-$bad" recipe refuse "state: a time that isn't UTC to the second ($bad)" "invalid line in $WORK/recipes-$bad/state" recipe-run 0.4.0 hetzner
+done
+
+echo "== recipe-run: the kept checks and probes"
+rfile stack/04-ssh.probe.sh 'echo port 22\n'
+RELEASE_FILES="$RELEASE_FILES stack/04-ssh.probe.sh" release probe
+RDL="$WORK/rel-probe" recipe ok "a good run keeps the values, the checks and the probes, in manifest order" "keep: $WORK/recipes-none/kept/stack/values.sh
+keep: $WORK/recipes-none/kept/first-boot/00-lock-root.check.sh
+keep: $WORK/recipes-none/kept/stack/00-apt-retries.check.sh
+keep: $WORK/recipes-none/kept/stack/07-updates.check.sh
+keep: $WORK/recipes-none/kept/stack/09-logs.check.sh
+keep: $WORK/recipes-none/kept/stack/04-ssh.probe.sh
+write: $WORK/recipes-none/kept/list (644)" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-probe" recipe lacks "never a step kept" "keep: $WORK/recipes-none/kept/stack/07-updates.sh" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-probe" recipe lacks "never start.sh or the fingerprint kept" "kept/stack/start.sh" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-probe" recipe ok "kept before the state" "write: $WORK/recipes-none/kept/list (644)
+  # Written by eeploi-helper (recipe-run)" recipe-run 0.4.0 hetzner
+RRES="$WORK/results-step" recipe fails "a failed step keeps nothing" "result failed" recipe-run 0.4.0 hetzner
+absent "a failed step keeps nothing: no keep" "keep: "
+RRES="$WORK/results-check" recipe fails "a failed check still keeps" "write: $WORK/recipes-none/kept/list (644)" recipe-run 0.4.0 hetzner
+# kept_dir <name> <release>: a state folder with a kept set of that release, and no state.
+kept_dir() {
+  mkdir -p "$WORK/recipes-$1/kept/stack"
+  chmod 755 "$WORK/recipes-$1" "$WORK/recipes-$1/kept" "$WORK/recipes-$1/kept/stack"
+  printf 'DEPLOY_USER={user}\n' > "$WORK/recipes-$1/kept/stack/values.sh"
+  printf 'release %s\ntarget %s\n%s stack/values.sh\n' "$2" "${3:-hetzner ubuntu-26.04}" "$(rsha "$WORK/recipes-$1/kept/stack/values.sh")" > "$WORK/recipes-$1/kept/list"
+}
+kept_dir keptsame 0.4.0
+kept_dir keptold 0.3.0
+kept_dir keptnew 0.5.0
+kept_dir keptbroken 0.4.0
+chmod 666 "$WORK/recipes-keptbroken/kept/stack/values.sh"
+RSTATE="$WORK/recipes-keptsame" recipe lacks "the same release again keeps the set it has" "keep: " recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-keptnew" recipe lacks "an older release never replaces a newer set" "keep: " recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-keptold" recipe ok "a newer release replaces an older set" "write: $WORK/recipes-keptold/kept/list (644)" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-keptbroken" recipe ok "a set the report can't use is replaced" "write: $WORK/recipes-keptbroken/kept/list (644)" recipe-run 0.4.0 hetzner
+kept_dir keptos 0.4.0 'hetzner ubuntu-24.04'
+kept_dir keptprovider 0.4.0 'other ubuntu-26.04'
+RSTATE="$WORK/recipes-keptos" recipe ok "a set for another OS is replaced" "write: $WORK/recipes-keptos/kept/list (644)" recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-keptprovider" recipe ok "a set for another provider is replaced" "write: $WORK/recipes-keptprovider/kept/list (644)" recipe-run 0.4.0 hetzner
+printf 'fail keep\n' > "$WORK/results-keep"
+RRES="$WORK/results-keep" recipe ok "a set it can't keep: said, and the set before stays" "the checks and probes were not kept for server-report, the set before stays" recipe-run 0.4.0 hetzner
+RRES="$WORK/results-keep" ERR_TO=/dev/null recipe ok "a set it can't keep doesn't stop the run" "write: $WORK/recipes-none/state (644)
+result ok" recipe-run 0.4.0 hetzner
+check "server-report never keeps" test "$(grep -c 'recipes_keep "' "$HELPER")" -eq 1
+
+echo "== server-report"
+# A server eeploi built: recipes.conf, a state and a kept set, and what the system shows (REP). The kept
+# checks and probes are test files: the report's dry run runs them, as root runs them on a server.
+SECRET='s3cr3t-planted-value'
+BANNED='203.0.113.7'
+recipes_dir rep 'DEPLOY_USER=eeploi\nSSH_PORT=10022\nPHP=8.4\n'
+printf 'APP_KEY=base64:%s\n' "$SECRET" > "$WORK/etc-recipes-rep/.env"
+mkdir -p "$WORK/rep-sys"
+printf '6.8.0-41-generic\n' > "$WORK/rep-sys/kernel"
+printf '273900.52 1000.10\n' > "$WORK/rep-sys/uptime"
+printf 'nginx.service loaded failed failed %s\nbad|unit loaded failed failed x\n' "$SECRET" > "$WORK/rep-sys/failed"
+printf '%s\n' 'LISTEN 0 4096 0.0.0.0:10022 0.0.0.0:* users:(("sshd",pid=811,fd=3))' \
+  'LISTEN 0 4096 [::]:10022 [::]:* users:(("sshd",pid=811,fd=4))' \
+  'LISTEN 0 511 192.0.2.10:443 0.0.0.0:* users:(("nginx",pid=900,fd=6),("nginx",pid=901,fd=6))' \
+  'LISTEN 0 128 127.0.0.1:6379 0.0.0.0:* users:(("bad name",pid=5,fd=6))' \
+  'LISTEN 0 4096 127.0.0.53%lo:53 0.0.0.0:* users:(("systemd-resolve",pid=600,fd=14))' \
+  'LISTEN 0 32 0.0.0.0:53 0.0.0.0:* users:(("dnsmasq",pid=700,fd=5))' > "$WORK/rep-sys/ss"
+# ksrc: the kept files. The $ are for the check's and probe's own shell.
+ksrc() {
+  mkdir -p "$WORK/ksrc/$(dirname "$1")"
+  printf '%b' "$2" > "$WORK/ksrc/$1"
+}
+ksrc stack/values.sh 'DEPLOY_USER={user}\nSSH_PORT={port}\n'
+# shellcheck disable=SC2016
+ksrc stack/00-apt-retries.check.sh 'echo "user $DEPLOY_USER port $SSH_PORT home $HOME in $(pwd)"\n'
+ksrc stack/09-logs.check.sh 'echo "root has a password (set after the first boot)" >&2\nfalse\n'
+# shellcheck disable=SC2016
+ksrc stack/04-ssh.probe.sh "echo port 10022\necho passwordauthentication no\necho 'BAD line $SECRET'\necho '$SECRET' >&2\necho \"cwd \$(pwd) home \$HOME path \$PATH\"\necho 'trailing space '\nprintf 'cr x\\\\r\\\\n'\nprintf 'tab\\\\tx\\\\n'\n"
+ksrc stack/05-ufw.probe.sh "echo status active\necho '$SECRET' >&2\nexit 3\n"
+ksrc stack/06-fail2ban.probe.sh "echo 'jail sshd banned 1 total-banned 4 failed 0 total-failed 9'\necho '$BANNED banned'\necho 'ip: $BANNED'\n"
+ksrc ubuntu-26.04/01-redis.probe.sh 'exit 0\n'
+# shellcheck disable=SC2016
+ksrc ubuntu-26.04/01-versions.probe.sh "echo wrote > '$WORK/probe-wrote'\necho package nginx 1.28.0\n"
+# A value with a quote and a backslash, for the JSON.
+cat > "$WORK/ksrc/stack/03-quote.probe.sh" << 'PROBE'
+echo 'banner a"b\c'
+PROBE
+KEPT_FILES='stack/values.sh stack/00-apt-retries.check.sh stack/09-logs.check.sh stack/03-quote.probe.sh stack/04-ssh.probe.sh stack/05-ufw.probe.sh stack/06-fail2ban.probe.sh ubuntu-26.04/01-redis.probe.sh ubuntu-26.04/01-versions.probe.sh'
+# kset <name> [<state text>]: a state folder recipes-<name> with the kept files of ksrc and their list,
+# and the state, when given.
+kset() {
+  local d="$WORK/recipes-$1" f
+  mkdir -p "$d/kept"
+  chmod 755 "$d" "$d/kept"
+  { echo '# Written by eeploi-helper (recipe-run)'; echo 'release 0.4.0'; echo 'target hetzner ubuntu-26.04'; } > "$d/kept/list"
+  for f in $KEPT_FILES; do
+    mkdir -p "$d/kept/$(dirname "$f")"
+    cp "$WORK/ksrc/$f" "$d/kept/$f"
+    echo "$(rsha "$d/kept/$f") $f" >> "$d/kept/list"
+  done
+  [ -z "${2:-}" ] || printf '%b' "$2" > "$d/state"
+}
+REP_STATE="first 2026-11-01T08:00:00Z\nran 2026-11-22T10:00:00Z\nrelease 0.4.0\nstep $SHA_APT stack/00-apt-retries.sh\nstep $SHA_UPD stack/07-updates.sh\n"
+kset rep "$REP_STATE"
+# r <first column> <rest>: a line of the text report.
+r() { printf '%-14s %s' "$1" "$2"; }
+# report <ok|fails|refuse|lacks> <name> <text> [<args>]: server-report on the server above.
+report() {
+  local kind=$1 name=$2 text=$3
+  shift 3
+  ETC_DIR=${ETC_DIR:-$WORK/etc-recipes-rep} RSTATE=${RSTATE:-$WORK/recipes-rep} REP=${REP-$WORK/rep-sys} "$kind" "$name" "$text" server-report "$@"
+}
+report ok "part 1: the helper" "Part 1: what eeploi did
+$(r helper 1.2.0)
+$(r setup eeploi)
+$(r recipes 0.4.0)
+$(r last-run 2026-11-22T10:00:00Z)
+$(r first-run 2026-11-01T08:00:00Z)
+$(r step 'always stack/00-apt-retries.sh')
+$(r step 'always stack/07-updates.sh')
+$(r os 'ubuntu 26.04')
+$(r kernel 6.8.0-41-generic)
+$(r uptime '3 days 4 hours 5 minutes')
+$(r values ok)
+$(r value 'DEPLOY_USER eeploi')
+$(r value 'SSH_PORT 10022')
+$(r value 'PHP 8.4')"
+report ok "logged" "log: eeploi-helper: eeploi: server-report --json" --json
+report ok "part 2: the checks, run after the values, from /, with a clean environment" "Part 2: is it right? (the checks of recipes 0.4.0 for hetzner ubuntu-26.04)
+$(r ok stack/00-apt-retries.check.sh)
+$(r '' '  user eeploi port 10022 home /root in /')
+$(r failed stack/09-logs.check.sh)
+$(r '' '  root has a password (set after the first boot)')
+$(r '' '  false')"
+report ok "part 3: failed units by name" "Part 3: how it is set up now
+$(r failed-unit nginx.service)
+$(r port '53 dnsmasq')"
+report ok "part 3: ports with their process names, once each" "$(r port '10022 sshd')"
+report ok "part 3: a process name it can't show" "$(r port '6379 unknown')"
+report ok "part 3: two processes on one port, both" "$(r port '53 dnsmasq')
+$(r port '53 systemd-resolve')"
+report ok "a value with a quote and a backslash, as it is" "$(r ok quote)
+$(r '' '  banner a"b\c')"
+report ok "json: a quote and a backslash escaped" '"lines":["banner a\"b\\c"]' --json
+report ok "a probe in manifest order, by its name, its lines" "$(r ok ssh)
+$(r '' '  port 10022')
+$(r '' '  passwordauthentication no')
+$(r '' '  cwd / home /root path /usr/sbin:/usr/bin:/sbin:/bin')
+$(r '' '  (not shown: 4, not a <key> <value> line or past line 500)')
+$(r failed 'ufw: probe failed')
+$(r ok fail2ban)
+$(r '' '  jail sshd banned 1 total-banned 4 failed 0 total-failed 9')
+$(r '' '  (not shown: 2, not a <key> <value> line or past line 500)')
+$(r not-installed redis)
+$(r ok versions)
+$(r '' '  package nginx 1.28.0')"
+report lacks "a probe that fails shows no lines" "status active"
+report lacks "never a probe's stderr, a bad line or a planted secret" "$SECRET"
+report lacks "never a banned IP" "$BANNED"
+report lacks "never a listen address" "192.0.2.10"
+report lacks "never a process id" "pid="
+report lacks "a unit name it can't show is left out" "bad|unit"
+report lacks "no install date" "installed on"
+REP='' report ok "without what the system shows: unknown" "$(r kernel unknown)
+$(r uptime unknown)"
+REP='' report ok "failed units and ports unknown" "$(r failed-units unknown)
+$(r ports unknown)"
+mkdir -p "$WORK/rep-sys-none"
+printf 'two words\n' > "$WORK/rep-sys-none/kernel"
+: > "$WORK/rep-sys-none/failed"
+: > "$WORK/rep-sys-none/ss"
+REP="$WORK/rep-sys-none" report ok "no failed unit, no port" "$(r failed-units none)
+$(r ports none)"
+REP="$WORK/rep-sys-none" report ok "a kernel it can't show" "$(r kernel unknown)"
+# JSON: the same words, valid.
+report ok "json: the same words" '"checks":{"state":"ran","reason":"","release":"0.4.0","target":"hetzner ubuntu-26.04","results":[{"state":"ok","path":"stack/00-apt-retries.check.sh","notes":["user eeploi port 10022 home /root in /"]},{"state":"failed"' --json
+report ok "json: probes" '{"name":"ufw","state":"failed","lines":[],"rejected":0},' --json
+report ok "json: ports" '"ports":{"state":"ok","ports":[{"port":53,"processes":["dnsmasq"]},{"port":53,"processes":["systemd-resolve"]},{"port":443,"processes":["nginx"]},{"port":6379,"processes":["unknown"]},{"port":10022,"processes":["sshd"]}]}' --json
+report lacks "json: never a secret" "$SECRET" --json
+if command -v python3 > /dev/null; then
+  check "json: valid" python3 -I -c 'import json, sys; json.loads(sys.argv[1])' "$(ERR_TO=/dev/null report ok json '' --json; printf '%s' "$OUT")"
+else
+  echo "note: python3 is not installed, the JSON check skipped (CI runs it)"
+fi
+# Only --json, nothing else.
+report refuse "an argument" "usage: server-report [--json]" --text
+report refuse "two arguments" "usage: server-report [--json]" --json --json
+report refuse "json with something" "usage: server-report [--json]" --json x
+AS=ploi report refuse "only the deploy user" "$GATE"
+
+echo "== server-report: read-only"
+# The report twice, then /etc/eeploi and the state folder as they were: the same files, the same bytes,
+# nothing newer than before the runs.
+snapshot() { (cd "$1" && find . | LC_ALL=C sort && find . -type f -exec sha256sum {} + | LC_ALL=C sort); }
+find "$WORK/etc-recipes-rep" "$WORK/recipes-rep" -exec touch -t 202601010000 {} +
+touch "$WORK/rep-mark"
+BEFORE="$(snapshot "$WORK/etc-recipes-rep")$(snapshot "$WORK/recipes-rep")"
+report ok "first run" "Part 3"
+report ok "second run" '"probes":' --json
+check "/etc/eeploi and the state folder the same after two runs" test "$BEFORE" = "$(snapshot "$WORK/etc-recipes-rep")$(snapshot "$WORK/recipes-rep")"
+check "nothing written in them" test -z "$(find "$WORK/etc-recipes-rep" "$WORK/recipes-rep" -newer "$WORK/rep-mark")"
+check "a probe that writes ran, and showed only its lines" test -f "$WORK/probe-wrote"
+
+echo "== server-report: no state"
+kset nostate
+RSTATE="$WORK/recipes-nostate" report ok "not set up by eeploi" "$(r setup 'not set up by eeploi')
+$(r recipes none)
+$(r last-run none)
+$(r first-run none)
+$(r os 'ubuntu 26.04')"
+RSTATE="$WORK/recipes-nostate" report ok "no checks" "$(r none 'checks: not set up by eeploi')"
+RSTATE="$WORK/recipes-nostate" report ok "no probes, even with a kept set" "$(r none 'probes: not set up by eeploi')"
+RSTATE="$WORK/recipes-nostate" report lacks "no probe runs" "port 10022"$'\n'
+RSTATE="$WORK/recipes-nostate" report ok "the base still" "$(r port '10022 sshd')"
+RSTATE="$WORK/recipes-none" report ok "no state folder at all" "$(r setup 'not set up by eeploi')"
+RSTATE="$WORK/recipes-nostate" report ok "json: not set up" '"setup":"not-eeploi"' --json
+state_dir v110 "release 0.4.0\nstep $SHA_APT stack/00-apt-retries.sh\n"
+RSTATE="$WORK/recipes-v110" report ok "a state from 1.1.0: times not recorded" "$(r last-run not-recorded)
+$(r first-run not-recorded)"
+RSTATE="$WORK/recipes-v110" report ok "a state without a kept set: none kept" "$(r none 'checks: none kept: no good recipe-run since helper 1.2.0')"
+RSTATE="$WORK/recipes-writable" report refuse "a state it can't trust is refused" "untrusted recipes state"
+
+echo "== server-report: a kept set it can't use"
+# Each one: part 1 and the base, the checks and probes not run with the reason, exit 1.
+# kbad <name> <command...>: the good server's kept set, changed by the command in its folder.
+kbad() {
+  local name=kept-$1
+  shift
+  kset "$name" "$REP_STATE"
+  (cd "$WORK/recipes-$name/kept" && "$@")
+}
+kbad writable chmod 666 stack/04-ssh.probe.sh
+kbad folderwritable chmod 777 stack
+kbad listwritable chmod 666 list
+kbad link sh -c 'rm stack/09-logs.check.sh && ln -s ../../recipes-rep/kept/stack/09-logs.check.sh stack/09-logs.check.sh'
+kbad changed sh -c 'echo "cat /etc/shadow" >> stack/00-apt-retries.check.sh'
+kbad dots sh -c "sed 's# stack/04-ssh.probe.sh\$# stack/../stack/04-ssh.probe.sh#' list > l && mv l list"
+kbad absolute sh -c "sed 's# stack/04-ssh.probe.sh\$# /stack/04-ssh.probe.sh#' list > l && mv l list"
+kbad twice sh -c "grep 04-ssh list > l && cat l >> list && rm l"
+kbad norelease sh -c "sed '/^release /d' list > l && mv l list"
+kbad notarget sh -c "sed '/^target /d' list > l && mv l list"
+kbad novalues sh -c "sed '/values.sh\$/d' list > l && mv l list"
+kbad shortsha sh -c "sed 's/^\\([0-9a-f]\\{63\\}\\)[0-9a-f] /\\1 /' list > l && mv l list"
+kbad missing rm stack/05-ufw.probe.sh
+K="$WORK/recipes-kept"
+for bad in writable:"untrusted kept file: $K-writable/kept/stack/04-ssh.probe.sh" \
+  folderwritable:"untrusted kept folder: $K-folderwritable/kept/stack" \
+  listwritable:"untrusted kept set: $K-listwritable/kept" \
+  link:"untrusted kept file: $K-link/kept/stack/09-logs.check.sh" \
+  changed:"changed kept file: $K-changed/kept/stack/00-apt-retries.check.sh" \
+  dots:"invalid path in $K-dots/kept/list" \
+  absolute:"invalid path in $K-absolute/kept/list" \
+  twice:"a path twice in $K-twice/kept/list: stack/04-ssh.probe.sh" \
+  norelease:"no release in $K-norelease/kept/list" \
+  notarget:"no target in $K-notarget/kept/list" \
+  novalues:"no stack/values.sh in $K-novalues/kept/list" \
+  shortsha:"invalid line in $K-shortsha/kept/list" \
+  missing:"untrusted kept file: $K-missing/kept/stack/05-ufw.probe.sh"; do
+  name=${bad%%:*} why=${bad#*:}
+  RSTATE="$K-$name" report fails "kept set ($name): checks not run, the reason" "$(r not-run "checks: $why")"
+  absent "kept set ($name): no check ran" "$(r ok stack/00-apt-retries.check.sh)"
+  RSTATE="$K-$name" report fails "kept set ($name): probes not run" "$(r not-run "probes: $why")"
+  absent "kept set ($name): no probe ran" "port 10022"$'\n'
+  RSTATE="$K-$name" report fails "kept set ($name): part 1 and the base still" "$(r recipes 0.4.0)"
+  absent "kept set ($name): not refused" $'\n'"eeploi-helper: "
+done
+RSTATE="$K-changed" report fails "json: not run" '"checks":{"state":"not-run","reason":"changed kept file:' --json
+
+echo "== server-report: recipes.conf it can't use"
+recipes_dir repnone 'x'
+rm "$WORK/etc-recipes-repnone/recipes.conf"
+recipes_dir repbad "DEPLOY_USER=eeploi\nSSH_PORT=10022\nPHP=8.4\nAPP_KEY=$SECRET\n"
+recipes_dir repother 'DEPLOY_USER=deploy\nSSH_PORT=22\nPHP=8.4\n'
+ETC_DIR="$WORK/etc-recipes-repnone" report fails "no recipes.conf: the checks not run" "$(r values none)"
+ETC_DIR="$WORK/etc-recipes-repnone" report fails "no recipes.conf: the reason" "$(r not-run "checks: no $WORK/etc-recipes-repnone/recipes.conf")"
+ETC_DIR="$WORK/etc-recipes-repnone" report fails "no recipes.conf: the probes still run" "$(r ok ssh)"
+ETC_DIR="$WORK/etc-recipes-repbad" report fails "a bad recipes.conf: the checks not run" "$(r not-run "checks: $WORK/etc-recipes-repbad/recipes.conf can't be used (recipe-run says why)")"
+ETC_DIR="$WORK/etc-recipes-repbad" report fails "a bad recipes.conf: unreadable" "$(r values unreadable)"
+absent "a bad recipes.conf: its line never shown" "$SECRET"
+ETC_DIR="$WORK/etc-recipes-repother" report fails "recipes.conf of another deploy user: not run" "$(r values unreadable)"
+printf 'NAME=x\n' > "$WORK/os-release-none"
+OSREL="$WORK/os-release-none" report fails "no OS: the checks not run" "$(r not-run "checks: os-release can't be read")"
+OSREL="$WORK/os-release-none" report fails "no OS: unknown" "$(r os unknown)"
+
+echo "== server-report: one at a time with recipe-run"
+kset replock "$REP_STATE"
+touch "$WORK/recipes-replock/.lock"
+RSTATE="$WORK/recipes-replock" report ok "waits for a running recipe-run" "lock: shared $WORK/recipes-replock/.lock"
+printf 'locked\n' > "$WORK/results-locked"
+RSTATE="$WORK/recipes-replock" RRES="$WORK/results-locked" report refuse "a recipe-run that keeps running" "a recipe-run is running here, try again when it is done"
+kset replockw "$REP_STATE"
+touch "$WORK/recipes-replockw/.lock"
+chmod 666 "$WORK/recipes-replockw/.lock"
+RSTATE="$WORK/recipes-replockw" report refuse "a lock it can't trust" "untrusted recipe-run lock"
+report lacks "no lock: no recipe-run ever ran" "lock: "
 
 echo "== bin/release"
 # Tags and releases never change (D-26 in DECISIONS.md): bin/release in a copy, a repo with its own origin, stubs

@@ -2,6 +2,15 @@
 
 All notable changes to eeploi-helper. Versions follow [semver](https://semver.org): a removed or changed subcommand is a major release, a new subcommand a minor one. While eeploi is in development, every change ships as a patch release (since 2026-11-13).
 
+## 1.2.0 (unreleased)
+
+Shows how a server eeploi built is set up, in one call.
+
+- New subcommand `server-report [--json]`: what eeploi did (the helper, the recipes release and its steps, the OS, kernel and uptime, the values), whether every kept check passes, and how the server is set up now (failed units, listening ports with their processes, and the probes of the recipes release). Reads only, needs no network. See README, Server report.
+- Changed: after a good run, `recipe-run` keeps the release's checks, probes and `stack/values.sh` in `/var/lib/eeploi/recipes/kept`, for the report. Only a newer release, or one for another provider or OS, replaces them.
+- Changed: when another `recipe-run` holds the lock, the refusal says a `server-report` may hold it too.
+- Changed: `recipe-run`'s state holds when the first good run here was (`first`) and when the last one ran (`ran`). A state written by 1.1.0 still reads, and never gets a `first`.
+
 ## 1.1.0 (unreleased)
 
 Updates a server eeploi built to a newer signed recipes release.

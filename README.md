@@ -65,6 +65,7 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 | `firewall-close-22` | Closes port 22 in UFW. Only on a server eeploi created (see below) |
 | `self-update <version>` | Installs a signed release (see below). Only a newer one |
 | `recipe-run <version> <provider>` | Runs the `always` steps of a signed [eeploi recipes](https://github.com/eeploi/recipes) release that are new or changed on this server, then every check. See [Recipes](#recipes). Deploy user only |
+| `server-report [--json]` | Shows what eeploi did, whether every kept check passes, and how the server is set up now. Reads only. See [Server report](#server-report) |
 
 Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi`, the deploy user's, and `/srv/eeploi/<user>` of a site user.
 
@@ -218,7 +219,7 @@ sudo eeploi-helper recipe-run 0.4.0 hetzner
 5. Downloads the package `recipes-<version>.tar.gz` (4 MB at most, 8 MB unzipped, at most 200 files in the manifest). A package with a link or any other file that is not a plain file or folder is refused. Reads every file the manifest lists out of it, one by one, into a folder of its own; the package is never unpacked as it is. Each file must match its SHA-256, so a changed or a missing file is refused before anything runs. The files a run uses may hold no placeholder but `{user}`, `{port}`, `{php}`, `{version}` and `{name}`, and those never in bash's own braces (`${user}`).
 6. Runs the `always` steps in order, each as `stack/start.sh`, `stack/values.sh` and the step under `set -euo pipefail`, with the values from `recipes.conf` and the OS filled in: a step that is new or changed since the last good run here, and an unchanged one whose check fails now. `first-boot` and `window` steps never run. A failed step stops the steps after it.
 7. Runs every check of the release, each on its own after the values, under `set -euo pipefail`. Checks only read.
-8. After every step went well, writes `/var/lib/eeploi/recipes/state` (root-owned): the release and the SHA-256 of each step.
+8. After every step went well, keeps the release's checks, probes and `stack/values.sh` for [the server report](#server-report) in `/var/lib/eeploi/recipes/kept` (root-owned, swapped in whole; only a newer release, or one for another provider or OS, replaces them), then writes `/var/lib/eeploi/recipes/state` (root-owned): when the first good run here was (`first`, never written for a server whose state is from before 1.2.0), when this one ran (`ran`, UTC), the release and the SHA-256 of each step.
 
 Steps and checks run as root, from `/`, with a clean environment and no stdin. What they print goes to stderr. One `recipe-run` at a time. stdout has only these lines, and a line per step and per run goes to the system log:
 
@@ -235,6 +236,36 @@ result failed
 
 Exit `0`: every step and check went well. `1`: a step or check failed, or the run stopped after its steps started (then there may be no `result` line). `64`: refused, nothing ran. A server built before the recipes wrote `recipes.conf`, or one eeploi took over, has no such file and is refused.
 
+## Server report
+
+```bash
+sudo eeploi-helper server-report         # for people
+sudo eeploi-helper server-report --json  # the same, for eeploi
+```
+
+One call shows how a server eeploi built is set up. It reads only: it writes nothing (but a work folder in `/tmp`, removed on exit), restarts nothing and downloads nothing. It waits while a `recipe-run` runs.
+
+1. **What eeploi did:** the helper's version; the recipes release of the last good `recipe-run`, when it ran and when the first good one was (`not-recorded` for a state from before 1.2.0); the steps it ran, with their marker; the OS (`ID` and `VERSION_ID` from `/etc/os-release`), kernel and uptime; the values from `/etc/eeploi/recipes.conf`.
+2. **Is it right:** every check `recipe-run` kept, run as `recipe-run` runs it, `ok` or `failed`, with what it printed as notes.
+3. **How it is set up now:** the failed units (`systemctl --failed`, names only), the listening TCP ports with their process names (`ss -tlnpH`, never an address or a process id), then every kept probe of the recipes (eeploi/recipes `PROBES.md`), in manifest order, under its name: `ok` with its lines, `failed` ("probe failed": it exited non-zero, and shows no lines) or `not-installed` (no lines: its software isn't there). A probe runs as `bash <probe>` as root, from `/`, with only `PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LC_ALL=C TMPDIR=/tmp`. Only its lines that match `^[a-z][a-z0-9_-]* [[:print:]]*[^[:space:]]$` are shown, the others counted; its stderr never.
+
+A check or probe is stopped after 60 seconds and fails past 64 KB of output. Before anything runs, every folder and file of the kept set must be root-owned and not writable by others, and every file must match the SHA-256 in the set's list.
+
+The text has a word in its first column (`ok`, `failed`, `not-installed`, `not-run`, `none`), padded to one width; the JSON uses the same words:
+
+```
+Part 2: is it right? (the checks of recipes 0.4.0)
+ok             stack/04-ssh.check.sh
+failed         first-boot/00-lock-root.check.sh
+                 root has a password (set after the first boot)
+```
+
+- A server without `recipe-run` state shows "not set up by eeploi", part 1 and the base: no checks and no probes.
+- A server whose last good `recipe-run` was before 1.2.0 has no kept set yet: "none kept".
+- A kept set that fails its checks, or a `recipes.conf` or `os-release` that can't be used for the checks: part 1 and the base, and the checks (with a bad kept set, the probes too) are `not-run`, with the reason. Exit `1`.
+
+Exit `0`: the report is whole, whether the checks pass or not. `1`: the checks or probes could not run. `64`: refused (an argument, a state or lock it can't trust, a `recipe-run` that keeps running).
+
 ## Dry run
 
 `EEPLOI_HELPER_DRY_RUN=1` checks every argument and prints what the helper would run or write. It changes nothing. sudo drops the variable, so it is for tests only.
@@ -247,7 +278,9 @@ In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point t
 
 `EEPLOI_HELPER_SYSTEM` points to a file with what the site-user checks would find on the server: `passwd <getent passwd line>`, `group <getent group line>`, `id <user>:<id -G output>`, `path <path that exists>` and `active <running unit>`. Without it, none of them exist. A dry run prints every file it would write, the registry included.
 
-For `recipe-run`: `EEPLOI_HELPER_OS_RELEASE` points to a test `os-release`, `EEPLOI_HELPER_RECIPES_STATE` to a test state folder, `EEPLOI_HELPER_RECIPES_DOWNLOAD` to a folder with the release's files (copied in place of the download, then checked as usual), `EEPLOI_HELPER_RECIPES_RESULTS` to a file of `fail <path>` lines for the steps and checks that fail (and a `locked` line when another run holds the lock), and `EEPLOI_HELPER_MINISIGN` to a `minisign` outside `PATH`. A dry run never runs a step or check: it prints each script.
+For `recipe-run`: `EEPLOI_HELPER_OS_RELEASE` points to a test `os-release`, `EEPLOI_HELPER_RECIPES_STATE` to a test state folder, `EEPLOI_HELPER_RECIPES_DOWNLOAD` to a folder with the release's files (copied in place of the download, then checked as usual), `EEPLOI_HELPER_RECIPES_RESULTS` to a file of `fail <path>` lines for the steps and checks that fail (and a `locked` line when another run holds the lock), and `EEPLOI_HELPER_MINISIGN` to a `minisign` outside `PATH`, and `EEPLOI_HELPER_NOW` sets the time written in the state. A dry run never runs a step or check: it prints each script.
+
+For `server-report`: `EEPLOI_HELPER_REPORT` points to a folder with what the system would show: `kernel` (`uname -r`), `uptime` (`/proc/uptime`), `failed` (`systemctl --failed`) and `ss` (`ss -tlnpH`); a file that is not there reads as unknown. Unlike `recipe-run`'s, a dry run of `server-report` runs the kept checks and probes in the test state folder, so the tests see what the report makes of their output.
 
 ## Tests
 
