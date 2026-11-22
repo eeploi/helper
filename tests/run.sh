@@ -219,13 +219,14 @@ fi
 
 echo "== decisions"
 check "DECISIONS.md and the D-n comments agree" bash "$ROOT/tests/decisions.sh"
-# A copy of the repo's files in $WORK/dec, each case changing one thing in it.
+# A copy of the repo's files, without .git, in $WORK/dec, each case changing one thing in it.
 dec_copy() {
   rm -rf "$WORK/dec"
-  mkdir -p "$WORK/dec/.github"
-  cp -R "$ROOT/DECISIONS.md" "$ROOT/eeploi-helper" "$ROOT/bin" "$ROOT/tests" "$WORK/dec/"
-  cp -R "$ROOT/.github/workflows" "$WORK/dec/.github/"
+  mkdir "$WORK/dec"
+  (cd "$ROOT" && tar -cf - --exclude=./.git .) | (cd "$WORK/dec" && tar -xf -)
 }
+# dec_last <file>: the number of the last line of the file in the copy.
+dec_last() { grep -c '' "$WORK/dec/$1"; }
 # dec_edit <file> <sed script>: the file in the copy, changed (sed -i differs between macOS and GNU).
 dec_edit() { sed "$2" "$WORK/dec/$1" > "$WORK/dec.tmp" && mv "$WORK/dec.tmp" "$WORK/dec/$1"; }
 # dec_refuse <name> <line>: the check fails on the copy and prints that line.
@@ -239,19 +240,26 @@ $OUT"; fi
 dec_ok() { check "$1" bash "$ROOT/tests/decisions.sh" "$WORK/dec"; }
 dec_copy
 dec_ok "decisions: the copy passes"
-# Not written out here, or this file would fail the check itself.
-unknown='D-999'
-for f in eeploi-helper bin/release tests/run.sh .github/workflows/ci.yml; do
+# A comment is "# D-n:" at the start of a line or after a space; the quotes below keep these lines none.
+for f in eeploi-helper bin/release tests/run.sh .github/workflows/ci.yml minisign.pub; do
   dec_copy
-  echo "# $unknown: not decided" >> "$WORK/dec/$f"
-  dec_refuse "decisions: an unknown D-n in $f" "$f:$(wc -l < "$WORK/dec/$f" | tr -d ' '): D-999 is not in DECISIONS.md"
+  echo "# D-999: not decided" >> "$WORK/dec/$f"
+  dec_refuse "decisions: an unknown D-n in $f" "$f:$(dec_last "$f"): D-999 is not in DECISIONS.md"
 done
 dec_copy
-echo "x=1 # $unknown: after code" >> "$WORK/dec/eeploi-helper"
-dec_refuse "decisions: an unknown D-n after code" "eeploi-helper:$(wc -l < "$WORK/dec/eeploi-helper" | tr -d ' '): D-999 is not in DECISIONS.md"
+code='x=1 #'
+echo "$code D-999: after code" >> "$WORK/dec/eeploi-helper"
+dec_refuse "decisions: an unknown D-n after code" "eeploi-helper:$(dec_last eeploi-helper): D-999 is not in DECISIONS.md"
 dec_copy
-echo "# D-2 is known, D-2: so is this" >> "$WORK/dec/bin/release"
+echo "# D-999: in a new file" > "$WORK/dec/new.sh"
+dec_refuse "decisions: an unknown D-n in a new file" "new.sh:1: D-999 is not in DECISIONS.md"
+dec_copy
+echo "# D-2: known" >> "$WORK/dec/bin/release"
 dec_ok "decisions: a known D-n passes"
+dec_copy
+echo "x='#D-999:' # see D-999: not a comment for it" >> "$WORK/dec/eeploi-helper"
+echo "# D-999: Markdown isn't read" >> "$WORK/dec/README.md"
+dec_ok "decisions: a D-n that is no comment passes"
 # D-1 names a file more: without its comment it fails, with one it passes.
 dec_copy
 # shellcheck disable=SC2016 # the backticks are Markdown

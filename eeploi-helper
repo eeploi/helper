@@ -53,8 +53,7 @@ VHOST_STAND_IN=
 RECIPES_DOWNLOAD=
 RECIPES_RESULTS=
 MINISIGN=minisign
-# Every signature check: -H accepts only a prehashed (ED) signature, a legacy (Ed) one is refused.
-# D-13: prehashed signatures only.
+# D-13: every signature check: -H accepts only a prehashed (ED) signature, a legacy (Ed) one is refused.
 VERIFY=(-V -H -q)
 if [ -n "$DRY" ]; then
   MINISIGN="${EEPLOI_HELPER_MINISIGN:-$MINISIGN}"
@@ -1641,9 +1640,8 @@ case "$command" in
     db_name database "$2"
     db_name user "$3"
     db_login "$4"
-    # Socket login trusts every process of that Linux user: only a site user the helper made, never
-    # one that runs more than one site or a system user.
-    # D-25: socket login for a site user only.
+    # D-25: socket login trusts every process of that Linux user: only a site user the helper made,
+    # never one that runs more than one site or a system user.
     [ "$DB_LOGIN" != socket ] || site_user "$3"
     cd / || fail "cannot change to /"
     db_client "$1"
@@ -1657,8 +1655,7 @@ case "$command" in
     [ "$S_user_elsewhere" = 0 ] || fail "user $3 has rights on another database, refusing"
     [ "$S_db_others" = 0 ] || fail "database $2 belongs to another user, refusing"
     [ "$S_db_exists" = 0 ] || [ "$S_granted" != 0 ] || fail "database $2 exists and is not $3's, refusing"
-    # An existing user keeps its way in: never switched between socket and password login.
-    # D-25: never switched.
+    # D-25: an existing user keeps its way in: never switched between socket and password login.
     if [ "$S_user_exists" != 0 ] && [ "$DB_LOGIN" = socket ] && [ "$S_user_socket" = 0 ]; then
       fail "user $3 exists with password login, not socket login: refusing, it is not switched"
     fi
@@ -1686,10 +1683,9 @@ case "$command" in
     [ "$S_user_exists" != 0 ] || DB_NEW_USER=1
     [ "$S_db_exists" != 0 ] || DB_NEW_DB=1
     [ "$S_granted" != 0 ] || DB_GRANT=1
-    # Password login on MySQL and MariaDB: a new user gets the same user on 127.0.0.1, with the same
-    # password and grant. Never for a user that exists: the password on stdin could be anyone's, so a
-    # 1.0.0 user stays on localhost only.
-    # D-25: a 127.0.0.1 user only for a new user.
+    # D-25: password login on MySQL and MariaDB: a new user gets the same user on 127.0.0.1, with the
+    # same password and grant. Never for a user that exists: the password on stdin could be anyone's, so
+    # a 1.0.0 user stays on localhost only.
     DB_NEW_TCP_USER=
     DB_TCP_GRANT=
     if [ "$1" != pgsql ] && [ "$DB_LOGIN" = password ]; then
@@ -2000,8 +1996,7 @@ case "$command" in
     TMP_PATHS="$TMP_PATHS $R_WORK"
     manifest="recipes-$1-$2-$R_OS.manifest"
     package="recipes-$1.tar.gz"
-    # Nothing else is downloaded or read before the signature checks out.
-    # D-18: the signature first, every size capped.
+    # D-18: nothing else is downloaded or read before the signature checks out, and every size is capped.
     recipes_fetch "$manifest" 65536
     recipes_fetch "$manifest.minisig" 4096
     [ -z "$DRY" ] || echo "check: minisign ${VERIFY[*]} -P $RECIPES_PUBKEY -m $manifest -x $manifest.minisig"

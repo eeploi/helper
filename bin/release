@@ -48,8 +48,8 @@ run_tests() {
   return "$status"
 }
 fail() { printf 'release: %s\n' "$*" >&2; exit 1; }
-# verify <minisign args...>: against minisign.pub, a prehashed (ED) signature only, as the helper checks it.
-# D-13: prehashed signatures only.
+# verify <minisign args...>: against minisign.pub.
+# D-13: a prehashed (ED) signature only, as the helper checks it.
 verify() { minisign -V -H -p minisign.pub "$@"; }
 confirm() {
   local answer
