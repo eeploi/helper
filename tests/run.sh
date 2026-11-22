@@ -2316,6 +2316,58 @@ check ok stack/09-logs.check.sh" recipe-run 0.4.0 hetzner
 RRES="$WORK/results-check" ERR_TO=/dev/null recipe fails "a failed check fails the run" "result failed" recipe-run 0.4.0 hetzner
 RRES="$WORK/results-check" recipe fails "a failed check keeps the steps' state" "write: $WORK/recipes-none/state (644)" recipe-run 0.4.0 hetzner
 
+echo "== bin/release"
+# Tags and releases never change (D-26 in DECISIONS.md): bin/release --check in a copy, a repo with its own origin, and stubs for gh, minisign and shellcheck.
+# The copy's tests/run.sh only passes, so the tests don't run again inside it. RELEASE_EXISTS: gh finds the release.
+REL="$WORK/release"
+mkdir -p "$REL/stubs" "$REL/repo/bin" "$REL/repo/tests"
+cat > "$REL/stubs/gh" << 'EOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "run list") echo "completed success" ;;
+  "release view") [ -n "${RELEASE_EXISTS:-}" ] ;;
+  *) exit 1 ;;
+esac
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$REL/stubs/minisign"
+cp "$REL/stubs/minisign" "$REL/stubs/shellcheck"
+chmod 755 "$REL/stubs"/*
+cp "$ROOT/bin/release" "$REL/repo/bin/release"
+printf "VERSION='1.2.3'\n" > "$REL/repo/eeploi-helper"
+echo 'exit 0' > "$REL/repo/tests/run.sh"
+# git without the user's own config (signing, hooks): only what these commands set.
+rel_git() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c user.name=Test -c user.email=test@example.com "$@"; }
+rel_git init -q --bare "$REL/origin.git"
+rel_git -C "$REL/repo" init -q -b main
+rel_git -C "$REL/repo" add -A
+rel_git -C "$REL/repo" commit -qm one
+rel_git -C "$REL/repo" remote add origin "$REL/origin.git"
+rel_git -C "$REL/repo" push -q origin main
+rel_run() {
+  OUT=$(cd "$REL/repo" && PATH="$REL/stubs:$PATH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash bin/release --check 2>&1)
+  CODE=$?
+}
+rel_ok() {
+  rel_run
+  if [ "$CODE" -eq 0 ] && [[ $OUT == *"$2"* ]]; then pass; else failure "$1" "exit $CODE, expected 0 and: $2
+$OUT"; fi
+}
+rel_refuse() {
+  rel_run
+  if [ "$CODE" -eq 1 ] && [[ $OUT == *"release: $2"* ]]; then pass; else failure "$1" "exit $CODE, expected 1 and: release: $2
+$OUT"; fi
+}
+rel_ok "release: a new version passes the checks" "eeploi-helper 1.2.3 at $(rel_git -C "$REL/repo" rev-parse --short HEAD): v1.2.3 is new"
+RELEASE_EXISTS=1 rel_refuse "release: a release of this version stops the checks" \
+  "eeploi/helper already has a release v1.2.3, maybe a draft: releases are immutable, release a new version"
+# The tag only on GitHub: the checks fetch it.
+rel_git -C "$REL/repo" tag -a v1.2.3 -m v1.2.3
+rel_git -C "$REL/repo" push -q origin refs/tags/v1.2.3
+rel_git -C "$REL/repo" tag -d v1.2.3 > /dev/null
+rel_refuse "release: the tag of this version stops the checks" "v1.2.3 already exists: releases are immutable, release a new version"
+check "release: no tag moved, no release file replaced" \
+  test "$(grep -cE -e 'push .*--force|--force .*push' -e '--clobber' -e 'tag .*-f( |$)' "$ROOT/bin/release")" -eq 0
+
 echo "== system log"
 ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com
 IN=$'-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n-----END CERTIFICATE-----' ok "logs the arguments, never stdin" $'log: eeploi-helper: eeploi: ssl-write example.com\n' ssl-write example.com

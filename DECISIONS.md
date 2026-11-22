@@ -141,7 +141,6 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **What:** when the same version is released again, `bin/release` says so and moves the `v<version>` tag to the checked commit, then replaces the release files.
 - **Why:** while eeploi is in development, a release can be signed again with a fix and keep its version. The signature and the SHA-256 that callers pin follow the file, not the tag.
 - **Accepted:** a version number alone doesn't name one file; the signature or SHA-256 does.
-- **Where:** `bin/release`
 - **Replaced by:** D-26
 
 ## D-16: self-update installs only a newer version
@@ -232,5 +231,5 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **Decided:** 2026-11-17, in the repository's settings
 - **What:** a `v*` tag can't be moved or deleted (a ruleset on `refs/tags/v*`), and releases are immutable: once published, a release's files can't be replaced. A fix ships as a new version.
 - **Why:** a version names one file for good, so what a server or a caller pins can't change under it.
-- **Accepted:** `bin/release` still has the path that moves a tag and replaces the files; GitHub refuses it, and #29 takes it out.
+- **Accepted:** a version is released once. `bin/release` stops at its checks when the `v<version>` tag or a release of that version already exists (#29), and a release that stops after its tag went up needs a new version too.
 - **Where:** `bin/release`

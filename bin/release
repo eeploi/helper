@@ -75,6 +75,12 @@ commit=$(git rev-parse --short HEAD)
 version=$(sed -n "s/^VERSION='\(.*\)'\$/\1/p" eeploi-helper)
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "cannot read VERSION from eeploi-helper"
 tag="v$version"
+# D-26: a v* tag can't move and a release can't change, so a version is released once.
+step "checking that $tag is new"
+[ -z "$(git rev-parse -q --verify "refs/tags/$tag" || true)" ] \
+  || fail "$tag already exists: releases are immutable, release a new version"
+! gh release view "$tag" -R "$REPO" > /dev/null 2>&1 \
+  || fail "$REPO already has a release $tag, maybe a draft: releases are immutable, release a new version"
 
 step "shellcheck"
 shellcheck eeploi-helper tests/run.sh bin/release || fail "shellcheck found problems"
@@ -85,20 +91,7 @@ step "checking CI on $commit"
 ci=$(gh run list -R "$REPO" --commit "$head" --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"')
 [ "$ci" = "completed success" ] || fail "CI on $commit is not green yet (${ci:-no run})"
 
-tagged=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)
-# D-15: while eeploi is in development, a tag can move to a new file of the same version.
-# D-26: replaced since: GitHub refuses a moved tag and a replaced release file (#29).
-move=
-if [ -n "$tagged" ] && [ "$tagged" != "$head" ]; then move=1; fi
-
-echo "eeploi-helper $version at $commit: shellcheck clean, tests and CI green."
-if [ -z "$tagged" ]; then
-  echo "$tag is new."
-elif [ -n "$move" ]; then
-  echo "$tag points at $(git rev-parse --short "$tagged"): it moves to $commit (same version, a new file)."
-else
-  echo "$tag already points at $commit: the release files are signed and replaced."
-fi
+echo "eeploi-helper $version at $commit: $tag is new, shellcheck clean, tests and CI green."
 [ -z "$CHECK_ONLY" ] || exit 0
 
 # D-14: signed by a person, in their own terminal; never in CI.
@@ -121,22 +114,12 @@ confirm "Publish eeploi-helper $version ($commit) as $REPO $tag?"
 git show "$head:eeploi-helper" > "$work/checked"
 cmp -s "$work/signed" "$work/checked" || fail "the signed eeploi-helper is not the one in $commit: nothing was published"
 cmp -s eeploi-helper "$work/signed" || fail "eeploi-helper changed since it was signed: nothing was published"
-if [ -z "$tagged" ]; then
-  step "pushing $tag"
-  git tag -a "$tag" -m "$tag" "$head"
-  git push -q origin "refs/tags/$tag"
-elif [ -n "$move" ]; then
-  step "moving $tag to $commit"
-  git tag -f -a "$tag" -m "$tag" "$head" > /dev/null
-  git push -q --force origin "refs/tags/$tag"
-fi
-step "uploading the release files"
-if gh release view "$tag" -R "$REPO" > /dev/null 2>&1; then
-  gh release upload "$tag" eeploi-helper eeploi-helper.minisig --clobber -R "$REPO"
-else
-  gh release create "$tag" eeploi-helper eeploi-helper.minisig -R "$REPO" --verify-tag \
-    --title "eeploi-helper $version" --notes "See CHANGELOG.md."
-fi
+step "pushing $tag"
+git tag -a "$tag" -m "$tag" "$head"
+git push -q origin "refs/tags/$tag"
+step "creating the release"
+gh release create "$tag" eeploi-helper eeploi-helper.minisig -R "$REPO" --verify-tag \
+  --title "eeploi-helper $version" --notes "See CHANGELOG.md."
 
 say "Verify the published files"
 step "downloading them again"
