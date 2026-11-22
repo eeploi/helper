@@ -274,7 +274,7 @@ Contributions are welcome. See the [contribution guide](.github/CONTRIBUTING.md)
 
 ## Security Vulnerabilities
 
-Please report a security problem privately, as described in [.github/SECURITY.md](.github/SECURITY.md). Never in a public issue.
+Please report a security problem privately, as described in the [security policy](.github/SECURITY.md). Never in a public issue.
 
 ## License
 
