@@ -2323,8 +2323,9 @@ echo "== bin/release"
 # draft) and its files in $GH_STATE/assets; publishing makes the tag in $GH_ORIGIN, as GitHub does. GH_ERROR: gh
 # fails with that message instead of "release not found". GH_FAIL: create (the draft is made, its files don't
 # upload), extra (a third file), corrupt or badsig (what the download gives), tagrace (a tag made on GitHub during
-# the download), publish (the draft stays), late (published, then an error). GH_IMMUTABLE=false: the published
-# release is not immutable. $GH_STATE/log lists the gh calls.
+# the download), publish (the draft stays), noview (publish, and GitHub can't be asked after), late (published,
+# then an error), swap (a file changed while it was a draft, seen once published). GH_IMMUTABLE=false: the
+# published release is not immutable. GH_OLD: a gh that doesn't know isImmutable. $GH_STATE/log lists the gh calls.
 REL="$WORK/release"
 mkdir -p "$REL/stubs" "$REL/repo/bin" "$REL/repo/tests" "$REL/gh"
 cat > "$REL/stubs/gh" << 'EOF'
@@ -2334,12 +2335,15 @@ echo "$*" >> "$s/log"
 case "$1 $2" in
   "run list") echo "completed success" ;;
   "release view")
+    case "$*" in *isImmutable*) [ -z "${GH_OLD:-}" ] || { echo 'Unknown JSON field: "isImmutable"' >&2; exit 1; } ;; esac
+    [ "${GH_FAIL:-}" != noview ] || [ ! -f "$s/tried" ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
     [ -f "$s/release" ] || { echo "${GH_ERROR:-release not found}" >&2; exit 1; }
     read -r draft target < "$s/release"
+    assets=$(ls "$s/assets" 2> /dev/null | paste -sd , -)
     case "$*" in
-      *isDraft,targetCommitish,assets*) echo "$draft $target $(ls "$s/assets" | paste -sd , -)" ;;
-      *isDraft,isImmutable*) echo "$draft ${GH_IMMUTABLE:-true}" ;;
-      *isDraft*) echo "$draft" ;;
+      *"--jq .isDraft") echo "$draft" ;;
+      *isDraft,targetCommitish,assets*) echo "$draft $target $assets" ;;
+      *isDraft,isImmutable,assets*) echo "$draft ${GH_IMMUTABLE:-true} $assets" ;;
       *) exit 1 ;;
     esac ;;
   "release create")
@@ -2365,10 +2369,13 @@ case "$1 $2" in
     esac ;;
   "release edit")
     [ "$4 $5 $6 $#" = "-R eeploi/helper --draft=false 6" ] || exit 1
-    [ "${GH_FAIL:-}" != publish ] || exit 1
+    : > "$s/tried"
+    [ "${GH_FAIL:-}" != publish ] && [ "${GH_FAIL:-}" != noview ] || exit 1
     read -r _ target < "$s/release"
     echo "false $target" > "$s/release"
     git --git-dir="$GH_ORIGIN" update-ref "refs/tags/$tag" "$target"
+    # What a draft's file changed between the check and publishing gives.
+    [ "${GH_FAIL:-}" != swap ] || echo changed >> "$s/assets/eeploi-helper"
     [ "${GH_FAIL:-}" != late ] || exit 1 ;;
   *) exit 1 ;;
 esac
@@ -2419,6 +2426,8 @@ rel_check 1 "release: a draft of this version stops the checks, with how to dele
 rel_reset
 GH_ERROR="HTTP 502: Bad Gateway" rel_check 1 "release: a gh error is no answer" \
   "release: could not ask GitHub for a release v1.2.3: HTTP 502: Bad Gateway"
+GH_OLD=1 rel_check 1 "release: a gh without isImmutable stops the checks" \
+  'release: could not ask GitHub for a release v1.2.3: Unknown JSON field: "isImmutable"'
 
 # All of bin/release, signing with the test key, through a terminal (it asks for the key password).
 # rel_script: bin/release in the copy, through script for a terminal (util-linux or BSD).
@@ -2442,13 +2451,17 @@ rel_run() {
   shift
   rel_expect "$@"
 }
+# rel_draft <name>: the release is still a draft, and this run made no tag here.
+rel_draft() {
+  check "$1: still a draft" grep -q '^true ' "$REL/gh/release"
+  check "$1: no tag here" test -z "$(rel_git -C "$REL/repo" tag -l v1.2.3)"
+}
 # rel_left <mode> <name> <expected output>: bin/release with GH_FAIL=<mode> stops while the release is a draft,
-# says so with how to delete it, and (but for tagrace, which makes it) v1.2.3 is on neither side.
+# says so with how to delete it, and v1.2.3 is on neither side.
 rel_left() {
   GH_FAIL=$1 rel_run y 1 "$2" "release: $3: nothing was published and v1.2.3 was not made. A draft release v1.2.3 may be left on GitHub: $REL_UNDO"
-  check "$2: still a draft" grep -q '^true ' "$REL/gh/release"
-  [ "$1" = tagrace ] || check "$2: no tag on GitHub" test -z "$(rel_git --git-dir="$REL/origin.git" tag -l v1.2.3)"
-  check "$2: no tag here" test -z "$(rel_git -C "$REL/repo" tag -l v1.2.3)"
+  rel_draft "$2"
+  check "$2: no tag on GitHub" test -z "$(rel_git --git-dir="$REL/origin.git" tag -l v1.2.3)"
 }
 if command -v script > /dev/null && command -v timeout > /dev/null; then
   rel_run n 1 "release: no at the question" "release: stopped, nothing changed after this point"
@@ -2465,23 +2478,35 @@ if command -v script > /dev/null && command -v timeout > /dev/null; then
   rel_reset
   rel_left badsig "release: the draft's signature doesn't verify" "the draft's signature does not verify"
   rel_reset
-  rel_left tagrace "release: a tag made on GitHub since the checks" "v1.2.3 was made on GitHub since the checks"
+  name="release: a tag made on GitHub since the checks"
+  GH_FAIL=tagrace rel_run y 1 "$name" "release: v1.2.3 was made on GitHub since the checks, so this version can't be released: the draft was not published; delete it with gh release delete v1.2.3 -R eeploi/helper and release a new version"
+  rel_draft "$name"
+  check "$name: no run again" test -z "$(grep -F 'run this again' <<< "$OUT")"
   rel_reset
   rel_left publish "release: publishing fails" "could not publish the draft"
   rel_reset
 
+  name="release: publishing fails, and GitHub can't be asked after"
+  GH_FAIL=noview rel_run y 1 "$name" "release: publishing v1.2.3 gave an error, and GitHub could not say whether it is published (HTTP 502: Bad Gateway): check gh release view v1.2.3 -R eeploi/helper. Still a draft: $REL_UNDO. Published: the version is released"
+  rel_draft "$name"
+  rel_reset
+
   GH_FAIL=late rel_run y 1 "release: an error after GitHub published it" \
-    "release: publishing v1.2.3 gave an error, and GitHub does not show it as a draft: check gh release view v1.2.3 -R eeploi/helper before anything else"
+    "release: publishing v1.2.3 gave an error, but GitHub shows it published: check gh release view v1.2.3 -R eeploi/helper before anything else"
   rel_reset
 
   GH_IMMUTABLE=false rel_run y 1 "release: a release that is not immutable" \
-    "release: v1.2.3 is published, but not as an immutable release (false false): check the repository's settings"
+    "release: v1.2.3 is published, but not as an immutable release with only eeploi-helper and eeploi-helper.minisig (false false eeploi-helper,eeploi-helper.minisig): check it and the repository's settings"
+  rel_reset
+
+  GH_FAIL=swap rel_run y 1 "release: a file changed before publishing, seen in the published release" \
+    "release: the published eeploi-helper is not the signed file"
   rel_reset
 
   name="release: a new version"
   rel_run y 0 "$name" "eeploi-helper 1.2.3, v1.2.3 at ${REL_HEAD:0:7}, SHA-256"
   check "$name: the draft on the checked commit" grep -qx "release create v1.2.3 eeploi-helper eeploi-helper.minisig -R eeploi/helper --draft --target $REL_HEAD --title eeploi-helper 1.2.3 --notes See CHANGELOG.md." "$REL/gh/log"
-  check "$name: published after its files were checked" test "$(sed -nE 's/^release (create|download|edit) .*/\1/p' "$REL/gh/log" | paste -sd ' ' -)" = "create download edit"
+  check "$name: published after its files were checked" test "$(sed -nE 's/^release (create|download|edit) .*/\1/p' "$REL/gh/log" | paste -sd ' ' -)" = "create download edit download"
   check "$name: the only edit publishes the draft" test "$(grep '^release edit' "$REL/gh/log")" = "release edit v1.2.3 -R eeploi/helper --draft=false"
   check "$name: the tag on GitHub, made by publishing" test "$(rel_git --git-dir="$REL/origin.git" rev-parse refs/tags/v1.2.3)" = "$REL_HEAD"
   check "$name: the tag here too" test "$(rel_git -C "$REL/repo" rev-parse refs/tags/v1.2.3)" = "$REL_HEAD"
@@ -2496,8 +2521,8 @@ rel_git -C "$REL/repo" tag -d v1.2.3 > /dev/null
 rel_check 1 "release: the tag of this version stops the checks" "release: v1.2.3 already exists: releases are immutable, release a new version"
 check "release: shellcheck on the same files as CI" test \
   "$(sed -n 's/^shellcheck \(.*\) || fail .*/\1/p' "$ROOT/bin/release")" = "$(sed -n 's/^ *run: shellcheck //p' "$ROOT/.github/workflows/ci.yml")"
-# What bin/release runs, its quoted text (the messages) left out.
-REL_CODE=$(sed 's/"[^"]*"//g' "$ROOT/bin/release")
+# What bin/release runs, its quoted text (the messages) left out; a "$(…)" stays, it runs.
+REL_CODE=$(sed -E 's/"([^"$]|\$[^("])*"//g' "$ROOT/bin/release")
 check "release: nothing pushed, no tag moved, no release file replaced or deleted" \
   test "$(grep -cE -e 'git push' -e 'git tag' -e 'gh release (upload|delete)' -e 'gh api' -e '--clobber' <<< "$REL_CODE")" -eq 0
 check "release: it starts as a draft on the checked commit" grep -qE '^gh release create .* --draft --target  \\$' <<< "$REL_CODE"

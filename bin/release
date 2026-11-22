@@ -17,7 +17,9 @@ CHECK_ONLY=
 work=$(mktemp -d)
 tests_pid=
 # A background job ignores Ctrl-C: stop the tests too.
-trap '[ -z "$tests_pid" ] || kill "$tests_pid" 2> /dev/null || true; rm -rf "$work"' EXIT
+# A run that stops while a draft may be on GitHub says so, also when it stops without fail() (set -e, Ctrl-C).
+trap 'status=$?; [ "$status" -eq 0 ] || [ -z "${left:-}" ] || printf "release: stopped: %s\n" "$left" >&2
+  [ -z "$tests_pid" ] || kill "$tests_pid" 2> /dev/null || true; rm -rf "$work"' EXIT
 
 say() { printf '\n== %s\n' "$*"; }
 step() { printf '%s…\n' "$*"; }
@@ -49,7 +51,7 @@ run_tests() {
 }
 # While a draft may be on GitHub, $left says so and how to delete it: every failure then ends with it.
 left=
-fail() { printf 'release: %s\n' "$*${left:+: $left}" >&2; exit 1; }
+fail() { printf 'release: %s\n' "$*${left:+: $left}" >&2; left=; exit 1; }
 # verify <minisign args...>: against minisign.pub.
 # D-13: a prehashed (ED) signature only, as the helper checks it.
 verify() { minisign -V -H -p minisign.pub "$@"; }
@@ -82,7 +84,8 @@ undo="check it with gh release view $tag -R $REPO, delete it with gh release del
 step "checking that $tag is new"
 ! git rev-parse -q --verify "refs/tags/$tag" > /dev/null \
   || fail "$tag already exists: releases are immutable, release a new version"
-if found=$(gh release view "$tag" -R "$REPO" --json isDraft --jq .isDraft 2>&1); then
+# isImmutable too: a gh too old to know it stops here, not after publishing.
+if found=$(gh release view "$tag" -R "$REPO" --json isDraft,isImmutable --jq .isDraft 2>&1); then
   # A draft has no tag yet and can still go: what a run that stopped before publishing leaves.
   [ "$found" != true ] || fail "$REPO has a draft release $tag, left by a run that stopped: $undo"
   fail "$REPO already has a release $tag: releases are immutable, release a new version"
@@ -147,21 +150,36 @@ say "Publish"
 # A tag made on GitHub since the checks would carry the release: stop while it is a draft.
 step "checking that $tag is still new"
 remote=$(git ls-remote origin "refs/tags/$tag") || fail "could not ask GitHub for $tag"
-[ -z "$remote" ] || fail "$tag was made on GitHub since the checks"
+if [ -n "$remote" ]; then
+  left=
+  fail "$tag was made on GitHub since the checks, so this version can't be released: the draft was not published;" \
+    "delete it with gh release delete $tag -R $REPO and release a new version"
+fi
 step "publishing $tag"
 if ! gh release edit "$tag" -R "$REPO" --draft=false > /dev/null; then
   # The error can come after GitHub published it: only a release that is still a draft is unpublished.
-  [ "$(gh release view "$tag" -R "$REPO" --json isDraft --jq .isDraft 2>&1)" != true ] \
-    || fail "could not publish the draft"
+  state=$(gh release view "$tag" -R "$REPO" --json isDraft --jq .isDraft 2>&1) || true
+  [ "$state" != true ] || fail "could not publish the draft"
   left=
-  fail "publishing $tag gave an error, and GitHub does not show it as a draft: check gh release view $tag -R $REPO before anything else"
+  [ "$state" != false ] || fail "publishing $tag gave an error, but GitHub shows it published: check gh release view $tag -R $REPO before anything else"
+  fail "publishing $tag gave an error, and GitHub could not say whether it is published ($state): check gh release view $tag -R $REPO." \
+    "Still a draft: $undo. Published: the version is released"
 fi
 left=
 
 say "Verify the release"
-published=$(gh release view "$tag" -R "$REPO" --json isDraft,isImmutable --jq '"\(.isDraft) \(.isImmutable)"') \
-  || fail "could not read the published release $tag"
-[ "$published" = "false true" ] || fail "$tag is published, but not as an immutable release ($published): check the repository's settings"
+published=$(gh release view "$tag" -R "$REPO" --json isDraft,isImmutable,assets \
+  --jq '"\(.isDraft) \(.isImmutable) \([.assets[].name] | sort | join(","))"') || fail "could not read the published release $tag"
+[ "$published" = "false true eeploi-helper,eeploi-helper.minisig" ] \
+  || fail "$tag is published, but not as an immutable release with only eeploi-helper and eeploi-helper.minisig ($published): check it and the repository's settings"
+# A draft's files could still change until it was published: check the published ones too.
+step "downloading its files again"
+mkdir "$work/published"
+gh release download "$tag" -R "$REPO" -D "$work/published" -p eeploi-helper -p eeploi-helper.minisig \
+  || fail "could not download the published files"
+cmp -s "$work/published/eeploi-helper" "$work/signed" || fail "the published eeploi-helper is not the signed file"
+verify -q -m "$work/published/eeploi-helper" -x "$work/published/eeploi-helper.minisig" \
+  || fail "the published signature does not verify"
 git fetch -q origin "refs/tags/$tag:refs/tags/$tag" || fail "could not fetch $tag from GitHub"
 [ "$(git rev-parse "refs/tags/$tag^{commit}")" = "$head" ] || fail "$tag on GitHub is not $commit"
 
