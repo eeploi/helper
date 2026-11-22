@@ -2,4 +2,4 @@ blank_issues_enabled: false
 contact_links:
   - name: Report a security issue privately
     url: https://github.com/eeploi/helper/blob/main/.github/SECURITY.md
-    about: SECURITY.md says where to send it and what happens next.
+    about: The security policy says where to send it and what happens next.

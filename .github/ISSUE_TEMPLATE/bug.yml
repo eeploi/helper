@@ -4,7 +4,7 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: A security problem never goes here. Report it privately, as .github/SECURITY.md says.
+      value: A security problem never goes here; report it as the [security policy](https://github.com/eeploi/helper/blob/main/.github/SECURITY.md) describes. No real server names, IP addresses or secrets; use fictional ones, such as `shop.example`.
   - type: textarea
     id: happened
     attributes:

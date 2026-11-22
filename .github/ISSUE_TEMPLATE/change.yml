@@ -3,7 +3,7 @@ description: Propose a new subcommand or a change to one, before a pull request.
 body:
   - type: markdown
     attributes:
-      value: A security problem never goes here; see .github/SECURITY.md. No real server names, IP addresses or secrets; use fictional ones, such as `shop.example`.
+      value: A security problem never goes here; report it as the [security policy](https://github.com/eeploi/helper/blob/main/.github/SECURITY.md) describes. No real server names, IP addresses or secrets; use fictional ones, such as `shop.example`.
   - type: textarea
     id: what
     attributes:

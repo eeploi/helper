@@ -1,4 +1,4 @@
-<!-- A security problem never goes here: see .github/SECURITY.md. No server names, IP addresses or secrets. -->
+<!-- A security problem never goes here: see the security policy, .github/SECURITY.md. No server names, IP addresses or secrets. -->
 
 ## Summary
 
@@ -10,7 +10,7 @@
 
 ## Validation
 
-<!-- The checks in .github/CONTRIBUTING.md and CI, with their results. Say which failed or didn't run. -->
+<!-- The checks in the contribution guide, .github/CONTRIBUTING.md, and CI, with their results. Say which failed or didn't run. -->
 
 ## Limitations
 

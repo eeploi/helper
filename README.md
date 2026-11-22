@@ -1,6 +1,6 @@
 <p align="center">
-<a href="https://github.com/eeploi/helper/actions/workflows/ci.yml"><img src="https://github.com/eeploi/helper/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
-<a href="https://github.com/eeploi/helper/releases/latest"><img src="https://img.shields.io/github/v/release/eeploi/helper" alt="Latest Release"></a>
+<a href="https://github.com/eeploi/helper/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/eeploi/helper/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+<a href="https://github.com/eeploi/helper/releases/latest"><img src="https://img.shields.io/github/v/release/eeploi/helper" alt="Latest release"></a>
 <a href="LICENSE.md"><img src="https://img.shields.io/github/license/eeploi/helper" alt="License"></a>
 </p>
 
@@ -270,11 +270,11 @@ Plain bash and `minisign`: the `recipe-run` cases sign test releases with a key 
 
 ## Contributing
 
-Contributions are welcome. See the [contribution guide](.github/CONTRIBUTING.md).
+Thank you for considering a contribution. The [contribution guide](.github/CONTRIBUTING.md) says how.
 
 ## Security Vulnerabilities
 
-Please report a security problem privately, as described in the [security policy](.github/SECURITY.md). Never in a public issue.
+Please report a security problem privately, as the [security policy](.github/SECURITY.md) describes, never in a public issue.
 
 ## License
 
