@@ -1308,43 +1308,46 @@ unit_description() {
 # server, BSD date in a dry run on macOS.
 utc_at() { date -u -d "@$1" "$DATE_FORMAT" 2> /dev/null || date -u -r "$1" "$DATE_FORMAT"; }
 utc_in() { utc_at $(($(date +%s) + $1)); }
-epoch_of() { date -u -d "$1" +%s 2> /dev/null || date -u -j -f "${DATE_FORMAT#+}" "$1" +%s; }
+epoch_of() { date -u -d "$1" +%s 2> /dev/null || date -u -j -f "${DATE_FORMAT#+}" "$1" +%s 2> /dev/null; }
 
 # D-42: at most one reboot per 15 minutes, from the time the unit writes right before systemctl reboot.
 REBOOT_GAP=900
 REBOOT_LINE_RE="^rebooted ($DATE_PART)\$"
 
 # reboot_last: B_LAST, when the last reboot server-reboot started was, from $REBOOT_STATE, root's,
-# parsed line by line; empty when there is no file (no reboot started here yet).
-# A file it can't trust is refused. A trusted file it can't read (empty, a line it doesn't know, the
-# time twice) is ignored and logged: B_LAST is empty then too.
+# parsed line by line, and B_AT, its seconds since 1970; both empty when there is no file (no reboot
+# started here yet). A file it can't trust is refused. A trusted file it can't read (empty, a line it
+# doesn't know, the time twice, a time date can't read) is ignored and logged: both are empty then too.
 reboot_last() {
   local file=$REBOOT_STATE line
-  B_LAST=''
+  B_LAST='' B_AT=''
   [ -e "$file" ] || [ -L "$file" ] || return 0
   trusted "$file" || fail "untrusted reboot state: $file (must be a root-owned file, not writable by others)"
   # D-5: parsed line by line, never sourced.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
-    if [[ $line =~ $REBOOT_LINE_RE ]] && [ -z "$B_LAST" ]; then B_LAST=${BASH_REMATCH[1]}; else B_LAST=''; break; fi
+    if [[ $line =~ $REBOOT_LINE_RE ]] && [ -z "$B_LAST" ]; then
+      B_LAST=${BASH_REMATCH[1]}
+    else
+      B_LAST=''
+      break
+    fi
   done < "$file"
+  [ -z "$B_LAST" ] || B_AT=$(epoch_of "$B_LAST") || B_LAST=''
   [ -n "$B_LAST" ] || audit "server-reboot: the last reboot time in $file can't be read, ignored"
 }
 
 # reboot_allowed: refuses a call within 15 minutes of the last reboot. A time more than 15 minutes
-# ahead of now, or one date can't read, is ignored and logged. A dry run takes now from
-# EEPLOI_HELPER_NOW when set.
+# ahead of now is ignored and logged. A dry run takes now from EEPLOI_HELPER_NOW when set.
 reboot_allowed() {
-  local at now
+  local now
   reboot_last
   [ -n "$B_LAST" ] || return 0
   if [ -n "$NOW" ]; then now=$(epoch_of "$NOW") || fail "cannot read the time now"; else now=$(date +%s); fi
-  if ! at=$(epoch_of "$B_LAST" 2> /dev/null); then
-    audit "server-reboot: the last reboot time in $REBOOT_STATE can't be read, ignored"
-  elif [ "$at" -gt $((now + REBOOT_GAP)) ]; then
+  if [ "$B_AT" -gt $((now + REBOOT_GAP)) ]; then
     audit "server-reboot: the last reboot time is in the future, ignored"
-  elif [ "$now" -lt $((at + REBOOT_GAP)) ]; then
-    fail "the last reboot was at $B_LAST: the next is allowed from $(utc_at $((at + REBOOT_GAP)))"
+  elif [ "$now" -lt $((B_AT + REBOOT_GAP)) ]; then
+    fail "the last reboot was at $B_LAST: the next is allowed from $(utc_at $((B_AT + REBOOT_GAP)))"
   fi
 }
 

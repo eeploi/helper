@@ -203,6 +203,12 @@ absent() {
 $OUT"; fi
 }
 
+# has <name> <text>: the output of the last call contains the text.
+has() {
+  if [[ $OUT == *"$2"* ]]; then pass; else failure "$1" "lacks: $2
+$OUT"; fi
+}
+
 # nothing_ran <name>: the last call ran no step or check.
 nothing_ran() { absent "$1: nothing runs" "run: "; }
 
@@ -2758,8 +2764,8 @@ dropped() {
   rb "$1" "$2"
   RBOOT="$WORK/reboot-$1/reboot" NOW_AT=2026-11-22T19:10:00Z ok "$1: ignored, logged" \
     "log: eeploi-helper: server-reboot: the last reboot time in $WORK/reboot-$1/reboot can't be read, ignored" server-reboot
-  RBOOT="$WORK/reboot-$1/reboot" NOW_AT=2026-11-22T19:10:00Z ok "$1: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-$1/reboot +%Y-%m-%dT%H:%M:%SZ
-reboot due " server-reboot
+  has "$1: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-$1/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due "
 }
 dropped empty ''
 dropped notime "$RB_HEAD"$'\n'
