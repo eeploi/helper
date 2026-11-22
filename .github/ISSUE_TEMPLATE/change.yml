@@ -1,0 +1,19 @@
+name: Change
+description: Propose a new subcommand or a change to one, before a pull request.
+body:
+  - type: markdown
+    attributes:
+      value: A security problem never goes here; see .github/SECURITY.md. No real server names, IP addresses or secrets; use fictional ones, such as `shop.example`.
+  - type: textarea
+    id: what
+    attributes:
+      label: What should change
+      description: The subcommand, and what it does on a server after the change.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+    validations:
+      required: true
