@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# A new push on a pull request cancels its older run. Each run on main gets its own group,
+# so none is cancelled or dropped while it waits: bin/release needs every commit's result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
