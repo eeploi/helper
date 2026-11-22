@@ -219,11 +219,13 @@ fi
 
 echo "== decisions"
 check "DECISIONS.md and the D-n comments agree" bash "$ROOT/tests/decisions.sh"
-# A copy of the repo's files, without .git, in $WORK/dec, each case changing one thing in it.
+# The files git tracks, as they are now, in $WORK/dec-clean, once; each case changes one thing in a copy
+# of it, $WORK/dec, which is no repo.
+mkdir "$WORK/dec-clean"
+(cd "$ROOT" && git ls-files | tar -cf - -T -) | (cd "$WORK/dec-clean" && tar -xf -)
 dec_copy() {
   rm -rf "$WORK/dec"
-  mkdir "$WORK/dec"
-  (cd "$ROOT" && tar -cf - --exclude=./.git .) | (cd "$WORK/dec" && tar -xf -)
+  cp -R "$WORK/dec-clean" "$WORK/dec"
 }
 # dec_last <file>: the number of the last line of the file in the copy.
 dec_last() { grep -c '' "$WORK/dec/$1"; }
@@ -254,8 +256,14 @@ dec_copy
 echo "# D-999: in a new file" > "$WORK/dec/new.sh"
 dec_refuse "decisions: an unknown D-n in a new file" "new.sh:1: D-999 is not in DECISIONS.md"
 dec_copy
-echo "# D-2: known" >> "$WORK/dec/bin/release"
-dec_ok "decisions: a known D-n passes"
+echo "# D-13: known" >> "$WORK/dec/bin/release"
+dec_ok "decisions: a known D-n in a file its Where names"
+echo "# D-2: known, elsewhere" >> "$WORK/dec/bin/release"
+dec_refuse "decisions: a known D-n in a file its Where doesn't name" "bin/release:$(dec_last bin/release): D-2's Where doesn't name bin/release"
+dec_copy
+code='x=1 #'
+echo "$code D-1: ok $code D-999: and another" >> "$WORK/dec/eeploi-helper"
+dec_refuse "decisions: every comment on a line counts" "eeploi-helper:$(dec_last eeploi-helper): D-999 is not in DECISIONS.md"
 dec_copy
 echo "x='#D-999:' # see D-999: not a comment for it" >> "$WORK/dec/eeploi-helper"
 echo "# D-999: Markdown isn't read" >> "$WORK/dec/README.md"
@@ -268,7 +276,7 @@ echo ': nothing' > "$WORK/dec/bin/x"
 dec_refuse "decisions: a Where file without its comment" "bin/x: has no D-1 comment, which DECISIONS.md names it for"
 echo '# D-10: another entry' >> "$WORK/dec/bin/x"
 dec_refuse "decisions: D-10 is not D-1" "bin/x: has no D-1 comment, which DECISIONS.md names it for"
-echo '# D-1: named' >> "$WORK/dec/bin/x"
+echo '# D-1: named' > "$WORK/dec/bin/x"
 dec_ok "decisions: a Where file with its comment"
 rm "$WORK/dec/bin/x"
 dec_refuse "decisions: a Where file that isn't there" "DECISIONS.md: D-1: Where names bin/x, which does not exist"
@@ -288,7 +296,28 @@ for heading in '## D-2 Fixed' '## D2: Fixed' '## D-2:Fixed' '##D-2: Fixed' '### 
 done
 dec_copy
 dec_edit DECISIONS.md 's/^## For reviewers and audits$/## For audits/'
-dec_refuse "decisions: the first heading" "DECISIONS.md:5: not ## For reviewers and audits, heading 1"
+dec_refuse "decisions: the first heading" "DECISIONS.md:$(grep -nx '## For audits' "$WORK/dec/DECISIONS.md" | cut -d: -f1): not ## For reviewers and audits, heading 1"
+dec_copy
+dec_edit DECISIONS.md 's/^## D-8: /## D-08: /'
+dec_refuse "decisions: a number with a leading zero" "DECISIONS.md:$(grep -n '^## D-08: ' "$WORK/dec/DECISIONS.md" | cut -d: -f1): not a heading ## D-n: title"
+# A Where line: only files in backticks, none of them Markdown, inside an entry.
+# shellcheck disable=SC2016 # the backticks are Markdown
+for where in '`eeploi-helper` (the closed() check)' 'eeploi-helper' '`eeploi-helper`,`bin/release`'; do
+  dec_copy
+  dec_edit DECISIONS.md "/^## D-4: /,/^- \*\*Where:\*\*/s|^- \*\*Where:\*\* .*|- **Where:** $where|"
+  dec_refuse "decisions: Where line $where" "DECISIONS.md:$(grep -nxF -- "- **Where:** $where" "$WORK/dec/DECISIONS.md" | cut -d: -f1): not a Where line: \`file\`, \`file\` …"
+done
+dec_copy
+# shellcheck disable=SC2016 # the backticks are Markdown
+dec_edit DECISIONS.md '/^## D-14: /,/^- \*\*Where:\*\*/s/^\(- \*\*Where:\*\* .*\)$/\1, `RELEASING.md`/'
+dec_refuse "decisions: a Markdown file in Where" "DECISIONS.md: D-14: Where names RELEASING.md, but Markdown isn't read for comments"
+dec_copy
+# shellcheck disable=SC2016 # the backticks are Markdown
+dec_edit DECISIONS.md 's/^## How entries work$/&\
+\
+- **Where:** `eeploi-helper`/'
+# shellcheck disable=SC2016 # the backticks are Markdown
+dec_refuse "decisions: a Where outside an entry" "DECISIONS.md:$(grep -n '^- \*\*Where:\*\* `eeploi-helper`$' "$WORK/dec/DECISIONS.md" | head -1 | cut -d: -f1): a Where outside an entry"
 dec_copy
 dec_edit DECISIONS.md '/^## How entries work$/d'
 dec_refuse "decisions: no second heading" "DECISIONS.md:$(grep -n '^## D-1: ' "$WORK/dec/DECISIONS.md" | cut -d: -f1): not ## How entries work, heading 2"

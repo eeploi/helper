@@ -15,7 +15,7 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **Kind** is `decision`, `accepted risk` or `known limit`.
 - **Accepted**, when present, names what a decision costs.
 - **Decided** gives the date and the issue or pull request in this repo.
-- **Where** names the files the entry shapes, if any. The line it shapes carries a comment `# D-n: …`. `tests/decisions.sh`, which `tests/run.sh` runs, fails on a `D-n` comment without an entry here, on a file in **Where** without its comment, and on a heading out of place or out of order.
+- **Where** names the files the entry shapes, if any. The line it shapes carries a comment `# D-n: …`. `tests/decisions.sh`, which `tests/run.sh` runs, fails on a `D-n` comment without an entry here or in a file its **Where** doesn't name, on a file in **Where** without its comment, and on a heading or **Where** line out of place, out of order or malformed. **Where** names files in backticks, never Markdown.
 - A changed decision is a new entry. The old one stays, with **Replaced by** `D-n`.
 - No private details: no server names, addresses or business reasons. Only what explains the code.
 
@@ -47,7 +47,7 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 
 - **Kind:** decision
 - **Decided:** 2026-11-17, PR #16
-- **What:** a file the helper reads (its config, the site registry, `recipes.conf`, `os-release`, the recipes state) must be a root-owned file, no link, not writable by group or others, in a folder that is the same. Otherwise the call is refused.
+- **What:** a file the helper reads (its config, the site registry, `recipes.conf`, the recipes state, the new-server marker) must be a root-owned file, no link, not writable by group or others, in a folder that is the same. Otherwise the call is refused. `/etc/os-release` is a link on Ubuntu: the helper follows it, and the file it points to must pass the same check.
 - **Why:** a file another user can change would let that user steer root.
 - **Where:** `eeploi-helper`
 
@@ -55,7 +55,7 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 
 - **Kind:** decision
 - **Decided:** 2026-11-08, 1.0.0; PR #14, PR #19
-- **What:** `helper.conf`, the registry, `recipes.conf`, `os-release` and the recipes state are read one line at a time. Each line must match a known form, a value that may be set once is refused when set twice, and nothing in them is run.
+- **What:** `helper.conf`, the registry, `recipes.conf`, `os-release` and the recipes state are read one line at a time, and nothing in them is run. Each line must match a known form, and a value that may be set once is refused when set twice. In `os-release` only the `ID` and `VERSION_ID` lines are read; the others are skipped.
 - **Why:** a sourced file runs as root whatever it holds. A parsed one gives only the values it may give.
 - **Where:** `eeploi-helper`
 
