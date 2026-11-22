@@ -27,8 +27,9 @@ jobs:
       - name: Install minisign
         run: command -v minisign || (sudo apt-get update && sudo apt-get install -y minisign)
       - name: shellcheck
-        run: shellcheck eeploi-helper tests/run.sh bin/release
+        run: shellcheck eeploi-helper tests/run.sh tests/decisions.sh bin/release
       - name: bash -n
-        run: bash -n eeploi-helper && bash -n tests/run.sh && bash -n bin/release
+        run: bash -n eeploi-helper && bash -n tests/run.sh && bash -n tests/decisions.sh && bash -n bin/release
+      # tests/run.sh runs tests/decisions.sh too: DECISIONS.md and the D-n comments agree.
       - name: Tests
         run: bash tests/run.sh

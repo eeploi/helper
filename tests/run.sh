@@ -210,11 +210,120 @@ check() {
 echo "== syntax"
 check "bash -n eeploi-helper" bash -n "$HELPER"
 check "bash -n tests/run.sh" bash -n "$ROOT/tests/run.sh"
+check "bash -n tests/decisions.sh" bash -n "$ROOT/tests/decisions.sh"
 if command -v shellcheck > /dev/null; then
-  check "shellcheck" shellcheck "$HELPER" "$ROOT/tests/run.sh"
+  check "shellcheck" shellcheck "$HELPER" "$ROOT/tests/run.sh" "$ROOT/tests/decisions.sh"
 else
   echo "note: shellcheck is not installed, skipped (CI runs it)"
 fi
+
+echo "== decisions"
+check "DECISIONS.md and the D-n comments agree" bash "$ROOT/tests/decisions.sh"
+# The files git tracks, as they are now, in $WORK/dec-clean, once; each case changes one thing in a copy
+# of it, $WORK/dec, which is no repo.
+mkdir "$WORK/dec-clean"
+(cd "$ROOT" && git ls-files | tar -cf - -T -) | (cd "$WORK/dec-clean" && tar -xf -)
+dec_copy() {
+  rm -rf "$WORK/dec"
+  cp -R "$WORK/dec-clean" "$WORK/dec"
+}
+# dec_last <file>: the number of the last line of the file in the copy.
+dec_last() { grep -c '' "$WORK/dec/$1"; }
+# dec_edit <file> <sed script>: the file in the copy, changed (sed -i differs between macOS and GNU).
+dec_edit() { sed "$2" "$WORK/dec/$1" > "$WORK/dec.tmp" && mv "$WORK/dec.tmp" "$WORK/dec/$1"; }
+# dec_refuse <name> <line>: the check fails on the copy and prints that line.
+dec_refuse() {
+  if OUT=$(bash "$ROOT/tests/decisions.sh" "$WORK/dec" 2>&1); then
+    failure "$1" "passed, expected: $2
+$OUT"
+  elif grep -qxF -- "$2" <<< "$OUT"; then pass; else failure "$1" "not: $2
+$OUT"; fi
+}
+dec_ok() { check "$1" bash "$ROOT/tests/decisions.sh" "$WORK/dec"; }
+dec_copy
+dec_ok "decisions: the copy passes"
+# A comment is "# D-n:" at the start of a line or after a space; the quotes below keep these lines none.
+for f in eeploi-helper bin/release tests/run.sh .github/workflows/ci.yml minisign.pub; do
+  dec_copy
+  echo "# D-999: not decided" >> "$WORK/dec/$f"
+  dec_refuse "decisions: an unknown D-n in $f" "$f:$(dec_last "$f"): D-999 is not in DECISIONS.md"
+done
+dec_copy
+code='x=1 #'
+echo "$code D-999: after code" >> "$WORK/dec/eeploi-helper"
+dec_refuse "decisions: an unknown D-n after code" "eeploi-helper:$(dec_last eeploi-helper): D-999 is not in DECISIONS.md"
+dec_copy
+echo "# D-999: in a new file" > "$WORK/dec/new.sh"
+dec_refuse "decisions: an unknown D-n in a new file" "new.sh:1: D-999 is not in DECISIONS.md"
+dec_copy
+echo "# D-13: known" >> "$WORK/dec/bin/release"
+dec_ok "decisions: a known D-n in a file its Where names"
+echo "# D-2: known, elsewhere" >> "$WORK/dec/bin/release"
+dec_refuse "decisions: a known D-n in a file its Where doesn't name" "bin/release:$(dec_last bin/release): D-2's Where doesn't name bin/release"
+dec_copy
+code='x=1 #'
+echo "$code D-1: ok $code D-999: and another" >> "$WORK/dec/eeploi-helper"
+dec_refuse "decisions: every comment on a line counts" "eeploi-helper:$(dec_last eeploi-helper): D-999 is not in DECISIONS.md"
+dec_copy
+echo "x='#D-999:' # see D-999: not a comment for it" >> "$WORK/dec/eeploi-helper"
+echo "# D-999: Markdown isn't read" >> "$WORK/dec/README.md"
+dec_ok "decisions: a D-n that is no comment passes"
+# D-1 names a file more: without its comment it fails, with one it passes.
+dec_copy
+# shellcheck disable=SC2016 # the backticks are Markdown
+dec_edit DECISIONS.md '/^## D-1: /,/^- \*\*Where:\*\*/s/^\(- \*\*Where:\*\* .*\)$/\1, `bin\/x`/'
+echo ': nothing' > "$WORK/dec/bin/x"
+dec_refuse "decisions: a Where file without its comment" "bin/x: has no D-1 comment, which DECISIONS.md names it for"
+echo '# D-10: another entry' >> "$WORK/dec/bin/x"
+dec_refuse "decisions: D-10 is not D-1" "bin/x: has no D-1 comment, which DECISIONS.md names it for"
+echo '# D-1: named' > "$WORK/dec/bin/x"
+dec_ok "decisions: a Where file with its comment"
+rm "$WORK/dec/bin/x"
+dec_refuse "decisions: a Where file that isn't there" "DECISIONS.md: D-1: Where names bin/x, which does not exist"
+dec_copy
+dec_edit DECISIONS.md 's/^## D-2: /## D-3: /'
+dec_refuse "decisions: a number twice" "DECISIONS.md: D-3 where D-2 comes"
+dec_copy
+dec_edit DECISIONS.md 's/^## D-3: /## D-2: /'
+dec_refuse "decisions: a number back" "DECISIONS.md: D-2 where D-3 comes"
+dec_copy
+dec_edit DECISIONS.md 's/^## D-4: /## D-6: /'
+dec_refuse "decisions: a number skipped" "DECISIONS.md: D-6 where D-4 comes"
+for heading in '## D-2 Fixed' '## D2: Fixed' '## D-2:Fixed' '##D-2: Fixed' '### D-2: Fixed' '## Notes'; do
+  dec_copy
+  dec_edit DECISIONS.md "s/^## D-2: .*/$heading/"
+  dec_refuse "decisions: heading $heading" "DECISIONS.md:$(grep -nxF -- "$heading" "$WORK/dec/DECISIONS.md" | cut -d: -f1): not a heading ## D-n: title"
+done
+dec_copy
+dec_edit DECISIONS.md 's/^## For reviewers and audits$/## For audits/'
+dec_refuse "decisions: the first heading" "DECISIONS.md:$(grep -nx '## For audits' "$WORK/dec/DECISIONS.md" | cut -d: -f1): not ## For reviewers and audits, heading 1"
+dec_copy
+dec_edit DECISIONS.md 's/^## D-8: /## D-08: /'
+dec_refuse "decisions: a number with a leading zero" "DECISIONS.md:$(grep -n '^## D-08: ' "$WORK/dec/DECISIONS.md" | cut -d: -f1): not a heading ## D-n: title"
+# A Where line: only files in backticks, none of them Markdown, inside an entry.
+# shellcheck disable=SC2016 # the backticks are Markdown
+for where in '`eeploi-helper` (the closed() check)' 'eeploi-helper' '`eeploi-helper`,`bin/release`'; do
+  dec_copy
+  dec_edit DECISIONS.md "/^## D-4: /,/^- \*\*Where:\*\*/s|^- \*\*Where:\*\* .*|- **Where:** $where|"
+  dec_refuse "decisions: Where line $where" "DECISIONS.md:$(grep -nxF -- "- **Where:** $where" "$WORK/dec/DECISIONS.md" | cut -d: -f1): not a Where line: \`file\`, \`file\` …"
+done
+dec_copy
+# shellcheck disable=SC2016 # the backticks are Markdown
+dec_edit DECISIONS.md '/^## D-14: /,/^- \*\*Where:\*\*/s/^\(- \*\*Where:\*\* .*\)$/\1, `RELEASING.md`/'
+dec_refuse "decisions: a Markdown file in Where" "DECISIONS.md: D-14: Where names RELEASING.md, but Markdown isn't read for comments"
+dec_copy
+# shellcheck disable=SC2016 # the backticks are Markdown
+dec_edit DECISIONS.md 's/^## How entries work$/&\
+\
+- **Where:** `eeploi-helper`/'
+# shellcheck disable=SC2016 # the backticks are Markdown
+dec_refuse "decisions: a Where outside an entry" "DECISIONS.md:$(grep -n '^- \*\*Where:\*\* `eeploi-helper`$' "$WORK/dec/DECISIONS.md" | head -1 | cut -d: -f1): a Where outside an entry"
+dec_copy
+dec_edit DECISIONS.md '/^## How entries work$/d'
+dec_refuse "decisions: no second heading" "DECISIONS.md:$(grep -n '^## D-1: ' "$WORK/dec/DECISIONS.md" | cut -d: -f1): not ## How entries work, heading 2"
+dec_copy
+rm "$WORK/dec/DECISIONS.md"
+dec_refuse "decisions: no DECISIONS.md" "no DECISIONS.md"
 
 echo "== existing subcommands"
 ok "version" "1.1.0" version

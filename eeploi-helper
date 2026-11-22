@@ -3,6 +3,7 @@
 # Every argument is checked, every action is fixed. Content comes on stdin.
 # Source, releases and signatures: https://github.com/eeploi/helper
 set -euo pipefail
+# D-3: the umask, PATH, HOME, TMPDIR and the locale are the helper's, never the caller's.
 umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export TMPDIR=/tmp HOME=/root LC_ALL=C
@@ -14,6 +15,7 @@ PUBKEY='RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA'
 RELEASES='https://github.com/eeploi/helper/releases/download'
 # The minisign public key recipes releases are signed with (key id D03C6EB200F583F7), apart from
 # the helper's own.
+# D-17: a key of its own for the recipes.
 RECIPES_PUBKEY='RWT3g/UAsm480Ibrzxyna96ZDXOB5syhhY8q5+bir9rhKkA02c3rqRkD'
 RECIPES_RELEASES='https://github.com/eeploi/recipes/releases/download'
 # Downloads: HTTPS only, also after a redirect; -q first, so curl reads no curlrc. Each caller adds
@@ -24,6 +26,7 @@ FETCH=(curl -q --fail --silent --show-error --location --proto '=https' --proto-
 SEMVER_RE='^(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})$'
 INSTALL_PATH=/usr/local/sbin/eeploi-helper
 
+# D-12: the dry run and its overrides come from the environment, which sudo resets.
 DRY="${EEPLOI_HELPER_DRY_RUN:-}"
 CALLER="${SUDO_USER:-}"
 
@@ -50,7 +53,7 @@ VHOST_STAND_IN=
 RECIPES_DOWNLOAD=
 RECIPES_RESULTS=
 MINISIGN=minisign
-# Every signature check: -H accepts only a prehashed (ED) signature, a legacy (Ed) one is refused.
+# D-13: every signature check: -H accepts only a prehashed (ED) signature, a legacy (Ed) one is refused.
 VERIFY=(-V -H -q)
 if [ -n "$DRY" ]; then
   MINISIGN="${EEPLOI_HELPER_MINISIGN:-$MINISIGN}"
@@ -95,6 +98,7 @@ put() {
 
 # closed <-d|-f> <path>: a folder or regular file (no link), owned by the user running the helper
 # (root through sudo) and not writable by group or others.
+# D-4: root reads and runs only files root alone can change.
 closed() {
   if [ "$1" = -d ]; then [ -d "$2" ]; else [ -f "$2" ]; fi && [[ ! -L $2 && -O $2 ]] && [ -z "$(find "$2" -maxdepth 0 \( -perm -020 -o -perm -002 \) 2> /dev/null)" ]
 }
@@ -112,6 +116,7 @@ if [ -e "$CONF" ] || [ -L "$CONF" ]; then
   trusted "$CONF" || fail "untrusted config: $CONF (must be a root-owned file, not writable by others)"
   conf_re="^DEPLOY_USER=($DEPLOY_USER_NAME)$"
   seen=0
+  # D-5: parsed line by line, never sourced.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     [[ $line =~ $conf_re ]] || fail "invalid line in $CONF: $line"
@@ -306,6 +311,7 @@ RESERVED_GROUPS='admin|wheel|sudo|adm|staff|shadow|disk|kmem|tty|utmp|crontab|do
 
 # site_user_name <user>: a valid name with an _ after the first letter, and not one of the system's, a
 # panel's, a powerful group or the deploy user.
+# D-24: one Linux user per site, named with an _, in no group but its own.
 site_user_name() {
   [[ $1 =~ $SITE_USER_RE ]] || fail "invalid site user: $1 (a-z, 0-9 and _, starting with a letter, at most 32)"
   nginx_user
@@ -329,6 +335,7 @@ registry_read() {
   REG_LINES=
   [ -e "$REG_FILE" ] || [ -L "$REG_FILE" ] || fail "$1 is not an eeploi site user (not in $ETC/sites)"
   trusted "$REG_FILE" || fail "untrusted site registry: $REG_FILE (must be a root-owned file, not writable by others)"
+  # D-5: parsed line by line, never sourced.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     [[ $line =~ $re ]] || fail "invalid line in $REG_FILE: $line"
@@ -555,6 +562,7 @@ RECIPE_START=stack/start.sh
 RECIPE_VALUES=stack/values.sh
 
 # A path in a recipes release: relative, no empty part, no part that starts with . (so no . or ..) or -.
+# D-21: the recipes repo checks its paths by this same rule.
 RECIPE_PART='[A-Za-z0-9_][A-Za-z0-9._-]*'
 RECIPE_PATH_RE="^$RECIPE_PART(/$RECIPE_PART)*\$"
 
@@ -564,8 +572,10 @@ RECIPE_PATH_RE="^$RECIPE_PART(/$RECIPE_PART)*\$"
 recipes_conf() {
   local file="$ETC/recipes.conf" line key value re='^(DEPLOY_USER|SSH_PORT|PHP)=(.*)$'
   R_USER='' R_PORT='' R_PHP=''
+  # D-22: a server without this file is refused.
   [ -e "$file" ] || [ -L "$file" ] || fail "no $file: this server was not built from a recipe that writes it, recipe-run refused"
   trusted "$file" || fail "untrusted values file: $file (must be a root-owned file, not writable by others)"
+  # D-20: the values come from this file on the server, never from the caller. D-5: parsed, never sourced.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     [[ $line =~ $re ]] || fail "invalid line in $file: $line"
@@ -600,6 +610,7 @@ os_target() {
   if ! file=$(readlink -f -- "$OS_RELEASE") || ! trusted "$file"; then
     fail "untrusted or missing os-release: $OS_RELEASE"
   fi
+  # D-5: parsed line by line, never sourced.
   while IFS= read -r line || [ -n "$line" ]; do
     [[ $line =~ $start_re ]] || continue
     [[ $line =~ $re && ${BASH_REMATCH[2]} == "${BASH_REMATCH[4]}" ]] || fail "cannot read os-release: $line"
@@ -636,6 +647,7 @@ recipes_state() {
   R_LAST='' R_RAN=''
   [ -e "$file" ] || [ -L "$file" ] || return 0
   trusted "$file" || fail "untrusted recipes state: $file (must be a root-owned file, not writable by others)"
+  # D-5: parsed line by line, never sourced.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     if [[ $line =~ $release_re ]]; then
@@ -744,8 +756,10 @@ recipes_runs() {
 # as it is and cut off past 1 MB while it is read (a sparse file unpacks to more than it takes up in the
 # package). Each must match its SHA-256. In the files a run uses, the only placeholders are the values
 # recipes_render fills in, and never in bash's own braces (${user}, $x{user}), which it would fill in too.
+# D-18: never unpacked as it is, each file capped while it is read.
 recipes_unpack() {
   local i p f found unread max=1048576 tar="$R_WORK/package.tar"
+  # D-20: only the values recipe-run fills in itself.
   local values_re='^\{(user|port|php|version|name)\}$'
   # shellcheck disable=SC2016 # the $ is in a regex
   local bash_re='[$A-Za-z0-9_]\{[a-z_]+\}' value_in_bash_re='[$A-Za-z0-9_]\{(user|port|php|version|name)\}'
@@ -812,6 +826,7 @@ recipes_check() {
 }
 
 # audit <text>: one line in the system log (a dry run prints it on stderr).
+# D-11: every call is logged, never what comes on stdin.
 audit() {
   if [ -n "$DRY" ]; then echo "log: eeploi-helper: $*" >&2; else logger -t eeploi-helper -- "$*" 2> /dev/null || true; fi
 }
@@ -903,6 +918,7 @@ vhost_root_conf() {
     [[ ! $line =~ $ours ]] || continue
     lines[n]=$line
     t=${line%%#*}
+    # D-9: quotes aren't parsed, so a line they could change is refused.
     if [ -n "$3" ] && [[ $t == *[\"\']* && $line == *[{}#]* ]]; then
       fail "a vhost line with a quote and a {, } or # can't be read safely, disable_symlinks can't be placed: $line"
     fi
@@ -966,6 +982,7 @@ vhost_paths() {
   while IFS= read -r line || [ -n "$line" ]; do
     t=${line%%#*}
     dq=${t//[!\"]/} sq=${t//[!\']/}
+    # D-9: a line the check could read otherwise than nginx is refused.
     if [[ $t == *[\"\']* && $line == *#* ]]; then fail "a vhost line with a quote and a # can't be read safely: $line"; fi
     if [ $((${#dq} % 2 + ${#sq} % 2)) -ne 0 ]; then fail "a vhost line with an open quote can't be read safely: $line"; fi
     if [[ $line == *#* && ! $t =~ $word_end ]]; then fail "a vhost line with a # inside a word can't be read safely: $line"; fi
@@ -978,6 +995,7 @@ vhost_paths() {
     name=${name//[\"\'\\]/}
     if [[ $arg =~ $quoted ]]; then arg=${BASH_REMATCH[1]}${BASH_REMATCH[2]}; fi
     case "$name" in
+      # D-6: what nginx reads as root is in /etc/nginx and root's alone.
       include)
         [[ $arg == /* ]] || arg="$nginx_dir/$arg"
         [[ ${arg%/*} != *[*?]* ]] || fail "a vhost include with a wildcard in its folder: $arg"
@@ -993,12 +1011,14 @@ vhost_paths() {
         [[ $arg != *[*?]* ]] || fail "a vhost $name with a wildcard: $arg"
         inside "$arg" "$nginx_dir" "vhost $name"
         closed -f "$arg" || fail "a vhost $name that is not root-owned, or open to group or others: $arg" ;;
+      # D-7: nginx's log folder is root's alone.
       access_log|error_log)
         case "$arg" in off|stderr|syslog:*|memory:*) continue ;; esac
         [[ $arg != *[*?]* ]] || fail "a vhost log with a wildcard: $arg"
         inside "$arg" "$NGINX_LOGS" "vhost log"
         [[ ! -L $arg && ( -f $arg || ! -e $arg ) ]] || fail "a vhost log that is a link or not a file: $arg" ;;
       # nginx's root process makes these folders and gives them to nginx's user, or loads code or data.
+      # D-8: refused in every vhost.
       *_temp_path|*_cache_path|js_*|perl*|xslt_*|geoip*|*lua*)
         fail "a vhost with $name, which eeploi doesn't allow: nginx's root process makes its folder or reads its code" ;;
     esac
@@ -1259,6 +1279,7 @@ db_create_sql() {
   [ -z "$DB_TCP_GRANT" ] || echo "GRANT ALL PRIVILEGES ON \`$esc\`.* TO '$3'@'127.0.0.1';"
 }
 
+# D-2: only the deploy user, through sudo.
 [ "$CALLER" = "$DEPLOY_USER" ] || fail "run through sudo as the deploy user $DEPLOY_USER"
 [ $# -ge 1 ] || fail "usage: eeploi-helper <subcommand> [arguments]"
 
@@ -1270,6 +1291,7 @@ shift
 # on stderr instead.
 [ "$command" = "version" ] || audit "$CALLER: $command $*"
 
+# D-1: a fixed list of subcommands, each with checked arguments and one fixed action.
 case "$command" in
   version)
     echo "$VERSION" ;;
@@ -1618,8 +1640,8 @@ case "$command" in
     db_name database "$2"
     db_name user "$3"
     db_login "$4"
-    # Socket login trusts every process of that Linux user: only a site user the helper made, never
-    # one that runs more than one site or a system user.
+    # D-25: socket login trusts every process of that Linux user: only a site user the helper made,
+    # never one that runs more than one site or a system user.
     [ "$DB_LOGIN" != socket ] || site_user "$3"
     cd / || fail "cannot change to /"
     db_client "$1"
@@ -1633,7 +1655,7 @@ case "$command" in
     [ "$S_user_elsewhere" = 0 ] || fail "user $3 has rights on another database, refusing"
     [ "$S_db_others" = 0 ] || fail "database $2 belongs to another user, refusing"
     [ "$S_db_exists" = 0 ] || [ "$S_granted" != 0 ] || fail "database $2 exists and is not $3's, refusing"
-    # An existing user keeps its way in: never switched between socket and password login.
+    # D-25: an existing user keeps its way in: never switched between socket and password login.
     if [ "$S_user_exists" != 0 ] && [ "$DB_LOGIN" = socket ] && [ "$S_user_socket" = 0 ]; then
       fail "user $3 exists with password login, not socket login: refusing, it is not switched"
     fi
@@ -1661,9 +1683,9 @@ case "$command" in
     [ "$S_user_exists" != 0 ] || DB_NEW_USER=1
     [ "$S_db_exists" != 0 ] || DB_NEW_DB=1
     [ "$S_granted" != 0 ] || DB_GRANT=1
-    # Password login on MySQL and MariaDB: a new user gets the same user on 127.0.0.1, with the same
-    # password and grant. Never for a user that exists: the password on stdin could be anyone's, so a
-    # 1.0.0 user stays on localhost only.
+    # D-25: password login on MySQL and MariaDB: a new user gets the same user on 127.0.0.1, with the
+    # same password and grant. Never for a user that exists: the password on stdin could be anyone's, so
+    # a 1.0.0 user stays on localhost only.
     DB_NEW_TCP_USER=
     DB_TCP_GRANT=
     if [ "$1" != pgsql ] && [ "$DB_LOGIN" = password ]; then
@@ -1698,6 +1720,7 @@ case "$command" in
 
   firewall-close-22)
     [ $# -eq 0 ] || fail "usage: firewall-close-22"
+    # D-23: only on a server eeploi created.
     trusted "$ETC/new-server" || fail "firewall-close-22 only runs on a server eeploi created ($ETC/new-server is missing or not root-owned)"
     run ufw delete allow 22/tcp ;;
 
@@ -1772,6 +1795,7 @@ case "$command" in
     # folder and changes a link itself, never where it points (-execdir, -h); a folder's files come
     # before the folder (-depth). Only folders and single-link files root or the deploy user owns, and
     # only with the kernel's hard link protection on.
+    # D-10: one walk, a link never followed, a hard-linked file left as it is.
     if [ -n "$DRY" ]; then
       echo "check: fs.protected_hardlinks is 1"
       echo "run: cd $dir"
@@ -1914,6 +1938,7 @@ case "$command" in
   self-update)
     [ $# -eq 1 ] || fail "usage: self-update <version>"
     [[ $1 =~ $SEMVER_RE ]] || fail "invalid version: $1"
+    # D-16: only a newer version.
     version_lt "$VERSION" "$1" || fail "only a newer version: $VERSION is installed, $1 is not newer"
     release_key "$PUBKEY" release PUBKEY
     url="$RELEASES/v$1/eeploi-helper"
@@ -1953,6 +1978,7 @@ case "$command" in
   recipe-run)
     [ $# -eq 2 ] || fail "usage: recipe-run <version> <provider>"
     [[ $1 =~ $SEMVER_RE ]] || fail "invalid version: $1"
+    # D-21: the recipes repo checks its provider names by this same rule.
     [[ $2 =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]] || fail "invalid provider: $2"
     release_key "$RECIPES_PUBKEY" recipes RECIPES_PUBKEY
     recipes_conf
@@ -1963,13 +1989,14 @@ case "$command" in
     recipes_lock
     recipes_state
     # A release older than the last good one here is refused; the same one may run again.
+    # D-19: never an older release.
     [ -z "$R_LAST" ] || ! version_lt "$1" "$R_LAST" || fail "recipes $R_LAST ran here, $1 is older: refused"
     R_BASE="$RECIPES_RELEASES/v$1"
     R_WORK=$(mktemp -d) || fail "cannot make a work folder"
     TMP_PATHS="$TMP_PATHS $R_WORK"
     manifest="recipes-$1-$2-$R_OS.manifest"
     package="recipes-$1.tar.gz"
-    # Nothing else is downloaded or read before the signature checks out.
+    # D-18: nothing else is downloaded or read before the signature checks out, and every size is capped.
     recipes_fetch "$manifest" 65536
     recipes_fetch "$manifest.minisig" 4096
     [ -z "$DRY" ] || echo "check: minisign ${VERIFY[*]} -P $RECIPES_PUBKEY -m $manifest -x $manifest.minisig"
