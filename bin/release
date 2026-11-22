@@ -134,4 +134,4 @@ verify -q -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
 
 say "Done"
 echo "eeploi-helper $version, $tag at $commit, SHA-256 $(sha256 eeploi-helper)."
-echo "Next: vendor it into eeploi.com (resources/helper/)."
+echo "Next: pin $version and its SHA-256 in eeploi.com."

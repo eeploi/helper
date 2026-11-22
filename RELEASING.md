@@ -33,7 +33,7 @@ For the owner. Signing always happens on your own machine, never in CI.
    Tags and releases never change (D-26 in `DECISIONS.md`): when the tag or a release for this version already exists, the checks stop and ask for a new version. A release that stops after its tag went up needs a new version too.
 
    `bin/release --check` runs only the checks: no key, no signing, nothing published.
-4. Vendor the release into eeploi.com (`resources/helper/`); its pinned SHA-256 follows the file.
+4. Pin the new version and its SHA-256 in eeploi.com.
 5. Check on a test server: `sudo eeploi-helper self-update <version>`, then `sudo eeploi-helper version`. A server already on the same version reinstalls instead: `self-update` only takes a newer one.
 
 ## A new key
