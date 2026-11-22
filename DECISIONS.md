@@ -307,3 +307,52 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **What:** `bin/release` stops at its checks unless `VERSION` is a version `self-update` installs (the helper's `SEMVER_RE`) and higher than every such `v<version>` tag on GitHub, by the helper's own `version_lt`. A tag only in the local clone doesn't count. The same version stays refused (D-26).
 - **Why:** `self-update` only installs a newer version, so a fix for an older line would reach no server. As in eeploi/recipes.
 - **Where:** `bin/release`
+
+## D-36: The helper may reboot the server
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** `server-reboot` reboots the server. Like every subcommand it is for the deploy user only, through the one sudo rule (D-2), takes no arguments (D-1) and writes one line to the system log (D-11).
+- **Why:** a new server is rebooted once after its updates, before it is ready, and the server's owner must be able to reboot it without logging in.
+- **Where:** `eeploi-helper`
+
+## D-37: The reboot comes a few seconds after the answer
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** `server-reboot` starts a transient systemd timer and service, `eeploi-reboot` (`systemd-run --on-active=5 --collect`, the timer gone once it fires), and returns at once. The service runs `systemctl reboot` about 5 seconds later.
+- **Why:** the caller gets its answer before the connection drops, and a reboot that didn't happen leaves no unit behind.
+- **Where:** `eeploi-helper`
+
+## D-38: Never in the middle of a recipe-run
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** when `recipe-run`'s lock (`/var/lib/eeploi/recipes/.lock`) is there, the service takes it, exclusive, before `systemctl reboot`, and holds it until the system stops the service. A `recipe-run` that is running, or starts in those seconds, finishes first; a `server-report`, which holds the lock shared, too. Without the lock no `recipe-run` ever ran here, and the reboot doesn't wait. A lock that is not a root-owned file, not writable by others, is refused, as `server-report` refuses it.
+- **Why:** a reboot that cuts off a step leaves the server half set up. Holding the lock while the server goes down keeps a new `recipe-run` from starting then.
+- **Where:** `eeploi-helper`
+
+## D-39: What server-reboot prints
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** `<key> <value>` lines, like the probes: `reboot due <UTC time>` and `reboot-required yes|no`, from `/var/run/reboot-required`. The reboot happens either way.
+- **Why:** the caller knows when to reconnect, and the owner sees whether an update asked for the reboot. A new server is always rebooted once, whatever the file says.
+- **Where:** `eeploi-helper`
+
+## D-40: One reboot at a time
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** while `eeploi-reboot`'s timer or service is active, `server-reboot` starts nothing and prints `reboot pending <UTC time>` (`unknown` when the unit's description has no time) and `reboot-required yes|no`.
+- **Why:** a second call, from a retry or a second click, changes nothing about the reboot already on its way.
+- **Where:** `eeploi-helper`
+
+## D-41: The reboot waits 30 minutes at most
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** the service waits up to 30 minutes for `recipe-run`'s lock (`flock -w 1800`). After that it doesn't reboot, logs "server-reboot: no reboot, the recipe-run lock was not free within 1800 seconds" and fails, and the next `server-reboot` can start a new one.
+- **Why:** as long as a first boot's report window: a run that takes longer is stuck, and a reboot then would cut it off.
+- **Accepted:** when the lock stays taken longer, the server isn't rebooted. The system log says why; the caller sees it only by the uptime.
+- **Where:** `eeploi-helper`

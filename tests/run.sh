@@ -1209,6 +1209,7 @@ for as in ploi forge; do
   IN=$'0 3 * * * ploi php /home/ploi/a/artisan x\n' AS=$as refuse "crontab-remove-lines from $as" "$GATE" crontab-remove-lines example.com
   AS=$as refuse "crontab-restore from $as" "$GATE" crontab-restore example.com
   AS=$as refuse "firewall-close-22 from $as" "$GATE" firewall-close-22
+  AS=$as refuse "server-reboot from $as" "$GATE" server-reboot
 done
 printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\n' > "$WORK/etc-sites/sites/shop_other"
 AS=ploi refuse "supervisor-remove of a listed program from ploi" "$GATE" supervisor-remove eeploi-other.example-a
@@ -2649,6 +2650,46 @@ touch "$WORK/recipes-replockw/.lock"
 chmod 666 "$WORK/recipes-replockw/.lock"
 RSTATE="$WORK/recipes-replockw" report refuse "a lock it can't trust" "untrusted recipe-run lock"
 report lacks "no lock: no recipe-run ever ran" "lock: "
+
+echo "== server-reboot"
+REBOOT_RUN='run: systemd-run --quiet --unit=eeploi-reboot --description=eeploi-helper: reboot due '
+REBOOT_TIMER='--collect --on-active=5 --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no --setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin --'
+# shellcheck disable=SC2016 # the unit's shell script, as the helper passes it
+REBOOT_JOB='sh -c exec 8< "$1" && flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; systemctl reboot && exec sleep 600 sh'
+ERR_TO=/dev/null ok "no lock: schedules the reboot, then says when" "$REBOOT_TIMER systemctl reboot
+reboot due " server-reboot
+DUE_RE='^run: systemd-run --quiet --unit=eeploi-reboot --description=eeploi-helper: reboot due ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) .*'$'\n''reboot due ([^ ]+)'$'\n''reboot-required no$'
+if [[ $OUT =~ $DUE_RE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then pass; else failure "server-reboot: due in the unit and in the answer, one UTC time" "$OUT"; fi
+ok "the unit and the reboot" "$REBOOT_RUN" server-reboot
+ok "logged" "log: eeploi-helper: eeploi: server-reboot" server-reboot
+RSTATE="$WORK/recipes-replock" ok "a lock: the reboot waits for it, 30 minutes at most" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-replock/.lock 1800
+reboot due " server-reboot
+absent "a lock: not taken here, the unit takes it" "lock: "
+RSTATE="$WORK/recipes-replockw" refuse "a lock it can't trust" "untrusted recipe-run lock: $WORK/recipes-replockw/.lock" server-reboot
+nothing_ran "a lock it can't trust"
+{ cat "$WORK/system"; echo 'path /var/run/reboot-required'; } > "$WORK/system-reboot-required"
+SYS="$WORK/system-reboot-required" ok "a reboot required: says so" "reboot-required yes" server-reboot
+SYS='' ok "no reboot required: reboots all the same" "$REBOOT_TIMER systemctl reboot" server-reboot
+DESC='description eeploi-reboot.service eeploi-helper: reboot due 2026-11-22T19:00:05Z'
+printf 'active eeploi-reboot.timer\n%s\n' "$DESC" > "$WORK/system-reboot-timer"
+SYS="$WORK/system-reboot-timer" ok "pending, the timer waits: says when, starts nothing" "reboot pending 2026-11-22T19:00:05Z
+reboot-required no" server-reboot
+nothing_ran "pending, the timer waits"
+printf 'active eeploi-reboot.service\n%s\npath /var/run/reboot-required\n' "$DESC" > "$WORK/system-reboot-service"
+SYS="$WORK/system-reboot-service" ok "pending, the service waits for the lock" "reboot pending 2026-11-22T19:00:05Z
+reboot-required yes" server-reboot
+nothing_ran "pending, the service waits for the lock"
+# shellcheck disable=SC2016 # the literal $(id) is the point: it is no time
+printf 'active eeploi-reboot.timer\ndescription eeploi-reboot.service eeploi-helper: reboot due $(id)\n' > "$WORK/system-reboot-odd"
+SYS="$WORK/system-reboot-odd" ok "pending, a description it can't read: unknown" "reboot pending unknown" server-reboot
+nothing_ran "pending, a description it can't read"
+printf 'active eeploi-reboot.timer\n' > "$WORK/system-reboot-nodesc"
+SYS="$WORK/system-reboot-nodesc" ok "pending, no description: unknown" "reboot pending unknown" server-reboot
+printf '%s\n' "$DESC" > "$WORK/system-reboot-done"
+SYS="$WORK/system-reboot-done" ok "a description, no active unit: not pending" "$REBOOT_TIMER systemctl reboot" server-reboot
+refuse "an argument" "usage: server-reboot" server-reboot now
+nothing_ran "an argument"
+refuse "two arguments" "usage: server-reboot" server-reboot --at 5
 
 echo "== bin/release"
 # Tags and releases never change (D-26 in DECISIONS.md): bin/release in a copy, a repo with its own origin, stubs
