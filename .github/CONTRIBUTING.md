@@ -13,6 +13,6 @@ shellcheck eeploi-helper tests/run.sh bin/release
 bash tests/run.sh
 ```
 
-A security problem never goes in an issue or pull request. Report it privately, as [SECURITY.md](SECURITY.md) describes.
+A security problem never goes in an issue or pull request. Report it privately, as described in the [security policy](SECURITY.md).
 
 Never put server names, IP addresses or secrets in an issue or pull request.
