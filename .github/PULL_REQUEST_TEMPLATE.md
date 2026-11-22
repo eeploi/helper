@@ -1,4 +1,4 @@
-<!-- Remove these comments before publishing. A security problem never goes here: see SECURITY.md. -->
+<!-- Remove these comments before publishing. A security problem never goes here: see .github/SECURITY.md. -->
 
 ## Summary
 

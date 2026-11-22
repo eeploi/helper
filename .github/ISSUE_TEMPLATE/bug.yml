@@ -4,7 +4,7 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: A security problem never goes here. Report it privately, as SECURITY.md says.
+      value: A security problem never goes here. Report it privately, as .github/SECURITY.md says.
   - type: textarea
     id: happened
     attributes:
