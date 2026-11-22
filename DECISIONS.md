@@ -142,6 +142,7 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **Why:** while eeploi is in development, a release can be signed again with a fix and keep its version. The signature and the SHA-256 that callers pin follow the file, not the tag.
 - **Accepted:** a version number alone doesn't name one file; the signature or SHA-256 does.
 - **Where:** `bin/release`
+- **Replaced by:** D-26
 
 ## D-16: self-update installs only a newer version
 
@@ -224,3 +225,12 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **Why:** socket login trusts every process of that Linux user, so only a user that runs one site gets it. The password on stdin could be anyone's, so it never opens a way in to a user that is already there.
 - **Accepted:** a password user from 1.0.0 stays on `localhost` only.
 - **Where:** `eeploi-helper`
+
+## D-26: Version tags and releases never change
+
+- **Kind:** decision
+- **Decided:** 2026-11-17, in the repository's settings
+- **What:** a `v*` tag can't be moved or deleted (a ruleset on `refs/tags/v*`), and releases are immutable: once published, a release's files can't be replaced. A fix ships as a new version.
+- **Why:** a version names one file for good, so what a server or a caller pins can't change under it.
+- **Accepted:** `bin/release` still has the path that moves a tag and replaces the files; GitHub refuses it, and #29 takes it out.
+- **Where:** `bin/release`

@@ -87,6 +87,7 @@ ci=$(gh run list -R "$REPO" --commit "$head" --json status,conclusion --jq '.[0]
 
 tagged=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)
 # D-15: while eeploi is in development, a tag can move to a new file of the same version.
+# D-26: replaced since: GitHub refuses a moved tag and a replaced release file (#29).
 move=
 if [ -n "$tagged" ] && [ "$tagged" != "$head" ]; then move=1; fi
 
