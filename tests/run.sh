@@ -2317,30 +2317,87 @@ RRES="$WORK/results-check" ERR_TO=/dev/null recipe fails "a failed check fails t
 RRES="$WORK/results-check" recipe fails "a failed check keeps the steps' state" "write: $WORK/recipes-none/state (644)" recipe-run 0.4.0 hetzner
 
 echo "== bin/release"
-# Tags and releases never change (D-26 in DECISIONS.md): bin/release --check in a copy, a repo with its own origin, and stubs for gh, minisign and shellcheck.
-# The copy's tests/run.sh only passes, so the tests don't run again inside it. RELEASE_EXISTS: gh finds the release;
-# GH_ERROR: gh fails with that message instead of "release not found".
+# Tags and releases never change (D-26 in DECISIONS.md): bin/release in a copy, a repo with its own origin, and stubs for gh, minisign and shellcheck.
+# The copy's tests/run.sh only passes, so the tests don't run again inside it. RELEASE_EXISTS: gh finds a release
+# (draft: a draft one); GH_ERROR: gh fails with that message instead of "release not found". The stub keeps its
+# draft or release in $GH_STATE, and publishing makes the tag in $GH_ORIGIN, as GitHub does. GH_FAIL: create
+# (the draft is made, its files don't upload), extra (a third file), corrupt or badsig (what the download
+# gives), tagrace (a tag made on GitHub during the download), publish (the draft stays), late (published, then
+# an error). GH_IMMUTABLE=false: the published release is not immutable. $GH_STATE/log lists the gh calls.
 REL="$WORK/release"
-mkdir -p "$REL/stubs" "$REL/repo/bin" "$REL/repo/tests"
+mkdir -p "$REL/stubs" "$REL/repo/bin" "$REL/repo/tests" "$REL/gh"
 cat > "$REL/stubs/gh" << 'EOF'
 #!/usr/bin/env bash
+s=$GH_STATE tag=${3:-}
+echo "$*" >> "$s/log"
 case "$1 $2" in
   "run list") echo "completed success" ;;
   "release view")
-    [ -z "${RELEASE_EXISTS:-}" ] || exit 0
-    echo "${GH_ERROR:-release not found}" >&2
-    exit 1 ;;
+    if [ -n "${RELEASE_EXISTS:-}" ]; then
+      if [ "$RELEASE_EXISTS" = draft ]; then echo true; else echo false; fi
+      exit 0
+    fi
+    [ -f "$s/release" ] || { echo "${GH_ERROR:-release not found}" >&2; exit 1; }
+    read -r draft target < "$s/release"
+    case "$*" in
+      *isDraft,targetCommitish,assets*) echo "$draft $target $(ls "$s/assets" | paste -sd , -)" ;;
+      *isDraft,isImmutable*) echo "$draft ${GH_IMMUTABLE:-true}" ;;
+      *isDraft*) echo "$draft" ;;
+      *) exit 1 ;;
+    esac ;;
+  "release create")
+    shift 3
+    files=()
+    while [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; do files+=("$1"); shift; done
+    [[ " $* " == *" --draft "* ]] || exit 1
+    target=
+    while [ $# -gt 0 ]; do [ "$1" != --target ] || target=$2; shift; done
+    mkdir -p "$s/assets"
+    echo "true $target" > "$s/release"
+    [ "${GH_FAIL:-}" != create ] || exit 1
+    cp "${files[@]}" "$s/assets/"
+    [ "${GH_FAIL:-}" != extra ] || echo notes > "$s/assets/notes.txt" ;;
+  "release download")
+    dir=
+    while [ $# -gt 0 ]; do [ "$1" != -D ] || dir=$2; shift; done
+    cp "$s/assets/eeploi-helper" "$s/assets/eeploi-helper.minisig" "$dir/"
+    case "${GH_FAIL:-}" in
+      corrupt) echo changed >> "$dir/eeploi-helper" ;;
+      badsig) echo changed > "$dir/eeploi-helper.minisig" ;;
+      tagrace) read -r draft target < "$s/release"; git --git-dir="$GH_ORIGIN" update-ref "refs/tags/$tag" "$target" ;;
+    esac ;;
+  "release edit")
+    [ "$4 $5 $6 $#" = "-R eeploi/helper --draft=false 6" ] || exit 1
+    [ "${GH_FAIL:-}" != publish ] || exit 1
+    read -r draft target < "$s/release"
+    echo "false $target" > "$s/release"
+    git --git-dir="$GH_ORIGIN" update-ref "refs/tags/$tag" "$target"
+    [ "${GH_FAIL:-}" != late ] || exit 1 ;;
   *) exit 1 ;;
 esac
 EOF
-printf '#!/bin/sh\nexit 0\n' > "$REL/stubs/minisign"
-cp "$REL/stubs/minisign" "$REL/stubs/shellcheck"
+# A "signature" is the file's checksum and the trusted comment.
+cat > "$REL/stubs/minisign" << 'EOF'
+#!/usr/bin/env bash
+sign='' m='' x='' t=''
+while [ $# -gt 0 ]; do
+  case "$1" in -S) sign=1 ;; -m) m=$2; shift ;; -x) x=$2; shift ;; -t) t=$2; shift ;; esac
+  shift
+done
+x=${x:-$m.minisig}
+if [ -n "$sign" ]; then { cksum < "$m"; echo "$t"; } > "$x"; exit 0; fi
+[ "$(head -1 "$x")" = "$(cksum < "$m")" ] || { echo "Signature verification failed" >&2; exit 1; }
+echo "Trusted comment: $(sed -n 2p "$x")"
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$REL/stubs/shellcheck"
 chmod 755 "$REL/stubs"/*
+: > "$REL/key"
 cp "$ROOT/bin/release" "$REL/repo/bin/release"
 printf "VERSION='1.2.3'\n" > "$REL/repo/eeploi-helper"
 echo 'exit 0' > "$REL/repo/tests/run.sh"
 # git without the user's own config (signing, hooks), and never on the real repo (GIT_DIR from a hook, say).
-REL_ENV=(-u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+REL_ENV=(-u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+  GH_STATE="$REL/gh" GH_ORIGIN="$REL/origin.git")
 rel_git() { env "${REL_ENV[@]}" git -c user.name=Test -c user.email=test@example.com "$@"; }
 rel_git init -q --bare "$REL/origin.git"
 rel_git -C "$REL/repo" init -q -b main
@@ -2358,9 +2415,105 @@ $OUT"; fi
 }
 rel_check 0 "release: a new version passes the checks" "eeploi-helper 1.2.3 at $(rel_git -C "$REL/repo" rev-parse --short HEAD): v1.2.3 is new"
 RELEASE_EXISTS=1 rel_check 1 "release: a release of this version stops the checks" \
-  "release: eeploi/helper already has a release v1.2.3, maybe a draft: releases are immutable, release a new version"
+  "release: eeploi/helper already has a release v1.2.3: releases are immutable, release a new version"
 GH_ERROR="HTTP 502: Bad Gateway" rel_check 1 "release: a gh error is no answer" \
   "release: could not ask GitHub for a release v1.2.3: HTTP 502: Bad Gateway"
+RELEASE_EXISTS=draft rel_check 1 "release: a draft of this version stops the checks, with how to delete it" \
+  "release: eeploi/helper has a draft release v1.2.3, left by a run that stopped: check it with gh release view v1.2.3 -R eeploi/helper, delete it with gh release delete v1.2.3 -R eeploi/helper, then run this again"
+
+# All of bin/release, signing with the stub, through a terminal (it asks for the key password).
+REL_HEAD=$(rel_git -C "$REL/repo" rev-parse HEAD)
+REL_LEFT="nothing was published and v1.2.3 was not made. A draft release v1.2.3 may be left on GitHub: check it with gh release view v1.2.3 -R eeploi/helper, delete it with gh release delete v1.2.3 -R eeploi/helper, then run this again"
+# rel_reset: no draft, no release and no v1.2.3 anywhere; what deleting a draft leaves too.
+rel_reset() {
+  rm -rf "$REL/gh" "$REL/repo/eeploi-helper.minisig"
+  mkdir "$REL/gh"
+  rel_git --git-dir="$REL/origin.git" update-ref -d refs/tags/v1.2.3
+  rel_git -C "$REL/repo" update-ref -d refs/tags/v1.2.3
+}
+# rel_script: bin/release in the copy, through script for a terminal (util-linux or BSD).
+rel_script() {
+  local run=(env "${REL_ENV[@]}" PATH="$REL/stubs:$PATH" HELPER_KEY="$REL/key" timeout 20 script)
+  if script --version 2> /dev/null | grep -q util-linux; then
+    "${run[@]}" -qec "bash bin/release" /dev/null
+  else
+    "${run[@]}" -q /dev/null bash bin/release
+  fi
+}
+# rel_run <answer> <exit code> <name> <expected output>: bin/release, the answer typed at its question.
+# The input stays open until it ends: at the end of its input, BSD script types an end of file before the answer.
+rel_run() {
+  local answer=$1 code=$2 name=$3 expected=$4
+  rm -f "$REL/ended"
+  OUT=$({ printf '%s\n' "$answer"; while [ ! -e "$REL/ended" ]; do sleep 0.1; done; } \
+    | { cd "$REL/repo" && rel_script 2>&1
+      echo "$?" > "$REL/ended"; })
+  read -r CODE < "$REL/ended"
+  rm -f "$REL/repo/eeploi-helper.minisig"
+  if [ "$CODE" -eq "$code" ] && [[ $OUT == *"$expected"* ]]; then pass; else failure "$name" "exit $CODE, expected $code and: $expected
+$OUT"; fi
+}
+# rel_untagged <name>: v1.2.3 is on neither side.
+rel_untagged() {
+  check "$1: no tag on GitHub" test -z "$(rel_git --git-dir="$REL/origin.git" tag -l v1.2.3)"
+  check "$1: no tag here" test -z "$(rel_git -C "$REL/repo" tag -l v1.2.3)"
+}
+if command -v script > /dev/null && command -v timeout > /dev/null; then
+  rel_run n 1 "release: no at the question" "release: stopped, nothing changed after this point"
+  check "release: no gh release call after a no" test -z "$(grep -E '^release (create|edit)' "$REL/gh/log")"
+  rel_reset
+
+  name="release: the draft's files don't upload"
+  GH_FAIL=create rel_run y 1 "$name" "release: could not create the draft: $REL_LEFT"
+  rel_untagged "$name"
+  rel_check 1 "release: the draft left by a failed run stops the next one" "release: eeploi/helper has a draft release v1.2.3, left by a run that stopped"
+  rel_reset
+
+  name="release: a third file in the draft"
+  GH_FAIL=extra rel_run y 1 "$name" "release: the draft is not a draft on ${REL_HEAD:0:7} with only eeploi-helper and eeploi-helper.minisig (true $REL_HEAD eeploi-helper,eeploi-helper.minisig,notes.txt): $REL_LEFT"
+  rel_untagged "$name"
+  rel_reset
+
+  name="release: the draft's file is not the signed one"
+  GH_FAIL=corrupt rel_run y 1 "$name" "release: the draft's eeploi-helper is not the signed file: $REL_LEFT"
+  rel_untagged "$name"
+  check "$name: not published" test -z "$(grep '^release edit' "$REL/gh/log")"
+  rel_reset
+
+  name="release: the draft's signature doesn't verify"
+  GH_FAIL=badsig rel_run y 1 "$name" "release: the draft's signature does not verify: $REL_LEFT"
+  rel_untagged "$name"
+  check "$name: not published" test -z "$(grep '^release edit' "$REL/gh/log")"
+  rel_reset
+
+  name="release: a tag made on GitHub since the checks"
+  GH_FAIL=tagrace rel_run y 1 "$name" "release: v1.2.3 was made on GitHub since the checks: $REL_LEFT"
+  check "$name: not published" test -z "$(grep '^release edit' "$REL/gh/log")"
+  rel_reset
+
+  name="release: publishing fails"
+  GH_FAIL=publish rel_run y 1 "$name" "release: could not publish the draft: $REL_LEFT"
+  rel_untagged "$name"
+  rel_reset
+
+  GH_FAIL=late rel_run y 1 "release: an error after GitHub published it" \
+    "release: publishing v1.2.3 gave an error, and GitHub does not show it as a draft: check gh release view v1.2.3 -R eeploi/helper before anything else"
+  rel_reset
+
+  GH_IMMUTABLE=false rel_run y 1 "release: a release that is not immutable" \
+    "release: v1.2.3 is published, but not as an immutable release (false false): check the repository's settings"
+  rel_reset
+
+  name="release: a new version"
+  rel_run y 0 "$name" "eeploi-helper 1.2.3, v1.2.3 at ${REL_HEAD:0:7}, SHA-256"
+  check "$name: the draft on the checked commit" grep -qx "release create v1.2.3 eeploi-helper eeploi-helper.minisig -R eeploi/helper --draft --target $REL_HEAD --title eeploi-helper 1.2.3 --notes See CHANGELOG.md." "$REL/gh/log"
+  check "$name: published after its files were checked" test "$(sed -nE 's/^release (create|download|edit) .*/\1/p' "$REL/gh/log" | paste -sd ' ' -)" = "create download edit"
+  check "$name: the tag on GitHub, made by publishing" test "$(rel_git --git-dir="$REL/origin.git" rev-parse refs/tags/v1.2.3)" = "$REL_HEAD"
+  check "$name: the tag here too" test "$(rel_git -C "$REL/repo" rev-parse refs/tags/v1.2.3)" = "$REL_HEAD"
+  rel_reset
+else
+  echo "note: script or timeout is not installed, bin/release runs skipped (CI runs them)"
+fi
 # The tag only on GitHub: the checks fetch it.
 rel_git -C "$REL/repo" tag -a v1.2.3 -m v1.2.3
 rel_git -C "$REL/repo" push -q origin refs/tags/v1.2.3
@@ -2368,9 +2521,13 @@ rel_git -C "$REL/repo" tag -d v1.2.3 > /dev/null
 rel_check 1 "release: the tag of this version stops the checks" "release: v1.2.3 already exists: releases are immutable, release a new version"
 check "release: shellcheck on the same files as CI" test \
   "$(sed -n 's/^shellcheck \(.*\) || fail .*/\1/p' "$ROOT/bin/release")" = "$(sed -n 's/^ *run: shellcheck //p' "$ROOT/.github/workflows/ci.yml")"
-check "release: no tag moved, no release file replaced" \
-  test "$(grep -cE -e 'git push.*( -f|--force|--delete|:refs/|\+refs/)' -e 'git tag.*( -f|--force)' \
-    -e 'gh release (upload|delete|edit)' -e 'gh api' -e '--clobber' "$ROOT/bin/release")" -eq 0
+# What bin/release runs, its quoted text (the messages) left out.
+REL_CODE=$(sed 's/"[^"]*"//g' "$ROOT/bin/release")
+check "release: nothing pushed, no tag moved, no release file replaced or deleted" \
+  test "$(grep -cE -e 'git push' -e 'git tag' -e 'gh release (upload|delete)' -e 'gh api' -e '--clobber' <<< "$REL_CODE")" -eq 0
+check "release: it starts as a draft on the checked commit" grep -qE '^gh release create .* --draft --target  \\$' <<< "$REL_CODE"
+check "release: gh release edit only publishes the draft" \
+  test "$(grep -E 'gh release edit' <<< "$REL_CODE")" = 'if ! gh release edit  -R  --draft=false > /dev/null; then'
 
 echo "== system log"
 ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com

@@ -231,5 +231,5 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **Decided:** 2026-11-17, in the repository's settings
 - **What:** a `v*` tag can't be moved or deleted (a ruleset on `refs/tags/v*`), and releases are immutable: once published, a release's files can't be replaced. A fix ships as a new version.
 - **Why:** a version names one file for good, so what a server or a caller pins can't change under it.
-- **Accepted:** a version is released once. `bin/release` stops at its checks when the `v<version>` tag or a release of that version already exists (#29), and a release that stops after its tag went up needs a new version too.
+- **Accepted:** a version is released once. `bin/release` stops at its checks when the `v<version>` tag or a published release of that version already exists (#29). It makes the release as a draft with no tag, checks the draft's files and signature, and only then publishes it, which makes the tag (#31). A run that stops before publishing leaves only a draft, which can be deleted, and the version stays free. A run that stops after publishing has released the version.
 - **Where:** `bin/release`

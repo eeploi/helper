@@ -79,9 +79,13 @@ tag="v$version"
 step "checking that $tag is new"
 ! git rev-parse -q --verify "refs/tags/$tag" > /dev/null \
   || fail "$tag already exists: releases are immutable, release a new version"
-! found=$(gh release view "$tag" -R "$REPO" 2>&1) \
-  || fail "$REPO already has a release $tag, maybe a draft: releases are immutable, release a new version"
-# Only gh's "release not found" means none: any other error stops here, before the tag goes up.
+if found=$(gh release view "$tag" -R "$REPO" --json isDraft --jq .isDraft 2>&1); then
+  # A draft has no tag yet and can still go: what a run that stopped before publishing leaves.
+  [ "$found" != true ] || fail "$REPO has a draft release $tag, left by a run that stopped: check it with" \
+    "gh release view $tag -R $REPO, delete it with gh release delete $tag -R $REPO, then run this again"
+  fail "$REPO already has a release $tag: releases are immutable, release a new version"
+fi
+# Only gh's "release not found" means none: any other error stops here, before anything is published.
 [ "$found" = "release not found" ] || fail "could not ask GitHub for a release $tag: $found"
 
 step "shellcheck"
@@ -116,21 +120,46 @@ confirm "Publish eeploi-helper $version ($commit) as $REPO $tag?"
 git show "$head:eeploi-helper" > "$work/checked"
 cmp -s "$work/signed" "$work/checked" || fail "the signed eeploi-helper is not the one in $commit: nothing was published"
 cmp -s eeploi-helper "$work/signed" || fail "eeploi-helper changed since it was signed: nothing was published"
-step "pushing $tag"
-git tag -a "$tag" -m "$tag" "$head"
-# A tag that never reached GitHub doesn't stay here, or the next run would take it for a released one.
-git push -q origin "refs/tags/$tag" || { git tag -d "$tag" > /dev/null; fail "could not push $tag: nothing was published"; }
-step "creating the release"
-gh release create "$tag" eeploi-helper eeploi-helper.minisig -R "$REPO" --verify-tag \
-  --title "eeploi-helper $version" --notes "See CHANGELOG.md."
+# D-26: nothing that can't change goes up before the files are checked. The release starts as a draft,
+# with no tag; publishing it creates the tag on the checked commit. Until then a failed run leaves only
+# a draft, which can be deleted, and the version stays free.
+step "creating the release as a draft on $commit"
+left="nothing was published and $tag was not made. A draft release $tag may be left on GitHub: check it with gh release view $tag -R $REPO, delete it with gh release delete $tag -R $REPO, then run this again"
+gh release create "$tag" eeploi-helper eeploi-helper.minisig -R "$REPO" --draft --target "$head" \
+  --title "eeploi-helper $version" --notes "See CHANGELOG.md." > /dev/null || fail "could not create the draft: $left"
 
-say "Verify the published files"
-step "downloading them again"
-gh release download "$tag" -R "$REPO" -D "$work" -p eeploi-helper -p eeploi-helper.minisig
-cmp -s "$work/eeploi-helper" eeploi-helper || fail "the published eeploi-helper is not this file"
-verify -q -m "$work/eeploi-helper" -x "$work/eeploi-helper.minisig" \
-  || fail "the published signature does not verify"
-[ "$(git ls-remote origin "refs/tags/$tag^{}" | cut -f1)" = "$head" ] || fail "$tag on GitHub is not $commit"
+say "Verify the draft"
+draft=$(gh release view "$tag" -R "$REPO" --json isDraft,targetCommitish,assets \
+  --jq '"\(.isDraft) \(.targetCommitish) \([.assets[].name] | sort | join(","))"') || fail "could not read the draft: $left"
+[ "$draft" = "true $head eeploi-helper,eeploi-helper.minisig" ] \
+  || fail "the draft is not a draft on $commit with only eeploi-helper and eeploi-helper.minisig ($draft): $left"
+step "downloading its files again"
+mkdir "$work/draft"
+gh release download "$tag" -R "$REPO" -D "$work/draft" -p eeploi-helper -p eeploi-helper.minisig \
+  || fail "could not download the draft's files: $left"
+cmp -s "$work/draft/eeploi-helper" "$work/signed" || fail "the draft's eeploi-helper is not the signed file: $left"
+verify -q -m "$work/draft/eeploi-helper" -x "$work/draft/eeploi-helper.minisig" \
+  || fail "the draft's signature does not verify: $left"
+
+say "Publish"
+# A tag made on GitHub since the checks would carry the release: stop while it is a draft.
+step "checking that $tag is still new"
+remote=$(git ls-remote origin "refs/tags/$tag") || fail "could not ask GitHub for $tag: $left"
+[ -z "$remote" ] || fail "$tag was made on GitHub since the checks: $left"
+step "publishing $tag"
+if ! gh release edit "$tag" -R "$REPO" --draft=false > /dev/null; then
+  # The error can come after GitHub published it: only a release that is still a draft is unpublished.
+  [ "$(gh release view "$tag" -R "$REPO" --json isDraft --jq .isDraft 2>&1)" != true ] \
+    || fail "could not publish the draft: $left"
+  fail "publishing $tag gave an error, and GitHub does not show it as a draft: check gh release view $tag -R $REPO before anything else"
+fi
+
+say "Verify the release"
+published=$(gh release view "$tag" -R "$REPO" --json isDraft,isImmutable --jq '"\(.isDraft) \(.isImmutable)"') \
+  || fail "could not read the published release $tag"
+[ "$published" = "false true" ] || fail "$tag is published, but not as an immutable release ($published): check the repository's settings"
+git fetch -q origin "refs/tags/$tag:refs/tags/$tag" || fail "could not fetch $tag from GitHub"
+[ "$(git rev-parse "refs/tags/$tag^{commit}")" = "$head" ] || fail "$tag on GitHub is not $commit"
 
 say "Done"
 echo "eeploi-helper $version, $tag at $commit, SHA-256 $(sha256 eeploi-helper)."
