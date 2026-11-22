@@ -2745,14 +2745,22 @@ rel_check() {
   CODE=$?
   rel_expect "$@"
 }
-# rel_reset: no draft, no release and no v1.2.3 anywhere; what deleting a draft leaves too.
+# rel_reset: no draft, no release and no v* tag anywhere; what deleting a draft leaves too.
 rel_reset() {
   rm -rf "$REL/gh"
   mkdir "$REL/gh"
-  rel_git --git-dir="$REL/origin.git" update-ref -d refs/tags/v1.2.3
-  rel_git -C "$REL/repo" update-ref -d refs/tags/v1.2.3
+  rel_untag --git-dir="$REL/origin.git"
+  rel_untag -C "$REL/repo"
 }
-rel_check 0 "release: a new version passes the checks" "eeploi-helper 1.2.3 at ${REL_HEAD:0:7}: v1.2.3 is new"
+# rel_untag <git options>: no v* tag in that repo.
+rel_untag() {
+  local ref
+  for ref in $(rel_git "$@" for-each-ref --format='%(refname)' 'refs/tags/v*'); do
+    rel_git "$@" update-ref -d "$ref"
+  done
+}
+rel_check 0 "release: a new version passes the checks" \
+  "eeploi-helper 1.2.3 at ${REL_HEAD:0:7}: v1.2.3 is new and the highest, CHANGELOG.md ready"
 echo "false $REL_HEAD" > "$REL/gh/release"
 rel_check 1 "release: a release of this version stops the checks" \
   "release: eeploi/helper already has a release v1.2.3: releases are immutable, release a new version"
@@ -2780,7 +2788,7 @@ rel_swap() {
   [ "$text" != "$REL_CHANGELOG" ] || failure "rel_swap: no $from in the changelog" "$REL_CHANGELOG"
   rel_changelog "$text"
 }
-REL_NOHEADING="release: CHANGELOG.md has no heading ## 1.2.3 (without a date): move the Unreleased lines under it"
+REL_NOHEADING="release: CHANGELOG.md does not start with ## Unreleased, then ## 1.2.3 (without a date): move the Unreleased lines under it"
 rel_swap $'## 1.2.3\n\n### Added\n\n- A change.\n\n' ''
 rel_check 1 "release: no heading for this version" "$REL_NOHEADING"
 rel_swap '## 1.2.3' '## 1.2.3 (2026-11-22)'
@@ -2790,7 +2798,13 @@ rel_check 1 "release: the version's heading still unreleased" "$REL_NOHEADING"
 rel_swap '## 1.2.3' '### 1.2.3'
 rel_check 1 "release: the version at another level" "$REL_NOHEADING"
 rel_swap $'## Unreleased\n\n' ''
-rel_check 1 "release: no Unreleased heading" "release: CHANGELOG.md has no heading ## Unreleased"
+rel_check 1 "release: no Unreleased heading" "$REL_NOHEADING"
+rel_swap $'## Unreleased\n\n## 1.2.3\n' $'## 1.2.3\n\n## Unreleased\n'
+rel_check 1 "release: Unreleased below the version" "$REL_NOHEADING"
+rel_swap $'## Unreleased\n' $'## Unreleased\n\n## 1.2.2\n'
+rel_check 1 "release: another version right below Unreleased" "$REL_NOHEADING"
+rel_changelog ''
+rel_check 1 "release: an empty changelog" "$REL_NOHEADING"
 rel_swap $'## Unreleased\n' $'## Unreleased\n\n- A change for later.\n'
 rel_check 1 "release: a line under Unreleased" "release: CHANGELOG.md has lines under ## Unreleased: move them under ## 1.2.3"
 rel_swap $'## Unreleased\n' $'## Unreleased\n\n### Fixed\n'
@@ -2799,7 +2813,6 @@ rel_swap $'## Unreleased\n' $'## Unreleased\n\n\n'
 rel_check 0 "release: blank lines under Unreleased" "CHANGELOG.md ready"
 rel_changelog "$REL_CHANGELOG"
 REL_HEAD=$(rel_git -C "$REL/repo" rev-parse HEAD)
-rel_check 0 "release: the changelog ready for this version" "eeploi-helper 1.2.3 at ${REL_HEAD:0:7}: v1.2.3 is new and the highest, CHANGELOG.md ready"
 
 # All of bin/release, signing with the test key, through a terminal (it asks for the key password).
 # rel_script: bin/release in the copy, through script for a terminal (util-linux or BSD).
@@ -2899,14 +2912,15 @@ rel_tag v1.1.10
 rel_tag v9.0.0-rc1
 rel_tag vnext
 rel_check 0 "release: higher than every v* tag" "v1.2.3 is new and the highest"
+rel_tag v1.10.0
+rel_check 1 "release: lower than a v* tag, by number" "release: 1.2.3 is not higher than 1.10.0: releases only go up"
+rel_reset
+rel_tag v2.0.0
+rel_check 1 "release: lower than a v* tag, by its major" "release: 1.2.3 is not higher than 2.0.0: releases only go up"
+rel_reset
 rel_tag v01.2.3
 rel_check 1 "release: the same version under another tag" "release: 1.2.3 is not higher than 01.2.3: releases only go up"
-rel_git --git-dir="$REL/origin.git" update-ref -d refs/tags/v01.2.3
-rel_git -C "$REL/repo" update-ref -d refs/tags/v01.2.3
-rel_tag v1.10.0
-rel_check 1 "release: lower than a v* tag, by number" "release: 1.2.3 is lower than 1.10.0: releases only go up"
-rel_tag v2.0.0
-rel_check 1 "release: lower than the highest v* tag" "release: 1.2.3 is lower than 2.0.0: releases only go up"
+rel_reset
 check "release: shellcheck on the same files as CI" test \
   "$(sed -n 's/^shellcheck \(.*\) || fail .*/\1/p' "$ROOT/bin/release")" = "$(sed -n 's/^ *run: shellcheck //p' "$ROOT/.github/workflows/ci.yml")"
 # What bin/release runs, its quoted text (the messages) left out; a "$(…)" stays, it runs.
@@ -2916,6 +2930,22 @@ check "release: nothing pushed, no tag moved, no release file replaced or delete
 check "release: it starts as a draft on the checked commit" grep -qE '^gh release create .* --draft --target  \\$' <<< "$REL_CODE"
 check "release: one gh release edit, which publishes the draft" \
   test "$(grep -E 'gh release edit' <<< "$REL_CODE" | grep -cE 'gh release edit +-R +--draft=false( |$)')/$(grep -cE 'gh release edit' <<< "$REL_CODE")" = 1/1
+
+echo "== changelog"
+# On every pull request, so the shape bin/release needs never drifts (D-34): ## Unreleased first, and no date
+# or "unreleased" in a version's heading. Whether Unreleased is empty only matters at release.
+# changelog_shape <file>: passes when the file has that shape.
+changelog_shape() {
+  [ "$(awk '/^## / { print; exit }' "$1")" = "## Unreleased" ] \
+    && ! grep -qiE '^#+ .*([0-9]{4}-[0-9]{2}-[0-9]{2}|\(unreleased\))' "$1"
+}
+check "CHANGELOG.md: Unreleased first, no dates" changelog_shape "$ROOT/CHANGELOG.md"
+printf '# Changelog\n\n## 1.2.3\n\n## Unreleased\n' > "$WORK/changelog-order"
+printf '# Changelog\n\n## Unreleased\n\n## 1.2.3 (2026-11-22)\n' > "$WORK/changelog-date"
+printf '# Changelog\n\n## Unreleased\n\n## 1.2.3 (Unreleased)\n' > "$WORK/changelog-unreleased"
+for bad in order date unreleased; do
+  if changelog_shape "$WORK/changelog-$bad"; then failure "CHANGELOG.md: refused, $bad" "passed"; else pass; fi
+done
 
 echo "== system log"
 ok "logs the call" "log: eeploi-helper: eeploi: vhost-enable example.com" vhost-enable example.com

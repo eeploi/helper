@@ -296,7 +296,7 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 
 - **Kind:** decision
 - **Decided:** 2026-11-22, #35
-- **What:** `CHANGELOG.md` names each version with a heading `## <version>`, never a date or "unreleased". A release's date is GitHub's: the release and its tag. A pull request adds its line under `## Unreleased`, on top; the pull request that raises `VERSION` moves those lines under `## <VERSION>`. `bin/release` stops at its checks when that heading is missing or `## Unreleased` is missing or has lines.
+- **What:** `CHANGELOG.md` names each version with a heading `## <version>`, never a date or "unreleased". A release's date is GitHub's: the release and its tag. A pull request adds its line under `## Unreleased`, on top; the pull request that raises `VERSION` moves those lines under `## <VERSION>`. `bin/release` stops at its checks unless the first two headings are `## Unreleased` and `## <VERSION>` and nothing is under `## Unreleased`. `tests/run.sh` checks on every pull request that `## Unreleased` comes first and no heading has a date or "unreleased".
 - **Why:** a date or "unreleased" written by hand drifted from the release twice (1.1.0, 1.2.0). GitHub records when a release was published, and the tag can't move (D-26).
 - **Where:** `bin/release`
 
