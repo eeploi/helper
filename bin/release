@@ -77,7 +77,7 @@ version=$(sed -n "s/^VERSION='\(.*\)'\$/\1/p" eeploi-helper)
 tag="v$version"
 # D-26: a v* tag can't move and a release can't change, so a version is released once.
 step "checking that $tag is new"
-[ -z "$(git rev-parse -q --verify "refs/tags/$tag" || true)" ] \
+! git rev-parse -q --verify "refs/tags/$tag" > /dev/null \
   || fail "$tag already exists: releases are immutable, release a new version"
 ! gh release view "$tag" -R "$REPO" > /dev/null 2>&1 \
   || fail "$REPO already has a release $tag, maybe a draft: releases are immutable, release a new version"
