@@ -210,11 +210,83 @@ check() {
 echo "== syntax"
 check "bash -n eeploi-helper" bash -n "$HELPER"
 check "bash -n tests/run.sh" bash -n "$ROOT/tests/run.sh"
+check "bash -n tests/decisions.sh" bash -n "$ROOT/tests/decisions.sh"
 if command -v shellcheck > /dev/null; then
-  check "shellcheck" shellcheck "$HELPER" "$ROOT/tests/run.sh"
+  check "shellcheck" shellcheck "$HELPER" "$ROOT/tests/run.sh" "$ROOT/tests/decisions.sh"
 else
   echo "note: shellcheck is not installed, skipped (CI runs it)"
 fi
+
+echo "== decisions"
+check "DECISIONS.md and the D-n comments agree" bash "$ROOT/tests/decisions.sh"
+# A copy of the repo's files in $WORK/dec, each case changing one thing in it.
+dec_copy() {
+  rm -rf "$WORK/dec"
+  mkdir -p "$WORK/dec/.github"
+  cp -R "$ROOT/DECISIONS.md" "$ROOT/eeploi-helper" "$ROOT/bin" "$ROOT/tests" "$WORK/dec/"
+  cp -R "$ROOT/.github/workflows" "$WORK/dec/.github/"
+}
+# dec_edit <file> <sed script>: the file in the copy, changed (sed -i differs between macOS and GNU).
+dec_edit() { sed "$2" "$WORK/dec/$1" > "$WORK/dec.tmp" && mv "$WORK/dec.tmp" "$WORK/dec/$1"; }
+# dec_refuse <name> <line>: the check fails on the copy and prints that line.
+dec_refuse() {
+  if OUT=$(bash "$ROOT/tests/decisions.sh" "$WORK/dec" 2>&1); then
+    failure "$1" "passed, expected: $2
+$OUT"
+  elif grep -qxF -- "$2" <<< "$OUT"; then pass; else failure "$1" "not: $2
+$OUT"; fi
+}
+dec_ok() { check "$1" bash "$ROOT/tests/decisions.sh" "$WORK/dec"; }
+dec_copy
+dec_ok "decisions: the copy passes"
+# Not written out here, or this file would fail the check itself.
+unknown='D-999'
+for f in eeploi-helper bin/release tests/run.sh .github/workflows/ci.yml; do
+  dec_copy
+  echo "# $unknown: not decided" >> "$WORK/dec/$f"
+  dec_refuse "decisions: an unknown D-n in $f" "$f:$(wc -l < "$WORK/dec/$f" | tr -d ' '): D-999 is not in DECISIONS.md"
+done
+dec_copy
+echo "x=1 # $unknown: after code" >> "$WORK/dec/eeploi-helper"
+dec_refuse "decisions: an unknown D-n after code" "eeploi-helper:$(wc -l < "$WORK/dec/eeploi-helper" | tr -d ' '): D-999 is not in DECISIONS.md"
+dec_copy
+echo "# D-2 is known, D-2: so is this" >> "$WORK/dec/bin/release"
+dec_ok "decisions: a known D-n passes"
+# D-1 names a file more: without its comment it fails, with one it passes.
+dec_copy
+# shellcheck disable=SC2016 # the backticks are Markdown
+dec_edit DECISIONS.md '/^## D-1: /,/^- \*\*Where:\*\*/s/^\(- \*\*Where:\*\* .*\)$/\1, `bin\/x`/'
+echo ': nothing' > "$WORK/dec/bin/x"
+dec_refuse "decisions: a Where file without its comment" "bin/x: has no D-1 comment, which DECISIONS.md names it for"
+echo '# D-10: another entry' >> "$WORK/dec/bin/x"
+dec_refuse "decisions: D-10 is not D-1" "bin/x: has no D-1 comment, which DECISIONS.md names it for"
+echo '# D-1: named' >> "$WORK/dec/bin/x"
+dec_ok "decisions: a Where file with its comment"
+rm "$WORK/dec/bin/x"
+dec_refuse "decisions: a Where file that isn't there" "DECISIONS.md: D-1: Where names bin/x, which does not exist"
+dec_copy
+dec_edit DECISIONS.md 's/^## D-2: /## D-3: /'
+dec_refuse "decisions: a number twice" "DECISIONS.md: D-3 where D-2 comes"
+dec_copy
+dec_edit DECISIONS.md 's/^## D-3: /## D-2: /'
+dec_refuse "decisions: a number back" "DECISIONS.md: D-2 where D-3 comes"
+dec_copy
+dec_edit DECISIONS.md 's/^## D-4: /## D-6: /'
+dec_refuse "decisions: a number skipped" "DECISIONS.md: D-6 where D-4 comes"
+for heading in '## D-2 Fixed' '## D2: Fixed' '## D-2:Fixed' '##D-2: Fixed' '### D-2: Fixed' '## Notes'; do
+  dec_copy
+  dec_edit DECISIONS.md "s/^## D-2: .*/$heading/"
+  dec_refuse "decisions: heading $heading" "DECISIONS.md:$(grep -nxF -- "$heading" "$WORK/dec/DECISIONS.md" | cut -d: -f1): not a heading ## D-n: title"
+done
+dec_copy
+dec_edit DECISIONS.md 's/^## For reviewers and audits$/## For audits/'
+dec_refuse "decisions: the first heading" "DECISIONS.md:5: not ## For reviewers and audits, heading 1"
+dec_copy
+dec_edit DECISIONS.md '/^## How entries work$/d'
+dec_refuse "decisions: no second heading" "DECISIONS.md:$(grep -n '^## D-1: ' "$WORK/dec/DECISIONS.md" | cut -d: -f1): not ## How entries work, heading 2"
+dec_copy
+rm "$WORK/dec/DECISIONS.md"
+dec_refuse "decisions: no DECISIONS.md" "no DECISIONS.md"
 
 echo "== existing subcommands"
 ok "version" "1.1.0" version

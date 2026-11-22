@@ -49,6 +49,7 @@ run_tests() {
 }
 fail() { printf 'release: %s\n' "$*" >&2; exit 1; }
 # verify <minisign args...>: against minisign.pub, a prehashed (ED) signature only, as the helper checks it.
+# D-13: prehashed signatures only.
 verify() { minisign -V -H -p minisign.pub "$@"; }
 confirm() {
   local answer
@@ -85,6 +86,7 @@ ci=$(gh run list -R "$REPO" --commit "$head" --json status,conclusion --jq '.[0]
 [ "$ci" = "completed success" ] || fail "CI on $commit is not green yet (${ci:-no run})"
 
 tagged=$(git rev-parse -q --verify "refs/tags/$tag^{commit}" || true)
+# D-15: while eeploi is in development, a tag can move to a new file of the same version.
 move=
 if [ -n "$tagged" ] && [ "$tagged" != "$head" ]; then move=1; fi
 
@@ -98,6 +100,7 @@ else
 fi
 [ -z "$CHECK_ONLY" ] || exit 0
 
+# D-14: signed by a person, in their own terminal; never in CI.
 [ -t 0 ] || fail "run this in your own terminal: minisign asks for the key password"
 # The script runs from the repo root, and the shell does not expand a quoted ~.
 case "$KEY" in /*) ;; *) fail "HELPER_KEY must be an absolute path: $KEY" ;; esac

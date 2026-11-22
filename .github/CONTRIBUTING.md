@@ -9,9 +9,11 @@ Before a pull request, run:
 
 ```bash
 bash -n eeploi-helper
-shellcheck eeploi-helper tests/run.sh bin/release
+shellcheck eeploi-helper tests/run.sh tests/decisions.sh bin/release
 bash tests/run.sh
 ```
+
+A choice made on purpose goes in [DECISIONS.md](../DECISIONS.md) as a new `D-n` entry, with a `# D-n: …` comment at the line it shapes. `tests/run.sh` checks that the two agree.
 
 CI runs these on every pull request; `.github/workflows/ci.yml` lists them.
 

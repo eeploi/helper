@@ -255,7 +255,7 @@ For `recipe-run`: `EEPLOI_HELPER_OS_RELEASE` points to a test `os-release`, `EEP
 bash tests/run.sh
 ```
 
-Plain bash and `minisign`: the `recipe-run` cases sign test releases with a key pair made for the run. Runs `bash -n`, `shellcheck` when installed, and the dry-run cases. CI runs it on every push.
+Plain bash and `minisign`: the `recipe-run` cases sign test releases with a key pair made for the run. Runs `bash -n`, `shellcheck` when installed, `tests/decisions.sh` (see [Decisions](#decisions)) and the dry-run cases. CI runs it on every push.
 
 ## Security model
 
@@ -267,6 +267,10 @@ Plain bash and `minisign`: the `recipe-run` cases sign test releases with a key 
 - **Signed releases.** Every release is signed with minisign. The helper only installs a release signed with the key built into it.
 - **Signed recipes.** `recipe-run` runs only steps from a recipes release signed with the recipes key built into the helper, each file checked against the signed manifest. The values come from a root-owned file on the server, never from the caller.
 - **The signing key is offline.** It never touches GitHub or eeploi.com. A hacked eeploi.com or GitHub account still cannot ship a helper your server accepts.
+
+## Decisions
+
+[DECISIONS.md](DECISIONS.md) records what was chosen on purpose, and the risks and limits accepted with it, each as `D-n`. A line that a decision shapes says so in a comment (`# D-13: …`). Audits read it first: a finding against an entry is reported as "challenges D-n".
 
 ## Contributing
 
