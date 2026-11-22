@@ -291,3 +291,19 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **What:** a server without `recipe-run` state shows "not set up by eeploi", part 1 and the base: no checks, no probes, no install date. Nothing keeps checks and probes on a server eeploi didn't build.
 - **Why:** the report is built for servers eeploi creates. The probes read any server, so a server set up another way can be added later without redoing this.
 - **Where:** `eeploi-helper`
+
+## D-34: The changelog has no dates
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #35
+- **What:** `CHANGELOG.md` names each version with a heading `## <version>`, never a date or "unreleased". A release's date is GitHub's: the release and its tag. A pull request adds its line under `## Unreleased`, on top; the pull request that raises `VERSION` moves those lines under `## <VERSION>`. `bin/release` stops at its checks when that heading is missing or `## Unreleased` is missing or has lines.
+- **Why:** a date or "unreleased" written by hand drifted from the release twice (1.1.0, 1.2.0). GitHub records when a release was published, and the tag can't move (D-26).
+- **Where:** `bin/release`
+
+## D-35: Releases only go up
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #35
+- **What:** `bin/release` stops at its checks unless `VERSION` is higher than every `v<major>.<minor>.<patch>` tag on GitHub, each part compared as a number. The same version stays refused (D-26).
+- **Why:** `self-update` only installs a newer version, so a fix for an older line would reach no server. As in eeploi/recipes.
+- **Where:** `bin/release`

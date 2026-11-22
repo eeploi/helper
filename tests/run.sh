@@ -2719,6 +2719,8 @@ chmod 755 "$REL/stubs"/*
 cp "$ROOT/bin/release" "$REL/repo/bin/release"
 cp "$RKEY.pub" "$REL/repo/minisign.pub"
 printf "VERSION='1.2.3'\n" > "$REL/repo/eeploi-helper"
+REL_CHANGELOG=$'# Changelog\n\n## Unreleased\n\n## 1.2.3\n\n### Added\n\n- A change.\n\n## 1.2.2\n\n- An older change.\n'
+printf '%s' "$REL_CHANGELOG" > "$REL/repo/CHANGELOG.md"
 echo 'exit 0' > "$REL/repo/tests/run.sh"
 # git without the user's own config (signing, hooks), and never on the real repo (GIT_DIR from a hook, say).
 REL_ENV=(-u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -2762,6 +2764,42 @@ GH_ERROR="HTTP 502: Bad Gateway" rel_check 1 "release: a gh error is no answer" 
   "release: could not ask GitHub for a release v1.2.3: HTTP 502: Bad Gateway"
 GH_OLD=1 rel_check 1 "release: a gh without isImmutable stops the checks" \
   'release: could not ask GitHub for a release v1.2.3: Unknown JSON field: "isImmutable"'
+
+# The changelog has no dates, and the pull request that raises VERSION empties Unreleased (D-34).
+# rel_changelog <text>: CHANGELOG.md in the copy, committed and on its origin, as the checks need.
+rel_changelog() {
+  printf '%s' "$1" > "$REL/repo/CHANGELOG.md"
+  rel_git -C "$REL/repo" commit -qam changelog
+  rel_git -C "$REL/repo" push -q origin main
+}
+# rel_swap <from> <to>: the good changelog with its first <from> replaced by <to>. bash 3.2 reads an unquoted
+# pattern's # as an anchor, and keeps the quotes of a quoted replacement.
+rel_swap() {
+  local from=$1 to=$2 text
+  text=${REL_CHANGELOG/"$from"/$to}
+  [ "$text" != "$REL_CHANGELOG" ] || failure "rel_swap: no $from in the changelog" "$REL_CHANGELOG"
+  rel_changelog "$text"
+}
+REL_NOHEADING="release: CHANGELOG.md has no heading ## 1.2.3 (without a date): move the Unreleased lines under it"
+rel_swap $'## 1.2.3\n\n### Added\n\n- A change.\n\n' ''
+rel_check 1 "release: no heading for this version" "$REL_NOHEADING"
+rel_swap '## 1.2.3' '## 1.2.3 (2026-11-22)'
+rel_check 1 "release: a date on the version's heading" "$REL_NOHEADING"
+rel_swap '## 1.2.3' '## 1.2.3 (unreleased)'
+rel_check 1 "release: the version's heading still unreleased" "$REL_NOHEADING"
+rel_swap '## 1.2.3' '### 1.2.3'
+rel_check 1 "release: the version at another level" "$REL_NOHEADING"
+rel_swap $'## Unreleased\n\n' ''
+rel_check 1 "release: no Unreleased heading" "release: CHANGELOG.md has no heading ## Unreleased"
+rel_swap $'## Unreleased\n' $'## Unreleased\n\n- A change for later.\n'
+rel_check 1 "release: a line under Unreleased" "release: CHANGELOG.md has lines under ## Unreleased: move them under ## 1.2.3"
+rel_swap $'## Unreleased\n' $'## Unreleased\n\n### Fixed\n'
+rel_check 1 "release: a heading under Unreleased" "release: CHANGELOG.md has lines under ## Unreleased"
+rel_swap $'## Unreleased\n' $'## Unreleased\n\n\n'
+rel_check 0 "release: blank lines under Unreleased" "CHANGELOG.md ready"
+rel_changelog "$REL_CHANGELOG"
+REL_HEAD=$(rel_git -C "$REL/repo" rev-parse HEAD)
+rel_check 0 "release: the changelog ready for this version" "eeploi-helper 1.2.3 at ${REL_HEAD:0:7}: v1.2.3 is new and the highest, CHANGELOG.md ready"
 
 # All of bin/release, signing with the test key, through a terminal (it asks for the key password).
 # rel_script: bin/release in the copy, through script for a terminal (util-linux or BSD).
@@ -2853,6 +2891,22 @@ rel_git -C "$REL/repo" tag -a v1.2.3 -m v1.2.3
 rel_git -C "$REL/repo" push -q origin refs/tags/v1.2.3
 rel_git -C "$REL/repo" tag -d v1.2.3 > /dev/null
 rel_check 1 "release: the tag of this version stops the checks" "release: v1.2.3 already exists: releases are immutable, release a new version"
+rel_reset
+# Releases only go up, each part compared as a number (D-35). rel_tag <tag>: a tag only on GitHub, as above.
+rel_tag() { rel_git --git-dir="$REL/origin.git" update-ref "refs/tags/$1" "$REL_HEAD"; }
+rel_tag v1.2.2
+rel_tag v1.1.10
+rel_tag v9.0.0-rc1
+rel_tag vnext
+rel_check 0 "release: higher than every v* tag" "v1.2.3 is new and the highest"
+rel_tag v01.2.3
+rel_check 1 "release: the same version under another tag" "release: 1.2.3 is not higher than 01.2.3: releases only go up"
+rel_git --git-dir="$REL/origin.git" update-ref -d refs/tags/v01.2.3
+rel_git -C "$REL/repo" update-ref -d refs/tags/v01.2.3
+rel_tag v1.10.0
+rel_check 1 "release: lower than a v* tag, by number" "release: 1.2.3 is lower than 1.10.0: releases only go up"
+rel_tag v2.0.0
+rel_check 1 "release: lower than the highest v* tag" "release: 1.2.3 is lower than 2.0.0: releases only go up"
 check "release: shellcheck on the same files as CI" test \
   "$(sed -n 's/^shellcheck \(.*\) || fail .*/\1/p' "$ROOT/bin/release")" = "$(sed -n 's/^ *run: shellcheck //p' "$ROOT/.github/workflows/ci.yml")"
 # What bin/release runs, its quoted text (the messages) left out; a "$(…)" stays, it runs.

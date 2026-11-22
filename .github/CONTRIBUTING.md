@@ -3,7 +3,7 @@
 Contributions are welcome, under the [MIT license](../LICENSE.md) like the rest of the repo. No CLA.
 
 1. Open an issue first, and say what you want to change and why.
-2. Then send a small pull request with that one change.
+2. Then send a small pull request with that one change. A change to what the helper does adds its line under `## Unreleased` in [CHANGELOG.md](../CHANGELOG.md), with no date.
 
 Before a pull request, run:
 

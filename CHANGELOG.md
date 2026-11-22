@@ -1,8 +1,12 @@
 # Changelog
 
-All notable changes to eeploi-helper. Versions follow [semver](https://semver.org): a removed or changed subcommand is a major release, a new subcommand a minor one. While eeploi is in development, every change ships as a patch release (since 2026-11-13).
+All notable changes to eeploi-helper. Versions follow [semver](https://semver.org): a removed or changed subcommand is a major release, a new subcommand a minor one. While eeploi is in development, every change ships as a patch release (since 1.0.1).
 
-## 1.2.0 (unreleased)
+A pull request adds its line under Unreleased. The pull request that raises `VERSION` moves those lines under a heading `## <version>`: `### Breaking` first when a caller must change, then `### Added`, `### Changed` and `### Fixed`. No dates: a release's date is its GitHub release and tag (D-34 in `DECISIONS.md`).
+
+## Unreleased
+
+## 1.2.0
 
 Shows how a server eeploi built is set up, in one call.
 
@@ -11,7 +15,7 @@ Shows how a server eeploi built is set up, in one call.
 - Changed: when another `recipe-run` holds the lock, the refusal says a `server-report` may hold it too.
 - Changed: `recipe-run`'s state holds when the first good run here was (`first`) and when the last one ran (`ran`). A state written by 1.1.0 still reads, and never gets a `first`.
 
-## 1.1.0 (2026-11-21)
+## 1.1.0
 
 Updates a server eeploi built to a newer signed recipes release.
 
@@ -19,7 +23,7 @@ Updates a server eeploi built to a newer signed recipes release.
 - Changed: tests need `minisign`.
 - Changed: `self-update` and `recipe-run` accept only prehashed minisign signatures (`minisign -V -H`); a legacy signature is refused.
 
-## 1.0.4 (2026-11-17)
+## 1.0.4
 
 Closes two gaps in 1.0.3's checks, checks the files nginx reads as root, and lets take-overs through that 1.0.3 refused.
 
@@ -30,7 +34,7 @@ Closes two gaps in 1.0.3's checks, checks the files nginx reads as root, and let
 - Changed: an include, log or file path in quotes (`include "snippets/fastcgi-php.conf";`) is read without them and checked like any other. A word with more than one pair of quotes is still refused.
 - Changed: `releases-own` hands back only folders and files with one link, in one walk over the releases, from inside each folder.
 
-## 1.0.3 (2026-11-17)
+## 1.0.3
 
 Root runs and reads as code only files that root alone can change.
 
@@ -38,7 +42,7 @@ Root runs and reads as code only files that root alone can change.
 - Changed: `vhost-set-root` and `vhost-set-socket` check what the vhost includes and logs to. Every `include`, also in included files, must be in `/etc/nginx`, every `access_log` and `error_log` in `/var/log/nginx`. Each included file and every folder up to there must be root-owned and not writable by group or others, and a log may not be a link. A line nginx could read differently than the helper (a quote with a `#`, an open quote, a `#` inside a word) is refused. Otherwise the vhost is refused and stays as it was.
 - New subcommand `releases-own <user>`: gives what root or the deploy user owns in the site's `releases` folder back to the site user, with `chown -R -P -h --from=<owner>` from inside the site's folder, only with `fs.protected_hardlinks` on. eeploi.com calls it instead of asking for a `chown` as root.
 
-## 1.0.2 (2026-11-15)
+## 1.0.2
 
 Every site runs as its own Linux user, a site user, with its home in `/srv/eeploi/<user>`. A patch release while eeploi is in development, though subcommands change shape.
 
@@ -58,25 +62,25 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 - Changed: `db-create` with socket login needs a site user; the separate check of the Linux user (`id -u`) is gone, and so is the `uid=` line of the dry-run database state.
 - Removed: `acl-nginx`. `site-user-create` sets the ACL per site.
 
-## 1.0.1 (2026-11-13)
+## 1.0.1
 
 - `db-create` with password login on MySQL and MariaDB makes the user on `127.0.0.1` too, with the same password and grant, so Laravel's default `DB_HOST=127.0.0.1` works without a name lookup. Only for a new user: a user that exists, such as one from 1.0.0, stays on `localhost` only, since the password on stdin could be anyone's. Socket login and Postgres are unchanged. Refused: a user on `127.0.0.1` for socket login, and one on `127.0.0.1` without one on `localhost`.
 
-## 1.0.0, files replaced (2026-11-10)
+## 1.0.0, files replaced
 
 - New subcommand `db-create <engine> <name> <user> <socket|password>` (a minor release): creates a MySQL, MariaDB or Postgres database and its user for a new site. The user gets that one database and no global rights. Two ways in, named by the required fourth argument:
   - `socket`: socket login as the Unix user of the same name, with no password at all (Postgres peer auth, MariaDB `unix_socket`, MySQL `auth_socket`). Stdin is never read. The Unix user must exist and be a site's own user. On MySQL the `auth_socket` plugin is installed when it is not active.
   - `password`: password login, with the password on stdin. A missing or invalid password, or a terminal, is refused; it never falls back to socket login. The password is never printed, logged or on a command line.
   - Names are `a-z`, `0-9` and `_` only, so a site user like `shop_example` needs no quoting.
   - Both already there with the same way in is a no-op. A database or user someone else has, and a user with the other way in, are refused. The system log gets the engine, name, user and login, never the password.
-- Fixes from the second helper audit (2026-11-10):
+- Fixes from the second helper audit:
   - `env-install` only copies a file named `.env`, and `storage-copy` only a folder named `storage`: the source must end in `/.env` or `/storage`, also after resolving links. Anything else is refused.
   - `self-update` only installs a strictly newer version. The same version is now refused too.
   - `ssl-csr` makes the private key with mode `600` from the start.
   - The helper sets `HOME=/root` and `LC_ALL=C` itself, and `self-update` runs `curl -q`, so no curlrc is read.
 - Every call except `version` goes to the system log (`logger -t eeploi-helper`): the caller, the subcommand and its arguments, never stdin. A dry run prints the line on stderr. Not yet: the timeline event id.
 
-## 1.0.0 (2026-11-08)
+## 1.0.0
 
 First public release. The helper moves out of eeploi.com into this repo.
 
@@ -101,7 +105,7 @@ Changes from the helper built into eeploi.com:
 - One file for every server. The deploy user comes from `/etc/eeploi/helper.conf`, not from a build step.
 - `firewall-close-22` is always in the file, but only runs when `/etc/eeploi/new-server` exists.
 
-Security fixes before release (server-access audit, 2026-11-09):
+Security fixes before release (server-access audit):
 
 - `vhost-write <domain> <socket>` builds the vhost itself; it no longer takes a config on stdin. Logs go to `/var/log/nginx`.
 - `vhost-backup` and `vhost-restore` replace `vhost-read`, `ssl-read` and `ssl-include-write` for take-overs. The backup stays root-only.
