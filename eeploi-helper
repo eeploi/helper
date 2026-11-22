@@ -8,7 +8,7 @@ umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export TMPDIR=/tmp HOME=/root LC_ALL=C
 
-VERSION='1.1.0'
+VERSION='1.2.0'
 
 # The minisign public key releases are signed with (minisign.pub, key id A2C97024AB6219A8).
 PUBKEY='RWSoGWKrJHDJoknVaEcX3dz5ew9zWZPqae2Qn2d3M+SGxNBT99NZGiLA'
@@ -41,7 +41,9 @@ CALLER="${SUDO_USER:-}"
 # EEPLOI_HELPER_RECIPES_STATE for recipe-run's state folder, EEPLOI_HELPER_RECIPES_DOWNLOAD for the
 # recipes release (a folder with its files) and EEPLOI_HELPER_RECIPES_RESULTS for which steps and
 # checks fail ("fail <path>" lines) and whether another run holds the lock ("locked"),
-# EEPLOI_HELPER_MINISIGN for a minisign outside PATH.
+# EEPLOI_HELPER_MINISIGN for a minisign outside PATH, EEPLOI_HELPER_NOW for the time recipe-run writes
+# in its state, EEPLOI_HELPER_REPORT for what server-report reads from the system (a folder with the
+# files kernel, uptime, failed and ss, the output of uname -r, /proc/uptime, systemctl --failed and ss).
 ETC=/etc/eeploi
 NGINX_CONF=/etc/nginx/nginx.conf
 NGINX_LOGS=/var/log/nginx
@@ -53,12 +55,16 @@ VHOST_STAND_IN=
 RECIPES_DOWNLOAD=
 RECIPES_RESULTS=
 MINISIGN=minisign
+NOW=
+REPORT_STAND_IN=
 # D-13: every signature check: -H accepts only a prehashed (ED) signature, a legacy (Ed) one is refused.
 VERIFY=(-V -H -q)
 if [ -n "$DRY" ]; then
   MINISIGN="${EEPLOI_HELPER_MINISIGN:-$MINISIGN}"
   RECIPES_DOWNLOAD="${EEPLOI_HELPER_RECIPES_DOWNLOAD:-}"
   RECIPES_RESULTS="${EEPLOI_HELPER_RECIPES_RESULTS:-}"
+  NOW="${EEPLOI_HELPER_NOW:-}"
+  REPORT_STAND_IN="${EEPLOI_HELPER_REPORT:-}"
   ETC="${EEPLOI_HELPER_ETC:-$ETC}"
   NGINX_CONF="${EEPLOI_HELPER_NGINX_CONF:-$NGINX_CONF}"
   NGINX_LOGS="${EEPLOI_HELPER_NGINX_LOGS:-$NGINX_LOGS}"
@@ -633,18 +639,28 @@ recipes_lock() {
   root_dir "$RECIPES_STATE"
   if [ -n "$DRY" ]; then
     echo "lock: $RECIPES_STATE/.lock"
-    ! dry_result locked || fail "another recipe-run is running"
+    ! dry_result locked || fail "another recipe-run is running, or a server-report: try again when it is done"
     return 0
   fi
   exec 8> "$RECIPES_STATE/.lock" || fail "cannot open $RECIPES_STATE/.lock"
-  flock -n 8 || fail "another recipe-run is running"
+  # server-report holds the lock shared while it runs.
+  flock -n 8 || fail "another recipe-run is running, or a server-report: try again when it is done"
 }
 
+# A time in the state: UTC, to the second.
+DATE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+
+# now_utc: the time now, as the state writes it. A dry run takes EEPLOI_HELPER_NOW when set.
+now_utc() { if [ -n "$NOW" ]; then echo "$NOW"; else date -u +%Y-%m-%dT%H:%M:%SZ; fi; }
+
 # recipes_state: the last good run from $RECIPES_STATE/state, root's, parsed line by line: R_LAST, its
-# release (empty before the first run), and R_RAN, a "<sha256> <path>" line per step it left in place.
+# release (empty before the first run), R_RAN, a "<sha256> <path>" line per step it left in place,
+# R_WHEN, when it ran, and R_FIRST, when the first good run here was (both empty in a state written
+# before the helper wrote them).
 recipes_state() {
   local file="$RECIPES_STATE/state" line release_re='^release (.*)$' step_re='^step ([0-9a-f]{64}) (.*)$'
-  R_LAST='' R_RAN=''
+  local date_re='^(first|ran) (.*)$'
+  R_LAST='' R_RAN='' R_WHEN='' R_FIRST=''
   [ -e "$file" ] || [ -L "$file" ] || return 0
   trusted "$file" || fail "untrusted recipes state: $file (must be a root-owned file, not writable by others)"
   # D-5: parsed line by line, never sourced.
@@ -656,6 +672,14 @@ recipes_state() {
       [[ $R_LAST =~ $SEMVER_RE ]] || fail "invalid line in $file: $line"
     elif [[ $line =~ $step_re && ${BASH_REMATCH[2]} =~ $RECIPE_PATH_RE ]]; then
       R_RAN="$R_RAN${line#step }"$'\n'
+    elif [[ $line =~ $date_re && ${BASH_REMATCH[2]} =~ $DATE_RE ]]; then
+      if [ "${line%% *}" = first ]; then
+        [ -z "$R_FIRST" ] || fail "first is set twice in $file"
+        R_FIRST=${line#first }
+      else
+        [ -z "$R_WHEN" ] || fail "ran is set twice in $file"
+        R_WHEN=${line#ran }
+      fi
     else
       fail "invalid line in $file: $line"
     fi
@@ -663,10 +687,16 @@ recipes_state() {
   [ -n "$R_LAST" ] || fail "no release in $file"
 }
 
-# recipes_state_write <version> <lines>: the state after a good run, the release and a step line per
-# "<sha256> <path>" line.
+# recipes_state_write <version> <lines>: the state after a good run: when the first good run here was,
+# when this one ran, the release and a step line per "<sha256> <path>" line. The first run's time is
+# kept from the state before; a state from before the times has none, and gets none.
+# D-29: the first good run's time is never guessed.
 recipes_state_write() {
-  local line text="# Written by eeploi-helper (recipe-run): the last good run here. Do not edit."$'\n'"release $1"$'\n'
+  local line now first='' text="# Written by eeploi-helper (recipe-run): the last good run here. Do not edit."$'\n'
+  now=$(now_utc)
+  if [ -z "$R_LAST" ]; then first=$now; else first=$R_FIRST; fi
+  [ -z "$first" ] || text="${text}first $first"$'\n'
+  text="${text}ran $now"$'\n'"release $1"$'\n'
   while IFS= read -r line; do
     [ -z "$line" ] || text="${text}step $line"$'\n'
   done <<< "$2"
@@ -807,12 +837,27 @@ recipes_exec() {
     if dry_result "fail $1"; then return 1; fi
     return 0
   fi
-  ( cd / && exec env -i PATH="$PATH" HOME=/root LC_ALL=C TMPDIR=/tmp /bin/bash "$2" ) < /dev/null >&2 8>&-
+  clean_bash "$2" >&2
+}
+
+# clean_bash <script> [<command>...]: bash runs the script as root, from /, with a clean environment
+# and no stdin, behind the command when one is given (server-report's timeout). recipe-run's steps
+# and checks and server-report's checks and probes all run this way.
+clean_bash() {
+  local script=$1
+  shift
+  ( cd / && exec env -i PATH="$PATH" HOME=/root LC_ALL=C TMPDIR=/tmp "$@" /bin/bash "$script" ) < /dev/null 8>&-
 }
 
 # recipes_check <check>: run one check under set -e, after the values.
 recipes_check() {
-  local script="$R_WORK/check.sh"
+  recipes_check_script "$1"
+  recipes_exec "$1" "$R_WORK/check.sh"
+}
+
+# recipes_check_script <check>: the script a check runs as, in $R_WORK/check.sh: the values, then the
+# check under set -e. server-report runs the kept checks from this same script.
+recipes_check_script() {
   {
     echo '#!/usr/bin/env bash'
     recipes_render "$RECIPE_VALUES"
@@ -821,8 +866,412 @@ recipes_check() {
     # shellcheck disable=SC2016 # for the check's shell
     echo 'trap '\''echo "  $BASH_COMMAND" >&2'\'' ERR'
     recipes_render "$1"
-  } > "$script"
-  recipes_exec "$1" "$script"
+  } > "$R_WORK/check.sh"
+}
+
+# recipes_is_probe <i>: entry i is a probe, a file NN-name.probe.sh (eeploi/recipes PROBES.md).
+recipes_is_probe() { [[ ${R_KIND[$1]} == file && ${R_PATH[$1]} == *.probe.sh ]]; }
+
+# The checks and probes of the last good run, kept for server-report: $RECIPES_STATE/kept, with a
+# list file ("release <version>", "target <provider> <os>", then "<sha256> <path>" per file in manifest
+# order) and the files.
+KEPT="$RECIPES_STATE/kept"
+
+# recipes_is_kept <i>: entry i is kept for server-report: values.sh, a check or a probe.
+recipes_is_kept() { [ "${R_PATH[$1]}" = "$RECIPE_VALUES" ] || recipes_is_check "$1" || recipes_is_probe "$1"; }
+
+# recipes_keep <version> <target>: after a good run, the release's checks, probes and values.sh, as
+# verified against the signed manifest, in place of the ones kept before. Built beside the old set,
+# then swapped in, so a set is whole or not there; server-report waits for the lock recipe-run holds.
+# Runs after the state is written. False when it can't: the set before stays, and the run goes on.
+# D-27: only what a verified release holds, kept by root after a good run.
+recipes_keep() {
+  local i p new list="# Written by eeploi-helper (recipe-run): the checks and probes of the last good run. Do not edit."$'\n'"release $1"$'\n'"target $2"$'\n'
+  if [ -n "$DRY" ]; then
+    for ((i = 0; i < R_N; i++)); do
+      ! recipes_is_kept "$i" || echo "keep: $KEPT/${R_PATH[i]}"
+    done
+    echo "write: $KEPT/list (644)"
+    ! dry_result "fail keep" || return 1
+    return 0
+  fi
+  new=$(mktemp -d "$RECIPES_STATE/kept.new.XXXXXX") || return 1
+  TMP_PATHS="$TMP_PATHS $new"
+  for ((i = 0; i < R_N; i++)); do
+    recipes_is_kept "$i" || continue
+    p=${R_PATH[i]}
+    if [[ $p == */* ]]; then mkdir -p -- "$new/${p%/*}" || return 1; fi
+    cp -- "$R_FILES/$p" "$new/$p" || return 1
+    list="$list${R_SHA[i]} $p"$'\n'
+  done
+  printf '%s' "$list" > "$new/list" && chown -R root:root "$new" && chmod -R u=rwX,go=rX "$new" || return 1
+  rm -rf -- "$KEPT.old" || return 1
+  if [ -e "$KEPT" ] || [ -L "$KEPT" ]; then mv -f -- "$KEPT" "$KEPT.old" || return 1; fi
+  if ! mv -- "$new" "$KEPT"; then
+    [ ! -e "$KEPT.old" ] || mv -f -- "$KEPT.old" "$KEPT" || true
+    return 1
+  fi
+  rm -rf -- "$KEPT.old" || true
+}
+
+# server-report: what eeploi did, whether every kept check passes, and how the server is set up now.
+# It reads, never writes (but a work folder in /tmp, removed on exit), needs no network, restarts
+# nothing.
+# D-28: read-only, only the checks and probes recipe-run kept, each checked again before it runs.
+
+# A probe's line: a key, a space, a printable value with no space at its end (PROBES.md).
+# D-30: a probe's lines only by this pattern, never its stderr; a failed probe shows no lines.
+PROBE_LINE_RE='^[a-z][a-z0-9_-]* [[:print:]]*[^[:space:]]$'
+# The most a check or probe may print, and the most lines shown of each.
+REPORT_BYTES=65536
+REPORT_LINES=500
+NOTE_LINES=20
+# A check or probe that hangs is stopped: timeout is in coreutils on every Linux. A dry run on a
+# system without it runs without.
+TIMEOUT=(timeout -k 5 60)
+[ -z "$DRY" ] || command -v timeout > /dev/null || TIMEOUT=()
+
+# report_lock: wait for a recipe-run that is running here (a shared lock on its .lock), so the report
+# never reads a state or kept set halfway through. Without a .lock, no recipe-run ever ran here.
+report_lock() {
+  local lock="$RECIPES_STATE/.lock"
+  [ -e "$lock" ] || [ -L "$lock" ] || return 0
+  trusted "$lock" || fail "untrusted recipe-run lock: $lock (must be a root-owned file, not writable by others)"
+  if [ -n "$DRY" ]; then
+    echo "lock: shared $lock" >&2
+    ! dry_result locked || fail "a recipe-run is running here, try again when it is done"
+    return 0
+  fi
+  command -v flock > /dev/null || fail "flock not found"
+  exec 8< "$lock" || fail "cannot open $lock"
+  flock -s -w 120 8 || fail "a recipe-run is running here, try again when it is done"
+}
+
+# report_kept: the kept set, checked: K_RELEASE, K_TARGET ("<provider> <os>") and K_PATH, its files in
+# order. Every folder and file root's and closed, every path by the manifest's rule and once, every
+# file's SHA-256 the one in the list. Nothing kept: K_RELEASE is empty. A set that fails any of this is
+# not used: K_ERROR says why, and K_RELEASE, K_TARGET and K_PATH are empty.
+report_kept() {
+  K_ERROR=''
+  report_kept_read || K_RELEASE='' K_TARGET='' K_PATH=()
+}
+
+# report_kept_read: report_kept's reading; false, with K_ERROR, on a set it can't use.
+report_kept_read() {
+  local line n=0 i p sha sub rest list="$KEPT/list" sha_re='^([0-9a-f]{64}) (.+)$' release_re='^release (.*)$'
+  local target_re='^target ([a-z0-9-]{1,32} [a-z0-9][a-z0-9.-]{0,32})$'
+  K_RELEASE='' K_TARGET='' K_PATH=()
+  [ -e "$KEPT" ] || [ -L "$KEPT" ] || return 0
+  if ! closed -d "$RECIPES_STATE" || ! closed -d "$KEPT" || ! closed -f "$list"; then
+    K_ERROR="untrusted kept set: $KEPT (must be root-owned folders and files, not writable by others)"
+    return 1
+  fi
+  # D-5: parsed line by line, never sourced.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    if [[ $line =~ $release_re ]]; then
+      [ -z "$K_RELEASE" ] || { K_ERROR="release is set twice in $list"; return 1; }
+      K_RELEASE=${BASH_REMATCH[1]}
+      [[ $K_RELEASE =~ $SEMVER_RE ]] || { K_ERROR="invalid release line in $list"; return 1; }
+      continue
+    elif [[ $line =~ $target_re ]]; then
+      [ -z "$K_TARGET" ] || { K_ERROR="target is set twice in $list"; return 1; }
+      K_TARGET=${BASH_REMATCH[1]}
+      continue
+    fi
+    [[ $line =~ $sha_re ]] || { K_ERROR="invalid line in $list"; return 1; }
+    sha=${BASH_REMATCH[1]} p=${BASH_REMATCH[2]}
+    [[ $p =~ $RECIPE_PATH_RE ]] || { K_ERROR="invalid path in $list"; return 1; }
+    [ $n -lt 200 ] || { K_ERROR="more than 200 files in $list"; return 1; }
+    for ((i = 0; i < n; i++)); do
+      [ "${K_PATH[i]}" != "$p" ] || { K_ERROR="a path twice in $list: $p"; return 1; }
+    done
+    # Every folder on the way, then the file.
+    sub=$KEPT rest=$p
+    while [[ $rest == */* ]]; do
+      sub="$sub/${rest%%/*}" rest=${rest#*/}
+      closed -d "$sub" || { K_ERROR="untrusted kept folder: $sub"; return 1; }
+    done
+    closed -f "$KEPT/$p" || { K_ERROR="untrusted kept file: $KEPT/$p"; return 1; }
+    [ "$(sha256sum < "$KEPT/$p" | cut -d' ' -f1)" = "$sha" ] || { K_ERROR="changed kept file: $KEPT/$p (its SHA-256 is not the list's)"; return 1; }
+    K_PATH[n]=$p
+    n=$((n + 1))
+  done < "$list"
+  [ -n "$K_RELEASE" ] || { K_ERROR="no release in $list"; return 1; }
+  [ -n "$K_TARGET" ] || { K_ERROR="no target in $list"; return 1; }
+  # A check runs after the values.
+  for ((i = 0; i < n; i++)); do
+    [ "${K_PATH[i]}" != "$RECIPE_VALUES" ] || return 0
+  done
+  for ((i = 0; i < n; i++)); do
+    [[ ${K_PATH[i]} != *.check.sh ]] || { K_ERROR="no $RECIPE_VALUES in $list"; return 1; }
+  done
+}
+
+# report_exec <script> <keep|drop>: run a kept check or probe as recipe-run runs a check: as root, from /,
+# with a clean environment and no stdin, stopped when it hangs. Its stdout, capped, NUL bytes made
+# unprintable; its stderr too with keep (a check's notes), never with drop (a probe's).
+report_exec() {
+  (
+    if [ "$2" = keep ]; then exec 2>&1; else exec 2> /dev/null; fi
+    clean_bash "$1" ${TIMEOUT[@]+"${TIMEOUT[@]}"}
+  ) | head -c $((REPORT_BYTES + 1)) | tr '\000' '\001'
+}
+
+# report_notes: what a check printed, as notes: printable lines only, tabs as spaces, trimmed, at most
+# NOTE_LINES of 300 characters.
+report_notes() {
+  tr '\t' ' ' | tr -cd '\n\40-\176' | sed 's/^ *//; s/ *$//; /^$/d' | head -n "$NOTE_LINES" | cut -c1-300
+}
+
+# report_read <stand-in> <command...>: what a command prints, its stderr dropped. A dry run reads the
+# stand-in file in EEPLOI_HELPER_REPORT, and fails without it.
+report_read() {
+  local file=$1
+  shift
+  if [ -n "$DRY" ]; then
+    [ -n "$REPORT_STAND_IN" ] && [ -f "$REPORT_STAND_IN/$file" ] && cat -- "$REPORT_STAND_IN/$file"
+  else
+    command -v "$1" > /dev/null && "$@" 2> /dev/null < /dev/null
+  fi
+}
+
+# report_base: what any Linux with systemd shows. REP_KERNEL, REP_UPTIME (seconds, or empty),
+# REP_UNITS (the failed units' names, a line each; REP_UNITS_STATE ok or unknown) and REP_PORTS ("<port>
+# <process>,<process>" lines, REP_PORTS_STATE ok or unknown).
+# D-31: listening ports with their port and process names only; failed units by name only.
+report_base() {
+  local text line port users names name
+  REP_KERNEL=unknown REP_UPTIME='' REP_UNITS='' REP_UNITS_STATE=unknown REP_PORTS='' REP_PORTS_STATE=unknown
+  if text=$(report_read kernel uname -r) && [[ $text =~ ^[[:graph:]]{1,100}$ ]]; then REP_KERNEL=$text; fi
+  if text=$(report_read uptime cat /proc/uptime); then
+    text=${text%%[. ]*}
+    [[ $text =~ ^[0-9]{1,12}$ ]] && REP_UPTIME=$text
+  fi
+  if text=$(report_read failed systemctl --failed --no-legend --plain --no-pager); then
+    REP_UNITS_STATE=ok
+    while read -r name _; do
+      [[ $name =~ ^[A-Za-z0-9@._:\\-]{1,200}$ ]] && REP_UNITS="$REP_UNITS$name"$'\n'
+    done <<< "$text"
+  fi
+  if text=$(report_read ss ss -tlnpH); then
+    REP_PORTS_STATE=ok
+    # State, Recv-Q, Send-Q, the local address, the peer's, then users:(("name",pid=…,fd=…),…).
+    while read -r _ _ _ port _ users; do
+      port=${port##*:}
+      [[ $port =~ ^[0-9]{1,5}$ ]] || continue
+      port=$((10#$port))
+      names=$(grep -oE '\("[^"]*"' <<< "$users" | sed 's/^("//; s/"$//' | grep -E '^[A-Za-z0-9._:+@-]{1,64}$' | sort -u | paste -sd, - || true)
+      REP_PORTS="$REP_PORTS$port ${names:-unknown}"$'\n'
+    done <<< "$text"
+    REP_PORTS=$(printf '%s' "$REP_PORTS" | sort -u | sort -k1,1n -k2,2)
+    [ -z "$REP_PORTS" ] || REP_PORTS="$REP_PORTS"$'\n'
+  fi
+}
+
+# report_uptime <seconds>: in words.
+report_uptime() {
+  [ -n "$1" ] || { echo unknown; return; }
+  local d=$(($1 / 86400)) h=$(($1 % 86400 / 3600)) m=$(($1 % 3600 / 60)) text=''
+  [ $d -eq 0 ] || text="$d day$([ $d -eq 1 ] || echo s) "
+  [ $h -eq 0 ] || text="$text$h hour$([ $h -eq 1 ] || echo s) "
+  text="$text$m minute$([ $m -eq 1 ] || echo s)"
+  echo "$text"
+}
+
+# report_checks: every kept check, run after the values as recipe-run runs it: C_STATE (ok or failed),
+# C_PATH, C_NOTES (a line each).
+report_checks() {
+  local i p out n=0
+  C_STATE=() C_PATH=() C_NOTES=()
+  for ((i = 0; i < ${#K_PATH[@]}; i++)); do
+    p=${K_PATH[i]}
+    [[ $p == *.check.sh ]] || continue
+    C_PATH[n]=$p
+    recipes_check_script "$p"
+    if out=$(report_exec "$R_WORK/check.sh" keep) && [ ${#out} -le $REPORT_BYTES ]; then C_STATE[n]=ok; else C_STATE[n]=failed; fi
+    C_NOTES[n]=$(report_notes <<< "$out")
+    n=$((n + 1))
+  done
+}
+
+# report_probes: every kept probe, in order: P_NAME (NN-name.probe.sh without NN- and .probe.sh), P_STATE
+# (ok, failed or not-installed), P_LINES (its lines that match PROBE_LINE_RE) and P_REJECTED (how many
+# didn't).
+report_probes() {
+  local i p name out line lines shown rejected n=0
+  P_NAME=() P_STATE=() P_LINES=() P_REJECTED=()
+  for ((i = 0; i < ${#K_PATH[@]}; i++)); do
+    p=${K_PATH[i]}
+    [[ $p == *.probe.sh ]] || continue
+    name=${p##*/}
+    name=${name%.probe.sh}
+    [[ ! $name =~ ^[0-9][0-9]-(.+)$ ]] || name=${BASH_REMATCH[1]}
+    P_NAME[n]=$name lines='' shown=0 rejected=0
+    if ! out=$(report_exec "$KEPT/$p" drop) || [ ${#out} -gt $REPORT_BYTES ]; then
+      P_STATE[n]=failed
+    elif [ -z "$out" ]; then
+      # PROBES.md: no lines, its software isn't there.
+      P_STATE[n]=not-installed
+    else
+      P_STATE[n]=ok
+      while IFS= read -r line; do
+        if [[ $line =~ $PROBE_LINE_RE ]] && [ $shown -lt $REPORT_LINES ]; then
+          lines="$lines$line"$'\n' shown=$((shown + 1))
+        else
+          rejected=$((rejected + 1))
+        fi
+      done <<< "$out"
+    fi
+    P_LINES[n]=$lines P_REJECTED[n]=$rejected
+    n=$((n + 1))
+  done
+}
+
+# json <text>: a JSON string. Every text in the report is printable ASCII, so only \ and " need escaping.
+json() {
+  case "$1" in
+    *[\\\"]*) printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"]/\\&/g')" ;;
+    *) printf '"%s"' "$1" ;;
+  esac
+}
+
+# json_lines <lines>: a JSON array of strings, one per line.
+json_lines() {
+  local line sep=''
+  printf '['
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    printf '%s' "$sep"
+    json "$line"
+    sep=','
+  done <<< "$1"
+  printf ']'
+}
+
+# row <first column> <rest>: a line of the text report, the first column padded.
+row() { printf '%-14s %s\n' "$1" "$2"; }
+
+# report_when <time>: a time from the state, none without a state, not-recorded in a state from
+# before the helper wrote times.
+report_when() {
+  if [ -z "$R_LAST" ]; then echo none; elif [ -z "$1" ]; then echo not-recorded; else echo "$1"; fi
+}
+
+# report_fits: the kept set fits this server: it was kept for this server's OS (from os-release).
+# False with REP_FIT_WHY when it doesn't, or when os-release can't be read.
+# D-27: the OS only; the provider isn't checked on the server, until recipes.conf names it.
+report_fits() {
+  REP_FIT_WHY=''
+  if [ "$REP_OS" = unknown ]; then REP_FIT_WHY="os-release can't be read"
+  elif [ "${K_TARGET#* }" != "$R_OS" ]; then REP_FIT_WHY="the kept set is for ${K_TARGET#* }, this server is $R_OS"
+  fi
+  [ -z "$REP_FIT_WHY" ]
+}
+
+# report_setup: one eeploi set up, or not.
+report_setup() {
+  if [ "$REP_SETUP" = eeploi ]; then echo eeploi; else echo "not set up by eeploi"; fi
+}
+
+# report_text: the report for people, in plain words, the first column padded.
+report_text() {
+  local i line
+  echo "Part 1: what eeploi did"
+  row helper "$VERSION"
+  row setup "$(report_setup)"
+  row recipes "${R_LAST:-none}"
+  row last-run "$(report_when "$R_WHEN")"
+  row first-run "$(report_when "$R_FIRST")"
+  # The state holds the always steps only: recipe-run runs no other.
+  while read -r _ line; do
+    [ -z "$line" ] || row step "always $line"
+  done <<< "$R_RAN"
+  row os "$REP_OS"
+  row kernel "$REP_KERNEL"
+  row uptime "$(report_uptime "$REP_UPTIME")"
+  row values "$REP_VALUES"
+  if [ "$REP_VALUES" = ok ]; then
+    row value "DEPLOY_USER $R_USER"
+    row value "SSH_PORT $R_PORT"
+    row value "PHP $R_PHP"
+  fi
+  echo
+  if [ "$REP_CHECKS" != ran ]; then
+    echo "Part 2: is it right?"
+    row "$REP_CHECKS" "checks: $REP_CHECKS_WHY"
+  else
+    echo "Part 2: is it right? (the checks of recipes $K_RELEASE for $K_TARGET)"
+    [ ${#C_PATH[@]} -gt 0 ] || row none "no checks in the kept set"
+    for ((i = 0; i < ${#C_PATH[@]}; i++)); do
+      row "${C_STATE[i]}" "${C_PATH[i]}"
+      while IFS= read -r line; do
+        [ -z "$line" ] || row '' "  $line"
+      done <<< "${C_NOTES[i]}"
+    done
+  fi
+  echo
+  echo "Part 3: how it is set up now"
+  if [ "$REP_UNITS_STATE" = unknown ]; then row failed-units unknown
+  elif [ -z "$REP_UNITS" ]; then row failed-units none
+  else
+    while IFS= read -r line; do [ -z "$line" ] || row failed-unit "$line"; done <<< "$REP_UNITS"
+  fi
+  if [ "$REP_PORTS_STATE" = unknown ]; then row ports unknown
+  elif [ -z "$REP_PORTS" ]; then row ports none
+  else
+    while IFS= read -r line; do [ -z "$line" ] || row port "$line"; done <<< "$REP_PORTS"
+  fi
+  [ "$REP_PROBES" = ran ] || row "$REP_PROBES" "probes: $REP_PROBES_WHY"
+  for ((i = 0; i < ${#P_NAME[@]}; i++)); do
+    case "${P_STATE[i]}" in
+      failed) row failed "${P_NAME[i]}: probe failed" ;;
+      *) row "${P_STATE[i]}" "${P_NAME[i]}" ;;
+    esac
+    while IFS= read -r line; do
+      [ -z "$line" ] || row '' "  $line"
+    done <<< "${P_LINES[i]}"
+    [ "${P_REJECTED[i]}" -eq 0 ] || row '' "  (not shown: ${P_REJECTED[i]}, not a <key> <value> line or past line $REPORT_LINES)"
+  done
+}
+
+# report_json: the same report, the same words, for eeploi.
+report_json() {
+  local i sep line port names
+  printf '{"helper":%s,"setup":%s' "$(json "$VERSION")" "$(json "$REP_SETUP")"
+  printf ',"recipes":{"release":%s,"last_run":%s,"first_run":%s,"steps":[' \
+    "$(json "${R_LAST:-none}")" "$(json "$(report_when "$R_WHEN")")" "$(json "$(report_when "$R_FIRST")")"
+  sep=''
+  while read -r _ line; do
+    [ -n "$line" ] || continue
+    printf '%s{"marker":"always","path":%s}' "$sep" "$(json "$line")"
+    sep=','
+  done <<< "$R_RAN"
+  printf ']},"os":%s,"kernel":%s,"uptime":%s,"uptime_seconds":%s' "$(json "$REP_OS")" "$(json "$REP_KERNEL")" \
+    "$(json "$(report_uptime "$REP_UPTIME")")" "${REP_UPTIME:-null}"
+  printf ',"values":{"state":%s' "$(json "$REP_VALUES")"
+  [ "$REP_VALUES" != ok ] || printf ',"DEPLOY_USER":%s,"SSH_PORT":%s,"PHP":%s' "$(json "$R_USER")" "$(json "$R_PORT")" "$(json "$R_PHP")"
+  printf '},"checks":{"state":%s,"reason":%s,"release":%s,"target":%s,"results":[' \
+    "$(json "$REP_CHECKS")" "$(json "$REP_CHECKS_WHY")" "$(json "${K_RELEASE:-none}")" "$(json "${K_TARGET:-none}")"
+  for ((i = 0; i < ${#C_PATH[@]}; i++)); do
+    [ "$i" -eq 0 ] || printf ','
+    printf '{"state":%s,"path":%s,"notes":%s}' "$(json "${C_STATE[i]}")" "$(json "${C_PATH[i]}")" "$(json_lines "${C_NOTES[i]}")"
+  done
+  printf ']},"failed_units":{"state":%s,"units":%s}' "$(json "$REP_UNITS_STATE")" "$(json_lines "$REP_UNITS")"
+  printf ',"ports":{"state":%s,"ports":[' "$(json "$REP_PORTS_STATE")"
+  sep=''
+  while read -r port names; do
+    [ -n "$port" ] || continue
+    printf '%s{"port":%s,"processes":%s}' "$sep" "$port" "$(json_lines "$(tr , '\n' <<< "$names")")"
+    sep=','
+  done <<< "$REP_PORTS"
+  printf ']},"probes":{"state":%s,"reason":%s,"results":[' "$(json "$REP_PROBES")" "$(json "$REP_PROBES_WHY")"
+  for ((i = 0; i < ${#P_NAME[@]}; i++)); do
+    [ "$i" -eq 0 ] || printf ','
+    printf '{"name":%s,"state":%s,"lines":%s,"rejected":%s}' "$(json "${P_NAME[i]}")" "$(json "${P_STATE[i]}")" \
+      "$(json_lines "${P_LINES[i]}")" "${P_REJECTED[i]}"
+  done
+  printf ']}}\n'
 }
 
 # audit <text>: one line in the system log (a dry run prints it on stderr).
@@ -2044,12 +2493,71 @@ case "$command" in
       p=${R_PATH[i]}
       if recipes_check "$p"; then echo "check ok $p"; else echo "check failed $p"; checks=1; fi
     done
-    # The state only after every step went well; a failed run runs its steps again next time.
-    [ $failed -eq 1 ] || recipes_state_write "$1" "$kept"
+    # The state only after every step went well; a failed run runs its steps again next time. Then
+    # the checks and probes are kept, for server-report.
+    if [ $failed -eq 0 ]; then
+      recipes_state_write "$1" "$kept"
+      # The same or a newer release replaces the kept set (the same one repairs it), never an older
+      # one. A set it can't keep leaves the one before and doesn't stop the run.
+      report_kept
+      if [ -z "$K_RELEASE" ] || ! version_lt "$1" "$K_RELEASE"; then
+        recipes_keep "$1" "$2 $R_OS" || echo "eeploi-helper: the checks and probes were not kept for server-report: until a good run keeps them, the report runs none" >&2
+      fi
+    fi
     if [ $failed -eq 0 ] && [ $checks -eq 0 ]; then result=ok; else result=failed; fi
     echo "result $result"
     audit "$CALLER: recipe-run $1: result $result"
     [ "$result" = ok ] || exit 1 ;;
+
+  server-report)
+    { [ $# -eq 0 ] || { [ $# -eq 1 ] && [ "$1" = --json ]; }; } || fail "usage: server-report [--json]"
+    report_lock
+    recipes_state
+    # The values and the OS by recipe-run's own rules, without refusing the report.
+    if [ ! -e "$ETC/recipes.conf" ] && [ ! -L "$ETC/recipes.conf" ]; then REP_VALUES=none
+    elif values=$(recipes_conf 2> /dev/null && echo "$R_USER $R_PORT $R_PHP"); then
+      read -r R_USER R_PORT R_PHP <<< "$values"
+      REP_VALUES=ok
+    else REP_VALUES=unreadable
+    fi
+    if values=$(os_target 2> /dev/null && echo "$R_OS $R_VERSION"); then
+      read -r R_OS R_VERSION <<< "$values"
+      REP_OS="${R_OS%-"$R_VERSION"} $R_VERSION"
+    else REP_OS=unknown
+    fi
+    report_base
+    # Parts 2 and the probes: ran, none (nothing to run) or not-run (they can't run here: exit 1).
+    REP_CHECKS=ran REP_CHECKS_WHY='' REP_PROBES=ran REP_PROBES_WHY='' K_RELEASE='' K_TARGET='' K_PATH=() REP_EXIT=0
+    if [ -z "$R_LAST" ]; then
+      # D-33: a server without recipe-run state gets part 1 and the base only.
+      REP_SETUP=not-eeploi REP_CHECKS=none REP_PROBES=none REP_CHECKS_WHY="not set up by eeploi"
+    else
+      REP_SETUP=eeploi
+      report_kept
+      if [ -n "$K_ERROR" ]; then
+        REP_CHECKS=not-run REP_PROBES=not-run REP_CHECKS_WHY=$K_ERROR
+      elif [ -z "$K_RELEASE" ]; then
+        REP_CHECKS=none REP_PROBES=none REP_CHECKS_WHY="none kept: no good recipe-run since helper 1.2.0"
+      elif [ "$K_RELEASE" != "$R_LAST" ]; then
+        # D-27: the kept set is the last good run's, or it isn't used.
+        REP_CHECKS=not-run REP_PROBES=not-run REP_CHECKS_WHY="the kept set is of recipes $K_RELEASE, the last good run of $R_LAST"
+      elif ! report_fits; then
+        REP_CHECKS=not-run REP_PROBES=not-run REP_CHECKS_WHY=$REP_FIT_WHY
+      # D-32: the checks run only with this server's own values.
+      elif [ "$REP_VALUES" = none ]; then REP_CHECKS=not-run REP_CHECKS_WHY="no $ETC/recipes.conf"
+      elif [ "$REP_VALUES" = unreadable ]; then REP_CHECKS=not-run REP_CHECKS_WHY="$ETC/recipes.conf can't be used (recipe-run says why)"
+      fi
+    fi
+    [ "$REP_PROBES" = ran ] || REP_PROBES_WHY=$REP_CHECKS_WHY
+    if [ "$REP_CHECKS" = not-run ] || [ "$REP_PROBES" = not-run ]; then REP_EXIT=1; fi
+    R_WORK=$(mktemp -d) || fail "cannot make a work folder"
+    TMP_PATHS="$TMP_PATHS $R_WORK"
+    R_FILES=$KEPT
+    C_STATE=() C_PATH=() C_NOTES=() P_NAME=() P_STATE=() P_LINES=() P_REJECTED=()
+    [ "$REP_CHECKS" != ran ] || report_checks
+    [ "$REP_PROBES" != ran ] || report_probes
+    if [ "${1:-}" = --json ]; then report_json; else report_text; fi
+    exit "$REP_EXIT" ;;
 
   *)
     fail "unknown subcommand: $command" ;;
