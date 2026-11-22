@@ -352,7 +352,15 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 
 - **Kind:** decision
 - **Decided:** 2026-11-22, #36
-- **What:** the service waits up to 30 minutes for `recipe-run`'s lock (`flock -w 1800`). After that, or when it can't open the lock, it doesn't reboot, logs "server-reboot: no reboot, the recipe-run lock was not free within 1800 seconds" and fails, and the next `server-reboot` can start a new one. A failed `systemctl reboot` is logged the same way.
+- **What:** the service waits up to 30 minutes for `recipe-run`'s lock (`flock -w 1800`). After that, it doesn't reboot, logs "server-reboot: no reboot, the recipe-run lock was not free within 1800 seconds" and fails, and the next `server-reboot` can start a new one. A lock it can't open ("the recipe-run lock could not be opened"), a time it can't write (D-42) and a failed `systemctl reboot` each have their own line.
 - **Why:** as long as a first boot's report window: a run that takes longer is stuck, and a reboot then would cut it off.
 - **Accepted:** when the lock stays taken longer, the server isn't rebooted. The system log says why; the caller sees it only by the uptime.
+- **Where:** `eeploi-helper`
+
+## D-42: At most one reboot per 15 minutes
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** right before `systemctl reboot`, the service writes the time to `/var/lib/eeploi/reboot`, root-owned (`rebooted <UTC time>`). `server-reboot` reads it line by line, as a root-owned file, not writable by others, in a root-owned folder, and refuses a call within 15 minutes of that time (exit 64), with the time from which a reboot is allowed again; a time in the future is refused too, until 15 minutes after it. A file it can't trust, or with a line it doesn't know, is refused. A reboot that didn't happen leaves no time: when the lock wait runs out, the lock can't be opened or the time can't be written, nothing is written and there is no reboot; when `systemctl reboot` fails, the time is removed. While a reboot is pending, a call still gets `reboot pending` (D-40). Not the uptime: a new server is often up less than 15 minutes when it gets its first reboot, and has no file then.
+- **Why:** a caller in a loop can't keep a server rebooting.
 - **Where:** `eeploi-helper`

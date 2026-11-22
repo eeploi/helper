@@ -283,9 +283,10 @@ boot-id 3f2b8c1e-7d4a-4e9b-a6c5-0d1e2f3a4b5c
 It starts a transient systemd timer and service, `eeploi-reboot`, and answers at once, so the answer reaches the caller before the connection drops. About 5 seconds later the service runs `systemctl reboot`. `reboot-required` says whether `/var/run/reboot-required` is there; the server reboots either way. `boot-id` is the kernel's id of this boot (`/proc/sys/kernel/random/boot_id`, `unknown` when it can't be read): the reboot is done when a later call shows another one, not when the time has passed, since a reboot that waits for a `recipe-run` comes later.
 
 - When the service starts and `recipe-run`'s lock (`/var/lib/eeploi/recipes/.lock`) is there, it first takes it, so a `recipe-run` or `server-report` that runs, or started in those seconds, finishes first, and holds it until the system stops the service. It waits 30 minutes at most: then it doesn't reboot, and says why in the system log, as it does when the lock can't be opened or `systemctl reboot` fails. Without the lock, no `recipe-run` ever ran here, and it doesn't wait.
+- At most one reboot per 15 minutes, so a caller in a loop can't keep a server rebooting. Right before `systemctl reboot`, the service writes the time to `/var/lib/eeploi/reboot`; a call within 15 minutes of it is refused and says from when a reboot is allowed again. A reboot that didn't happen writes no time.
 - While a reboot is pending, a second call starts nothing and prints `reboot pending <time>` (`unknown` when it can't tell), `reboot-required` and `boot-id`.
 
-Exit `0`: the reboot is due or pending. `64`: refused (an argument, a lock it can't trust, a reboot it could not schedule).
+Exit `0`: the reboot is due or pending. `64`: refused (an argument, a lock it can't trust, a reboot within 15 minutes of the last, a reboot time it can't trust, a reboot it could not schedule).
 
 ## Dry run
 
@@ -302,6 +303,8 @@ In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point t
 For `recipe-run`: `EEPLOI_HELPER_OS_RELEASE` points to a test `os-release`, `EEPLOI_HELPER_RECIPES_STATE` to a test state folder, `EEPLOI_HELPER_RECIPES_DOWNLOAD` to a folder with the release's files (copied in place of the download, then checked as usual), `EEPLOI_HELPER_RECIPES_RESULTS` to a file of `fail <path>` lines for the steps and checks that fail (and a `locked` line when another run holds the lock), and `EEPLOI_HELPER_MINISIGN` to a `minisign` outside `PATH`, and `EEPLOI_HELPER_NOW` sets the time written in the state. A dry run never runs a step or check: it prints each script.
 
 For `server-report`: `EEPLOI_HELPER_REPORT` points to a folder with what the system would show: `kernel` (`uname -r`), `uptime` (`/proc/uptime`), `failed` (`systemctl --failed`) and `ss` (`ss -tlnpH`); a file that is not there reads as unknown. Unlike `recipe-run`'s, a dry run of `server-report` runs the kept checks and probes in the test state folder, so the tests see what the report makes of their output.
+
+For `server-reboot`: `EEPLOI_HELPER_REBOOT_STATE` points to a test file with the last reboot's time, and `EEPLOI_HELPER_NOW` sets the time now.
 
 ## Tests
 
