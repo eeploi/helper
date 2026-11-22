@@ -2773,7 +2773,7 @@ if [ "$(uname)" = Linux ] && command -v flock > /dev/null; then
   mkdir -p "$RB/state"
   unit() {
     rm -f "$RB/log" "$RB/state/reboot"
-    PATH="$RB/bin:$PATH" sh -c "$REBOOT_SH" sh "$1" 1 "${RB_TIME:-$RB/state/reboot}" '+%Y-%m-%dT%H:%M:%SZ' > /dev/null 2>&1
+    PATH="$RB/bin:$PATH" sh -c "$REBOOT_SH" sh "$1" 1 "${RB_TIME:-$RB/state/reboot}" "${RB_FMT:-+%Y-%m-%dT%H:%M:%SZ}" > /dev/null 2>&1
     CODE=$?
     OUT=$(cat "$RB/log" 2> /dev/null)
     if [ "$OUT" = "$3" ]; then pass; else failure "unit: $2" "exit $CODE, expected:
@@ -2789,7 +2789,12 @@ $OUT"; fi
   # The time, right before the reboot, as the helper reads it (D-42).
   UNIT_TIME_RE='^# Written by eeploi-helper \(server-reboot\): the last reboot it started\. Do not edit\.'$'\n''rebooted [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
   if [[ $(cat "$RB/state/reboot") =~ $UNIT_TIME_RE ]]; then pass; else failure "unit: the time written, right before the reboot" "$(cat "$RB/state/reboot")"; fi
-  check "unit: the time, root's alone" test "$(find "$RB/state/reboot" -perm -022)" = ""
+  check "unit: the time, root's alone" test "$(find "$RB/state/reboot" \( -perm -020 -o -perm -002 \))" = ""
+  umask_was=$(umask)
+  umask 000
+  unit "$RB/none.lock" "a umask that lets others write: reboots" $'systemctl reboot\nsleep infinity'
+  umask "$umask_was"
+  check "unit: a umask that lets others write: the time, root's alone" test "$(find "$RB/state/reboot" \( -perm -020 -o -perm -002 \))" = ""
   touch "$RB/free.lock"
   unit "$RB/free.lock" "a free lock: taken, reboots, then holds on" $'systemctl reboot\nsleep infinity'
   check "unit: a free lock: the time written" test -f "$RB/state/reboot"
@@ -2812,6 +2817,10 @@ $OUT"; fi
   no_time "systemctl reboot fails"
   RB_TIME="$RB/nofolder/reboot" unit "$RB/none.lock" "the time can't be written: no reboot, logged" "logger -t eeploi-helper -- server-reboot: no reboot, the time could not be written to $RB/nofolder/reboot"
   check "unit: the time can't be written: fails" test "$CODE" = 1
+  # date fails (a format it can't use): no time, no reboot.
+  RB_FMT=bad unit "$RB/none.lock" "no time from date: no reboot, logged" "logger -t eeploi-helper -- server-reboot: no reboot, the time could not be written to $RB/state/reboot"
+  check "unit: no time from date: fails" test "$CODE" = 1
+  no_time "no time from date"
 else
   echo "note: not Linux or no flock, the unit's script is not run (CI runs it)"
 fi

@@ -2669,9 +2669,10 @@ case "$command" in
       # can't open is logged, not a silent exit of sh.
       # D-42: right before systemctl reboot it writes the time ($3); a reboot that doesn't happen
       # leaves none: no time when it can't be written, and it is removed when systemctl reboot fails.
-      # The time is as the state writes it ($4).
+      # The time is as the state writes it ($4); without one, nothing is written. umask 022: the file is
+      # root's alone, whatever systemd's default.
       # shellcheck disable=SC2016 # $1 to $4 are for the unit's shell
-      job=(sh -c 'if [ -e "$1" ]; then command exec 8< "$1" || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock could not be opened"; exit 1; }; flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; fi; { printf "# Written by eeploi-helper (server-reboot): the last reboot it started. Do not edit.\nrebooted %s\n" "$(date -u "$4")" > "$3.new" && mv -f "$3.new" "$3"; } || { rm -f "$3.new"; logger -t eeploi-helper -- "server-reboot: no reboot, the time could not be written to $3"; exit 1; }; systemctl reboot || { rm -f "$3"; logger -t eeploi-helper -- "server-reboot: no reboot, systemctl reboot failed"; exit 1; }; exec sleep infinity' sh "$RECIPES_STATE/.lock" "$REBOOT_WAIT" "$REBOOT_STATE" "$DATE_FORMAT")
+      job=(sh -c 'if [ -e "$1" ]; then command exec 8< "$1" || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock could not be opened"; exit 1; }; flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; fi; umask 022; { t=$(date -u "$4") && [ -n "$t" ] && printf "# Written by eeploi-helper (server-reboot): the last reboot it started. Do not edit.\nrebooted %s\n" "$t" > "$3.new" && mv -f "$3.new" "$3"; } || { rm -f "$3.new"; logger -t eeploi-helper -- "server-reboot: no reboot, the time could not be written to $3"; exit 1; }; systemctl reboot || { rm -f "$3"; logger -t eeploi-helper -- "server-reboot: no reboot, systemctl reboot failed"; exit 1; }; exec sleep infinity' sh "$RECIPES_STATE/.lock" "$REBOOT_WAIT" "$REBOOT_STATE" "$DATE_FORMAT")
       due=$(utc_in "$REBOOT_DELAY")
       if run systemd-run --quiet --unit="$REBOOT_UNIT" --description="eeploi-helper: reboot due $due" --collect \
         --on-active="$REBOOT_DELAY" --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no \
