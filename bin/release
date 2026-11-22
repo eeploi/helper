@@ -61,6 +61,16 @@ confirm() {
   [ "$answer" = y ] || fail "stopped, nothing changed after this point"
 }
 sha256() { if command -v sha256sum > /dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+# version_lt <a> <b>: version a is lower than b, each part compared as a number. The same function as in
+# eeploi-helper, which self-update uses (tests/run.sh checks that the two are the same).
+version_lt() {
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<< "$1"
+  IFS=. read -r b1 b2 b3 <<< "$2"
+  (( a1 != b1 )) && { (( a1 < b1 )); return; }
+  (( a2 != b2 )) && { (( a2 < b2 )); return; }
+  (( a3 < b3 ))
+}
 
 for cmd in git gh minisign shellcheck; do
   command -v "$cmd" > /dev/null || fail "$cmd is not installed"
@@ -92,6 +102,30 @@ if found=$(gh release view "$tag" -R "$REPO" --json isDraft,isImmutable --jq .is
 fi
 # Only gh's "release not found" means none: any other error stops here, before anything is published.
 [ "$found" = "release not found" ] || fail "could not ask GitHub for a release $tag: $found"
+# D-35: releases only go up: no fix for an older line, which self-update refuses anyway. The tags are GitHub's (fetched above).
+# D-35: releases only go up: no fix for an older line, which self-update refuses anyway. Only versions
+# self-update takes (its SEMVER_RE, read from eeploi-helper line by line) count, and only GitHub's tags.
+semver=$(sed -n "s/^SEMVER_RE='\(.*\)'\$/\1/p" eeploi-helper)
+[ -n "$semver" ] || fail "cannot read SEMVER_RE from eeploi-helper"
+[[ $version =~ $semver ]] || fail "$version is not a version self-update installs"
+step "checking that $version is higher than every v* tag on GitHub"
+released=$(git ls-remote --tags --refs origin 'v*') || fail "could not list the tags on GitHub"
+while read -r _ ref; do
+  ref=${ref#refs/tags/v}
+  [[ $ref =~ $semver ]] || continue
+  version_lt "$ref" "$version" || fail "$version is not higher than $ref: releases only go up"
+done <<< "$released"
+# D-34: the changelog has no dates, GitHub's release has the date. The pull request that raises VERSION
+# moves the Unreleased lines under the version's heading, the second one, right below Unreleased.
+step "checking CHANGELOG.md"
+# sections: each ## heading, then how many lines with text are under it.
+sections=$(awk '/^## / { if (h != "") print n, h; h = $0; n = 0; next } NF { n++ } END { if (h != "") print n, h }' CHANGELOG.md) \
+  || fail "cannot read CHANGELOG.md"
+[ "$(sed -n '1,2s/^[0-9]* //p' <<< "$sections")" = "## Unreleased"$'\n'"## $version" ] \
+  || fail "CHANGELOG.md does not start with ## Unreleased, then ## $version (without a date): move the Unreleased lines under it"
+[ "$(sed -n 1p <<< "$sections")" = "0 ## Unreleased" ] \
+  || fail "CHANGELOG.md has lines under ## Unreleased: move them under ## $version"
+[ "$(sed -n '2s/ .*//p' <<< "$sections")" -gt 0 ] || fail "CHANGELOG.md has nothing under ## $version"
 
 step "shellcheck"
 shellcheck eeploi-helper tests/run.sh tests/decisions.sh bin/release || fail "shellcheck found problems"
@@ -102,7 +136,7 @@ step "checking CI on $commit"
 ci=$(gh run list -R "$REPO" --commit "$head" --json status,conclusion --jq '.[0] | "\(.status) \(.conclusion)"')
 [ "$ci" = "completed success" ] || fail "CI on $commit is not green yet (${ci:-no run})"
 
-echo "eeploi-helper $version at $commit: $tag is new, shellcheck clean, tests and CI green."
+echo "eeploi-helper $version at $commit: $tag is new and the highest, CHANGELOG.md ready, shellcheck clean, tests and CI green."
 [ -z "$CHECK_ONLY" ] || exit 0
 
 # D-14: signed by a person, in their own terminal; never in CI.
