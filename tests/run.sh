@@ -2240,8 +2240,8 @@ ERR_TO=/dev/null recipe ok "then every check, in order" "check ok first-boot/00-
 check ok stack/00-apt-retries.check.sh
 check ok stack/07-updates.check.sh
 check ok stack/09-logs.check.sh" recipe-run 0.4.0 hetzner
-# The dry run prints the state it would write before the last line.
-ERR_TO=/dev/null recipe ok "the last line" "write: $WORK/recipes-none/state (644)
+# The dry run prints the state it would write, then the kept set, before the last line.
+ERR_TO=/dev/null recipe ok "the last line" "write: $WORK/recipes-none/kept/list (644)
 result ok" recipe-run 0.4.0 hetzner
 recipe lacks "never a first-boot step" "run: first-boot/00-lock-root.sh"$'\n' recipe-run 0.4.0 hetzner
 recipe lacks "never a window step" "ubuntu-26.04/01-packages.sh" recipe-run 0.4.0 hetzner
@@ -2352,8 +2352,8 @@ keep: $WORK/recipes-none/kept/stack/04-ssh.probe.sh
 write: $WORK/recipes-none/kept/list (644)" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-probe" recipe lacks "never a step kept" "keep: $WORK/recipes-none/kept/stack/07-updates.sh" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-probe" recipe lacks "never start.sh or the fingerprint kept" "kept/stack/start.sh" recipe-run 0.4.0 hetzner
-RDL="$WORK/rel-probe" recipe ok "kept before the state" "write: $WORK/recipes-none/kept/list (644)
-  # Written by eeploi-helper (recipe-run)" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-probe" recipe ok "kept after the state" "write: $WORK/recipes-none/state (644)
+keep: $WORK/recipes-none/kept/stack/values.sh" recipe-run 0.4.0 hetzner
 RRES="$WORK/results-step" recipe fails "a failed step keeps nothing" "result failed" recipe-run 0.4.0 hetzner
 absent "a failed step keeps nothing: no keep" "keep: "
 RRES="$WORK/results-check" recipe fails "a failed check still keeps" "write: $WORK/recipes-none/kept/list (644)" recipe-run 0.4.0 hetzner
@@ -2369,18 +2369,20 @@ kept_dir keptold 0.3.0
 kept_dir keptnew 0.5.0
 kept_dir keptbroken 0.4.0
 chmod 666 "$WORK/recipes-keptbroken/kept/stack/values.sh"
-RSTATE="$WORK/recipes-keptsame" recipe lacks "the same release again keeps the set it has" "keep: " recipe-run 0.4.0 hetzner
+RSTATE="$WORK/recipes-keptsame" recipe ok "the same release again replaces the set" "write: $WORK/recipes-keptsame/kept/list (644)" recipe-run 0.4.0 hetzner
 RSTATE="$WORK/recipes-keptnew" recipe lacks "an older release never replaces a newer set" "keep: " recipe-run 0.4.0 hetzner
 RSTATE="$WORK/recipes-keptold" recipe ok "a newer release replaces an older set" "write: $WORK/recipes-keptold/kept/list (644)" recipe-run 0.4.0 hetzner
 RSTATE="$WORK/recipes-keptbroken" recipe ok "a set the report can't use is replaced" "write: $WORK/recipes-keptbroken/kept/list (644)" recipe-run 0.4.0 hetzner
-kept_dir keptos 0.4.0 'hetzner ubuntu-24.04'
-kept_dir keptprovider 0.4.0 'other ubuntu-26.04'
-RSTATE="$WORK/recipes-keptos" recipe ok "a set for another OS is replaced" "write: $WORK/recipes-keptos/kept/list (644)" recipe-run 0.4.0 hetzner
-RSTATE="$WORK/recipes-keptprovider" recipe ok "a set for another provider is replaced" "write: $WORK/recipes-keptprovider/kept/list (644)" recipe-run 0.4.0 hetzner
+kept_dir keptos 0.5.0 'hetzner ubuntu-24.04'
+RSTATE="$WORK/recipes-keptos" recipe lacks "another OS doesn't let an older release replace a set" "keep: " recipe-run 0.4.0 hetzner
 printf 'fail keep\n' > "$WORK/results-keep"
-RRES="$WORK/results-keep" recipe ok "a set it can't keep: said, and the set before stays" "the checks and probes were not kept for server-report, the set before stays" recipe-run 0.4.0 hetzner
-RRES="$WORK/results-keep" ERR_TO=/dev/null recipe ok "a set it can't keep doesn't stop the run" "write: $WORK/recipes-none/state (644)
+RRES="$WORK/results-keep" recipe ok "a set it can't keep: said" "the checks and probes were not kept for server-report: until a good run keeps them, the report runs none" recipe-run 0.4.0 hetzner
+RRES="$WORK/results-keep" ERR_TO=/dev/null recipe ok "a set it can't keep doesn't stop the run" "write: $WORK/recipes-none/kept/list (644)
 result ok" recipe-run 0.4.0 hetzner
+RRES="$WORK/results-keep" ERR_TO=/dev/null recipe ok "a set it can't keep: the state was written before it" "write: $WORK/recipes-none/state (644)
+keep: " recipe-run 0.4.0 hetzner
+kept_dir keptos2 0.4.0 'hetzner ubuntu-24.04'
+RSTATE="$WORK/recipes-keptos2" recipe ok "the same release replaces a set kept for another OS" "write: $WORK/recipes-keptos2/kept/list (644)" recipe-run 0.4.0 hetzner
 check "server-report never keeps" test "$(grep -c 'recipes_keep "' "$HELPER")" -eq 1
 
 echo "== server-report"
@@ -2616,6 +2618,25 @@ ETC_DIR="$WORK/etc-recipes-repother" report fails "recipes.conf of another deplo
 printf 'NAME=x\n' > "$WORK/os-release-none"
 OSREL="$WORK/os-release-none" report fails "no OS: the checks not run" "$(r not-run "checks: os-release can't be read")"
 OSREL="$WORK/os-release-none" report fails "no OS: unknown" "$(r os unknown)"
+OSREL="$WORK/os-release-none" report fails "no OS: the probes not run either" "$(r not-run "probes: os-release can't be read")"
+
+echo "== server-report: the kept set fits this server"
+report ok "kept for this OS: the checks and probes run" "$(r ok ssh)"
+printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "$WORK/os-release-2404"
+OSREL="$WORK/os-release-2404" report fails "kept for another OS: the checks not run" "$(r not-run 'checks: the kept set is for ubuntu-26.04, this server is ubuntu-24.04')"
+OSREL="$WORK/os-release-2404" report fails "kept for another OS: the probes not run" "$(r not-run 'probes: the kept set is for ubuntu-26.04, this server is ubuntu-24.04')"
+absent "kept for another OS: no probe ran" "port 10022"$'\n'
+OSREL="$WORK/os-release-2404" report fails "kept for another OS: part 1 still" "$(r os 'ubuntu 24.04')"
+# The provider isn't on the server: a set kept for another provider runs.
+kset otherprovider "$REP_STATE"
+sed 's/^target .*/target other ubuntu-26.04/' "$WORK/recipes-otherprovider/kept/list" > "$WORK/kept-list" && mv "$WORK/kept-list" "$WORK/recipes-otherprovider/kept/list"
+RSTATE="$WORK/recipes-otherprovider" report ok "the provider isn't checked on the server" "$(r ok ssh)"
+kset newerstate "first 2026-11-01T08:00:00Z\nran 2026-11-22T10:00:00Z\nrelease 0.4.1\n"
+RSTATE="$WORK/recipes-newerstate" report fails "a kept set of another release than the state: checks not run" "$(r not-run 'checks: the kept set is of recipes 0.4.0, the last good run of 0.4.1')"
+RSTATE="$WORK/recipes-newerstate" report fails "a kept set of another release than the state: probes not run" "$(r not-run 'probes: the kept set is of recipes 0.4.0, the last good run of 0.4.1')"
+absent "a kept set of another release: no check ran" "$(r ok stack/00-apt-retries.check.sh)"
+kset olderstate "ran 2026-11-22T10:00:00Z\nrelease 0.3.0\n"
+RSTATE="$WORK/recipes-olderstate" report fails "a kept set newer than the state: not run" "$(r not-run 'checks: the kept set is of recipes 0.4.0, the last good run of 0.3.0')"
 
 echo "== server-report: one at a time with recipe-run"
 kset replock "$REP_STATE"

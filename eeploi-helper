@@ -883,7 +883,7 @@ recipes_is_kept() { [ "${R_PATH[$1]}" = "$RECIPE_VALUES" ] || recipes_is_check "
 # recipes_keep <version> <target>: after a good run, the release's checks, probes and values.sh, as
 # verified against the signed manifest, in place of the ones kept before. Built beside the old set,
 # then swapped in, so a set is whole or not there; server-report waits for the lock recipe-run holds.
-# False when it can't: the set before stays, and the run goes on to its state.
+# Runs after the state is written. False when it can't: the set before stays, and the run goes on.
 # D-27: only what a verified release holds, kept by root after a good run.
 recipes_keep() {
   local i p new list="# Written by eeploi-helper (recipe-run): the checks and probes of the last good run. Do not edit."$'\n'"release $1"$'\n'"target $2"$'\n'
@@ -1156,6 +1156,17 @@ row() { printf '%-14s %s\n' "$1" "$2"; }
 # before the helper wrote times.
 report_when() {
   if [ -z "$R_LAST" ]; then echo none; elif [ -z "$1" ]; then echo not-recorded; else echo "$1"; fi
+}
+
+# report_fits: the kept set fits this server: it was kept for this server's OS (from os-release).
+# False with REP_FIT_WHY when it doesn't, or when os-release can't be read.
+# D-27: the OS only; the provider isn't checked on the server, until recipes.conf names it.
+report_fits() {
+  REP_FIT_WHY=''
+  if [ "$REP_OS" = unknown ]; then REP_FIT_WHY="os-release can't be read"
+  elif [ "${K_TARGET#* }" != "$R_OS" ]; then REP_FIT_WHY="the kept set is for ${K_TARGET#* }, this server is $R_OS"
+  fi
+  [ -z "$REP_FIT_WHY" ]
 }
 
 # report_setup: one eeploi set up, or not.
@@ -2482,16 +2493,16 @@ case "$command" in
       p=${R_PATH[i]}
       if recipes_check "$p"; then echo "check ok $p"; else echo "check failed $p"; checks=1; fi
     done
-    # The state only after every step went well; a failed run runs its steps again next time. The
-    # checks and probes are kept just before it, for server-report.
+    # The state only after every step went well; a failed run runs its steps again next time. Then
+    # the checks and probes are kept, for server-report.
     if [ $failed -eq 0 ]; then
-      # Only a newer release, or one for another provider or OS, replaces a kept set it can read; the
-      # same one again keeps it. A set it can't keep leaves the one before and doesn't stop the run.
-      report_kept
-      if [ -z "$K_RELEASE" ] || version_lt "$K_RELEASE" "$1" || [ "$K_TARGET" != "$2 $R_OS" ]; then
-        recipes_keep "$1" "$2 $R_OS" || echo "eeploi-helper: the checks and probes were not kept for server-report, the set before stays" >&2
-      fi
       recipes_state_write "$1" "$kept"
+      # The same or a newer release replaces the kept set (the same one repairs it), never an older
+      # one. A set it can't keep leaves the one before and doesn't stop the run.
+      report_kept
+      if [ -z "$K_RELEASE" ] || ! version_lt "$1" "$K_RELEASE"; then
+        recipes_keep "$1" "$2 $R_OS" || echo "eeploi-helper: the checks and probes were not kept for server-report: until a good run keeps them, the report runs none" >&2
+      fi
     fi
     if [ $failed -eq 0 ] && [ $checks -eq 0 ]; then result=ok; else result=failed; fi
     echo "result $result"
@@ -2527,10 +2538,14 @@ case "$command" in
         REP_CHECKS=not-run REP_PROBES=not-run REP_CHECKS_WHY=$K_ERROR
       elif [ -z "$K_RELEASE" ]; then
         REP_CHECKS=none REP_PROBES=none REP_CHECKS_WHY="none kept: no good recipe-run since helper 1.2.0"
+      elif [ "$K_RELEASE" != "$R_LAST" ]; then
+        # D-27: the kept set is the last good run's, or it isn't used.
+        REP_CHECKS=not-run REP_PROBES=not-run REP_CHECKS_WHY="the kept set is of recipes $K_RELEASE, the last good run of $R_LAST"
+      elif ! report_fits; then
+        REP_CHECKS=not-run REP_PROBES=not-run REP_CHECKS_WHY=$REP_FIT_WHY
       # D-32: the checks run only with this server's own values.
       elif [ "$REP_VALUES" = none ]; then REP_CHECKS=not-run REP_CHECKS_WHY="no $ETC/recipes.conf"
       elif [ "$REP_VALUES" = unreadable ]; then REP_CHECKS=not-run REP_CHECKS_WHY="$ETC/recipes.conf can't be used (recipe-run says why)"
-      elif [ "$REP_OS" = unknown ]; then REP_CHECKS=not-run REP_CHECKS_WHY="os-release can't be read"
       fi
     fi
     [ "$REP_PROBES" = ran ] || REP_PROBES_WHY=$REP_CHECKS_WHY

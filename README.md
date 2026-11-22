@@ -219,7 +219,7 @@ sudo eeploi-helper recipe-run 0.4.0 hetzner
 5. Downloads the package `recipes-<version>.tar.gz` (4 MB at most, 8 MB unzipped, at most 200 files in the manifest). A package with a link or any other file that is not a plain file or folder is refused. Reads every file the manifest lists out of it, one by one, into a folder of its own; the package is never unpacked as it is. Each file must match its SHA-256, so a changed or a missing file is refused before anything runs. The files a run uses may hold no placeholder but `{user}`, `{port}`, `{php}`, `{version}` and `{name}`, and those never in bash's own braces (`${user}`).
 6. Runs the `always` steps in order, each as `stack/start.sh`, `stack/values.sh` and the step under `set -euo pipefail`, with the values from `recipes.conf` and the OS filled in: a step that is new or changed since the last good run here, and an unchanged one whose check fails now. `first-boot` and `window` steps never run. A failed step stops the steps after it.
 7. Runs every check of the release, each on its own after the values, under `set -euo pipefail`. Checks only read.
-8. After every step went well, keeps the release's checks, probes and `stack/values.sh` for [the server report](#server-report) in `/var/lib/eeploi/recipes/kept` (root-owned, swapped in whole; only a newer release, or one for another provider or OS, replaces them), then writes `/var/lib/eeploi/recipes/state` (root-owned): when the first good run here was (`first`, never written for a server whose state is from before 1.2.0), when this one ran (`ran`, UTC), the release and the SHA-256 of each step.
+8. After every step went well, writes `/var/lib/eeploi/recipes/state` (root-owned): when the first good run here was (`first`, never written for a server whose state is from before 1.2.0), when this one ran (`ran`, UTC), the release and the SHA-256 of each step. Then keeps the release's checks, probes and `stack/values.sh` for [the server report](#server-report) in `/var/lib/eeploi/recipes/kept` (root-owned, swapped in whole; the same or a newer release replaces them, never an older one).
 
 Steps and checks run as root, from `/`, with a clean environment and no stdin. What they print goes to stderr. One `recipe-run` at a time. stdout has only these lines, and a line per step and per run goes to the system log:
 
@@ -262,7 +262,8 @@ failed         first-boot/00-lock-root.check.sh
 
 - A server without `recipe-run` state shows "not set up by eeploi", part 1 and the base: no checks and no probes.
 - A server whose last good `recipe-run` was before 1.2.0 has no kept set yet: "none kept".
-- A kept set that fails its checks, or a `recipes.conf` or `os-release` that can't be used for the checks: part 1 and the base, and the checks (with a bad kept set, the probes too) are `not-run`, with the reason. Exit `1`.
+- A kept set that fails its checks, is of another release than the last good run, or was kept for another OS than `os-release` names (the provider isn't checked on the server): part 1 and the base, and the checks and probes are `not-run`, with the reason. Exit `1`.
+- A `recipes.conf` that can't be used: the same for the checks only; the probes take no values and still run.
 
 Exit `0`: the report is whole, whether the checks pass or not. `1`: the checks or probes could not run. `64`: refused (an argument, a state or lock it can't trust, a `recipe-run` that keeps running).
 

@@ -238,9 +238,9 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 
 - **Kind:** decision
 - **Decided:** 2026-11-22, 1.2.0
-- **What:** after every step of a run went well, `recipe-run` keeps the release's checks (`*.check.sh`), probes (`*.probe.sh`) and `stack/values.sh`, as verified against the signed manifest, in `/var/lib/eeploi/recipes/kept`, root-owned, with a `list` of the release, its provider and OS, and each file's SHA-256 in manifest order. The new set is built beside the old one and swapped in just before the state is written. It replaces a set of an older release, of another provider or OS, or one the report can't use; the same release run again keeps the set it has. A run with a failed step keeps the set before it. A set that can't be written (a full disk, say) leaves the set before, says so on stderr, and doesn't stop the run.
-- **Why:** `server-report` then runs what last ran here, with no download, so it works without a network.
-- **Accepted:** a server where no `recipe-run` ran since 1.2.0 has no kept set, and its report shows no checks and no probes.
+- **What:** after every step of a run went well, `recipe-run` keeps the release's checks (`*.check.sh`), probes (`*.probe.sh`) and `stack/values.sh`, as verified against the signed manifest, in `/var/lib/eeploi/recipes/kept`, root-owned, with a `list` of the release, its provider and OS, and each file's SHA-256 in manifest order. The new set is built beside the old one and swapped in right after the state is written. A good run of the same or a newer release replaces it (the same release repairs a set the report can't use), never an older one. A run with a failed step keeps the set before it. A set that can't be written (a full disk, say) leaves the set before, says so on stderr, and doesn't stop the run. The report uses the set only when it is of the last good run's release and was kept for this server's OS (`os-release`); otherwise the checks and probes are `not-run`, with the reason.
+- **Why:** `server-report` then runs what last ran here, with no download, so it works without a network, and never runs checks or probes meant for another release or OS.
+- **Accepted:** a server where no `recipe-run` ran since 1.2.0 has no kept set, and its report shows no checks and no probes. The provider is not checked on the server, until `recipes.conf` names it: the server keeps no record of its own provider, and `recipe-run` takes it as an argument.
 - **Where:** `eeploi-helper`
 
 ## D-28: server-report reads, and runs only what recipe-run kept
@@ -280,7 +280,7 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 
 - **Kind:** known limit
 - **Decided:** 2026-11-22, 1.2.0
-- **What:** a check runs after `stack/values.sh` with the values from `/etc/eeploi/recipes.conf`, by `recipe-run`'s rules. Without that file, with one those rules refuse, or without a readable `os-release`, the report says the checks were not run and why, and exits 1. The probes, which take no values, still run.
+- **What:** a check runs after `stack/values.sh` with the values from `/etc/eeploi/recipes.conf`, by `recipe-run`'s rules. Without that file, or with one those rules refuse, the report says the checks were not run and why, and exits 1. The probes, which take no values, still run. Without a readable `os-release` neither runs (D-27).
 - **Why:** a check with values the helper guessed would report on another server than this one.
 - **Where:** `eeploi-helper`
 
