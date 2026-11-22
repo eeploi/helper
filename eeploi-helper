@@ -1314,30 +1314,32 @@ epoch_of() { date -u -d "$1" +%s 2> /dev/null || date -u -j -f "${DATE_FORMAT#+}
 REBOOT_GAP=900
 REBOOT_LINE_RE="^rebooted ($DATE_PART)\$"
 
-# reboot_last: when the last reboot server-reboot started was, from $REBOOT_STATE, root's, parsed line
-# by line; empty when there is no file (no reboot started here yet).
+# reboot_last: B_LAST, when the last reboot server-reboot started was, from $REBOOT_STATE, root's,
+# parsed line by line; empty when there is no file (no reboot started here yet).
 reboot_last() {
-  local file=$REBOOT_STATE line last=''
+  local file=$REBOOT_STATE line
+  B_LAST=''
   [ -e "$file" ] || [ -L "$file" ] || return 0
   trusted "$file" || fail "untrusted reboot state: $file (must be a root-owned file, not writable by others)"
   # D-5: parsed line by line, never sourced.
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
-    if [[ $line =~ $REBOOT_LINE_RE ]] && [ -z "$last" ]; then last=${BASH_REMATCH[1]}; else fail "invalid line in $file: $line"; fi
+    [[ $line =~ $REBOOT_LINE_RE ]] || fail "invalid line in $file: $line"
+    [ -z "$B_LAST" ] || fail "rebooted is set twice in $file"
+    B_LAST=${BASH_REMATCH[1]}
   done < "$file"
-  [ -n "$last" ] || fail "no time in $file"
-  echo "$last"
+  [ -n "$B_LAST" ] || fail "no time in $file"
 }
 
 # reboot_allowed: refuses a call within 15 minutes of the last reboot (a time in the future too, until
 # 15 minutes after it). A dry run takes now from EEPLOI_HELPER_NOW when set.
 reboot_allowed() {
-  local last at now
-  last=$(reboot_last) || exit
-  [ -n "$last" ] || return 0
-  at=$(epoch_of "$last") || fail "cannot read the time in $REBOOT_STATE"
-  now=$(epoch_of "$(now_utc)") || fail "cannot read the time now"
-  [ "$now" -ge $((at + REBOOT_GAP)) ] || fail "the last reboot was at $last: the next is allowed from $(utc_at $((at + REBOOT_GAP)))"
+  local at now
+  reboot_last
+  [ -n "$B_LAST" ] || return 0
+  at=$(epoch_of "$B_LAST") || fail "cannot read the time in $REBOOT_STATE"
+  if [ -n "$NOW" ]; then now=$(epoch_of "$NOW") || fail "cannot read the time now"; else now=$(date +%s); fi
+  [ "$now" -ge $((at + REBOOT_GAP)) ] || fail "the last reboot was at $B_LAST: the next is allowed from $(utc_at $((at + REBOOT_GAP)))"
 }
 
 # reboot_pending: a reboot server-reboot started is pending: its timer waits, or its service waits
@@ -2667,8 +2669,9 @@ case "$command" in
       # can't open is logged, not a silent exit of sh.
       # D-42: right before systemctl reboot it writes the time ($3); a reboot that doesn't happen
       # leaves none: no time when it can't be written, and it is removed when systemctl reboot fails.
-      # shellcheck disable=SC2016 # $1, $2 and $3 are for the unit's shell
-      job=(sh -c 'if [ -e "$1" ]; then command exec 8< "$1" || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock could not be opened"; exit 1; }; flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; fi; { printf "# Written by eeploi-helper (server-reboot): the last reboot it started. Do not edit.\nrebooted %s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$3.new" && mv -f "$3.new" "$3"; } || { rm -f "$3.new"; logger -t eeploi-helper -- "server-reboot: no reboot, the time could not be written to $3"; exit 1; }; systemctl reboot || { rm -f "$3"; logger -t eeploi-helper -- "server-reboot: no reboot, systemctl reboot failed"; exit 1; }; exec sleep infinity' sh "$RECIPES_STATE/.lock" "$REBOOT_WAIT" "$REBOOT_STATE")
+      # The time is as the state writes it ($4).
+      # shellcheck disable=SC2016 # $1 to $4 are for the unit's shell
+      job=(sh -c 'if [ -e "$1" ]; then command exec 8< "$1" || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock could not be opened"; exit 1; }; flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; fi; { printf "# Written by eeploi-helper (server-reboot): the last reboot it started. Do not edit.\nrebooted %s\n" "$(date -u "$4")" > "$3.new" && mv -f "$3.new" "$3"; } || { rm -f "$3.new"; logger -t eeploi-helper -- "server-reboot: no reboot, the time could not be written to $3"; exit 1; }; systemctl reboot || { rm -f "$3"; logger -t eeploi-helper -- "server-reboot: no reboot, systemctl reboot failed"; exit 1; }; exec sleep infinity' sh "$RECIPES_STATE/.lock" "$REBOOT_WAIT" "$REBOOT_STATE" "$DATE_FORMAT")
       due=$(utc_in "$REBOOT_DELAY")
       if run systemd-run --quiet --unit="$REBOOT_UNIT" --description="eeploi-helper: reboot due $due" --collect \
         --on-active="$REBOOT_DELAY" --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no \

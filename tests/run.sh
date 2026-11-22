@@ -2657,16 +2657,16 @@ echo "== server-reboot"
 REBOOT_TIMER='--collect --on-active=5 --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no --setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin --'
 # The unit's shell script, as the helper has it; the dry run prints it as one word among the others.
 # shellcheck disable=SC2016 # the helper's own text
-REBOOT_SH=$(sed -n 's/^ *job=(sh -c '"'"'\(.*\)'"'"' sh "$RECIPES_STATE\/.lock" "$REBOOT_WAIT" "$REBOOT_STATE")$/\1/p' "$HELPER")
+REBOOT_SH=$(sed -n 's/^ *job=(sh -c '"'"'\(.*\)'"'"' sh "$RECIPES_STATE\/.lock" "$REBOOT_WAIT" "$REBOOT_STATE" "$DATE_FORMAT")$/\1/p' "$HELPER")
 check "server-reboot: the unit's script, once" test "$(grep -c '^ *job=(sh -c ' "$HELPER")/${#REBOOT_SH}" != "1/0"
 REBOOT_JOB="sh -c $REBOOT_SH sh"
 mkdir -p "$WORK/reboot-none"
-ERR_TO=/dev/null ok "no lock: schedules the reboot, then says when" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-none/reboot
+ERR_TO=/dev/null ok "no lock: schedules the reboot, then says when" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-none/reboot +%Y-%m-%dT%H:%M:%SZ
 reboot due " server-reboot
 DUE_RE='^run: systemd-run --quiet --unit=eeploi-reboot --description=eeploi-helper: reboot due ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) .*'$'\n''reboot due ([^ ]+)'$'\n''reboot-required no'$'\n''boot-id unknown$'
 if [[ $OUT =~ $DUE_RE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then pass; else failure "server-reboot: due in the unit and in the answer, one UTC time" "$OUT"; fi
 ok "logged" "log: eeploi-helper: eeploi: server-reboot" server-reboot
-RSTATE="$WORK/recipes-replock" ok "a lock: the reboot waits for it, 30 minutes at most" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-replock/.lock 1800 $WORK/reboot-none/reboot
+RSTATE="$WORK/recipes-replock" ok "a lock: the reboot waits for it, 30 minutes at most" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-replock/.lock 1800 $WORK/reboot-none/reboot +%Y-%m-%dT%H:%M:%SZ
 reboot due " server-reboot
 absent "a lock: not taken here, the unit takes it" "lock: "
 RSTATE="$WORK/recipes-replockw" refuse "a lock it can't trust" "untrusted recipe-run lock: $WORK/recipes-replockw/.lock" server-reboot
@@ -2723,12 +2723,12 @@ nothing_ran "10 minutes after the last"
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:14:59Z refuse "a second short of 15 minutes: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:00:00Z refuse "at the same second: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T18:00:00Z refuse "a last reboot in the future: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
-RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:15:00Z ok "15 minutes after the last: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-last/reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:15:00Z ok "15 minutes after the last: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-last/reboot +%Y-%m-%dT%H:%M:%SZ
 reboot due " server-reboot
 RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-23T08:00:00Z ok "the next day: reboots" "reboot due " server-reboot
 SYS="$WORK/system-reboot-timer" RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:10:00Z ok "pending, in the 15 minutes: pending, not refused" \
   "reboot pending 2026-11-22T19:00:05Z" server-reboot
-RBOOT="$WORK/reboot-nofile/reboot" ok "no file: no reboot yet, reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-nofile/reboot
+RBOOT="$WORK/reboot-nofile/reboot" ok "no file: no reboot yet, reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-nofile/reboot +%Y-%m-%dT%H:%M:%SZ
 reboot due " server-reboot
 RBOOT="$WORK/reboot-newdir/reboot" ok "no folder: made root's first" "run: install -d -o root -g root -m 755 $WORK/reboot-newdir
 run: systemd-run" server-reboot
@@ -2744,18 +2744,16 @@ chmod 777 "$WORK/reboot-opendir"
 RBOOT="$WORK/reboot-opendir/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "a folder writable by others: refused" "untrusted reboot state" server-reboot
 chmod 755 "$WORK/reboot-opendir"
 rb twice $'rebooted 2026-11-22T19:00:00Z\nrebooted 2026-11-22T19:20:00Z\n'
-RBOOT="$WORK/reboot-twice/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "two times: refused" "invalid line in $WORK/reboot-twice/reboot: rebooted 2026-11-22T19:20:00Z" server-reboot
+RBOOT="$WORK/reboot-twice/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "two times: refused" "rebooted is set twice in $WORK/reboot-twice/reboot" server-reboot
 rb notime "$RB_HEAD"$'\n'
 RBOOT="$WORK/reboot-notime/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "no time: refused" "no time in $WORK/reboot-notime/reboot" server-reboot
 rb nonewline 'rebooted 2026-11-22T19:00:00Z'
 RBOOT="$WORK/reboot-nonewline/reboot" NOW_AT=2026-11-22T19:10:00Z refuse "a last line without a newline: read" "allowed from 2026-11-22T19:15:00Z" server-reboot
 # shellcheck disable=SC2016 # the literal $(id) is the point: it is no time
-for bad in 'rebooted 2026-11-22 19:00:00' 'rebooted 2026-11-22T19:00:00+01:00' 'rebooted $(id)' 'last=2026-11-22T19:00:00Z' ' rebooted 2026-11-22T19:00:00Z'; do
-  rb bad $'rebooted 2026-11-22T19:00:00Z\n'"$bad"$'\n'
+for bad in 'rebooted 2026-11-22T19:00:00' 'rebooted 2026-11-22 19:00:00' 'rebooted 2026-11-22T19:00:00+01:00' 'rebooted $(id)' 'last=2026-11-22T19:00:00Z' ' rebooted 2026-11-22T19:00:00Z'; do
+  rb bad "$bad"$'\n'
   RBOOT="$WORK/reboot-bad/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "an invalid line ($bad): refused" "invalid line in $WORK/reboot-bad/reboot" server-reboot
 done
-rb badfirst $'rebooted 2026-11-22T19:00:00\n'
-RBOOT="$WORK/reboot-badfirst/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "a time that isn't UTC to the second: refused" "invalid line" server-reboot
 
 echo "== server-reboot: the unit's script"
 # The script runs in sh with stubs for systemctl, logger and sleep, which write what they were called with
@@ -2775,7 +2773,7 @@ if [ "$(uname)" = Linux ] && command -v flock > /dev/null; then
   mkdir -p "$RB/state"
   unit() {
     rm -f "$RB/log" "$RB/state/reboot"
-    PATH="$RB/bin:$PATH" sh -c "$REBOOT_SH" sh "$1" 1 "${RB_TIME:-$RB/state/reboot}" > /dev/null 2>&1
+    PATH="$RB/bin:$PATH" sh -c "$REBOOT_SH" sh "$1" 1 "${RB_TIME:-$RB/state/reboot}" '+%Y-%m-%dT%H:%M:%SZ' > /dev/null 2>&1
     CODE=$?
     OUT=$(cat "$RB/log" 2> /dev/null)
     if [ "$OUT" = "$3" ]; then pass; else failure "unit: $2" "exit $CODE, expected:
