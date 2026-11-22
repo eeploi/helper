@@ -277,12 +277,13 @@ sudo eeploi-helper server-reboot
 ```
 reboot due 2026-11-22T19:00:05Z
 reboot-required yes
+boot-id 3f2b8c1e-7d4a-4e9b-a6c5-0d1e2f3a4b5c
 ```
 
-It starts a transient systemd timer and service, `eeploi-reboot`, and answers at once, so the answer reaches the caller before the connection drops. About 5 seconds later the service runs `systemctl reboot`. `reboot-required` says whether `/var/run/reboot-required` is there; the server reboots either way.
+It starts a transient systemd timer and service, `eeploi-reboot`, and answers at once, so the answer reaches the caller before the connection drops. About 5 seconds later the service runs `systemctl reboot`. `reboot-required` says whether `/var/run/reboot-required` is there; the server reboots either way. `boot-id` is the kernel's id of this boot (`/proc/sys/kernel/random/boot_id`, `unknown` when it can't be read): the reboot is done when a later call shows another one, not when the time has passed, since a reboot that waits for a `recipe-run` comes later.
 
-- When `recipe-run`'s lock (`/var/lib/eeploi/recipes/.lock`) is there, the service first takes it, so a `recipe-run` or `server-report` that runs finishes first, and holds it until the system stops the service. It waits 30 minutes at most: then it doesn't reboot, and says why in the system log. Without the lock, no `recipe-run` ever ran here, and it doesn't wait.
-- While a reboot is pending, a second call starts nothing and prints `reboot pending <time>` (`unknown` when it can't tell) and `reboot-required`.
+- When the service starts and `recipe-run`'s lock (`/var/lib/eeploi/recipes/.lock`) is there, it first takes it, so a `recipe-run` or `server-report` that runs, or started in those seconds, finishes first, and holds it until the system stops the service. It waits 30 minutes at most: then it doesn't reboot, and says why in the system log, as it does when the lock can't be opened or `systemctl reboot` fails. Without the lock, no `recipe-run` ever ran here, and it doesn't wait.
+- While a reboot is pending, a second call starts nothing and prints `reboot pending <time>` (`unknown` when it can't tell), `reboot-required` and `boot-id`.
 
 Exit `0`: the reboot is due or pending. `64`: refused (an argument, a lock it can't trust, a reboot it could not schedule).
 

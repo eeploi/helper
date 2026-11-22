@@ -6,7 +6,7 @@ A pull request adds its line under Unreleased. The pull request that raises `VER
 
 ## Unreleased
 
-- New subcommand `server-reboot`: reboots the server about 5 seconds after it answers, through a transient systemd unit, `eeploi-reboot`. The unit first takes `recipe-run`'s lock, so a `recipe-run` or `server-report` finishes first, and waits 30 minutes at most. Prints `reboot due <time>` and `reboot-required yes|no`; while a reboot is pending, a second call starts nothing and prints `reboot pending <time>`. See README, Reboot.
+- New subcommand `server-reboot`: reboots the server about 5 seconds after it answers, through a transient systemd unit, `eeploi-reboot`. The unit first takes `recipe-run`'s lock, so a `recipe-run` or `server-report` finishes first, and waits 30 minutes at most. Prints `reboot due <time>`, `reboot-required yes|no` and `boot-id <id>`, which a reboot changes; while a reboot is pending, a second call starts nothing and prints `reboot pending <time>`. See README, Reboot.
 
 ## 1.2.0
 

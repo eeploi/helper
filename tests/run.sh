@@ -2653,11 +2653,14 @@ report lacks "no lock: no recipe-run ever ran" "lock: "
 
 echo "== server-reboot"
 REBOOT_TIMER='--collect --on-active=5 --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no --setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin --'
-# shellcheck disable=SC2016 # the unit's shell script, as the helper passes it
-REBOOT_JOB='sh -c exec 8< "$1" && flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; systemctl reboot && exec sleep 600 sh'
-ERR_TO=/dev/null ok "no lock: schedules the reboot, then says when" "$REBOOT_TIMER systemctl reboot
+# The unit's shell script, as the helper has it; the dry run prints it as one word among the others.
+# shellcheck disable=SC2016 # the helper's own text
+REBOOT_SH=$(sed -n 's/^ *job=(sh -c '"'"'\(.*\)'"'"' sh "$RECIPES_STATE\/.lock" "$REBOOT_WAIT")$/\1/p' "$HELPER")
+check "server-reboot: the unit's script, once" test "$(grep -c '^ *job=(sh -c ' "$HELPER")/${#REBOOT_SH}" != "1/0"
+REBOOT_JOB="sh -c $REBOOT_SH sh"
+ERR_TO=/dev/null ok "no lock: schedules the reboot, then says when" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800
 reboot due " server-reboot
-DUE_RE='^run: systemd-run --quiet --unit=eeploi-reboot --description=eeploi-helper: reboot due ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) .*'$'\n''reboot due ([^ ]+)'$'\n''reboot-required no$'
+DUE_RE='^run: systemd-run --quiet --unit=eeploi-reboot --description=eeploi-helper: reboot due ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) .*'$'\n''reboot due ([^ ]+)'$'\n''reboot-required no'$'\n''boot-id unknown$'
 if [[ $OUT =~ $DUE_RE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then pass; else failure "server-reboot: due in the unit and in the answer, one UTC time" "$OUT"; fi
 ok "logged" "log: eeploi-helper: eeploi: server-reboot" server-reboot
 RSTATE="$WORK/recipes-replock" ok "a lock: the reboot waits for it, 30 minutes at most" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-replock/.lock 1800
@@ -2667,7 +2670,7 @@ RSTATE="$WORK/recipes-replockw" refuse "a lock it can't trust" "untrusted recipe
 nothing_ran "a lock it can't trust"
 { cat "$WORK/system"; echo 'path /var/run/reboot-required'; } > "$WORK/system-reboot-required"
 SYS="$WORK/system-reboot-required" ok "a reboot required: says so" "reboot-required yes" server-reboot
-SYS='' ok "no reboot required: reboots all the same" "$REBOOT_TIMER systemctl reboot" server-reboot
+SYS='' ok "no reboot required: reboots all the same" "$REBOOT_TIMER $REBOOT_JOB" server-reboot
 DESC='description eeploi-reboot.service eeploi-helper: reboot due 2026-11-22T19:00:05Z'
 printf 'active eeploi-reboot.timer\n%s\n' "$DESC" > "$WORK/system-reboot-timer"
 SYS="$WORK/system-reboot-timer" ok "pending, the timer waits: says when, starts nothing" "reboot pending 2026-11-22T19:00:05Z
@@ -2684,10 +2687,68 @@ nothing_ran "pending, a description it can't read"
 printf 'active eeploi-reboot.timer\n' > "$WORK/system-reboot-nodesc"
 SYS="$WORK/system-reboot-nodesc" ok "pending, no description: unknown" "reboot pending unknown" server-reboot
 printf '%s\n' "$DESC" > "$WORK/system-reboot-done"
-SYS="$WORK/system-reboot-done" ok "a description, no active unit: not pending" "$REBOOT_TIMER systemctl reboot" server-reboot
+SYS="$WORK/system-reboot-done" ok "a description, no active unit: not pending" "$REBOOT_TIMER $REBOOT_JOB" server-reboot
+BOOT='3f2b8c1e-7d4a-4e9b-a6c5-0d1e2f3a4b5c'
+{ cat "$WORK/system"; echo "boot-id $BOOT"; } > "$WORK/system-boot"
+SYS="$WORK/system-boot" ok "the boot id, which a reboot changes" "reboot-required no
+boot-id $BOOT" server-reboot
+printf 'active eeploi-reboot.timer\n%s\nboot-id %s\n' "$DESC" "$BOOT" > "$WORK/system-boot-pending"
+SYS="$WORK/system-boot-pending" ok "pending: the boot id too" "reboot pending 2026-11-22T19:00:05Z
+reboot-required no
+boot-id $BOOT" server-reboot
+# shellcheck disable=SC2016 # the literal $(id) is the point: it is no boot id
+printf 'boot-id $(id)\n' > "$WORK/system-boot-odd"
+SYS="$WORK/system-boot-odd" ok "a boot id it can't read: unknown" "boot-id unknown" server-reboot
+printf 'boot-id 3F2B8C1E-7D4A-4E9B-A6C5-0D1E2F3A4B5C\n' > "$WORK/system-boot-upper"
+SYS="$WORK/system-boot-upper" ok "a boot id not as the kernel writes it: unknown" "boot-id unknown" server-reboot
 refuse "an argument" "usage: server-reboot" server-reboot now
 nothing_ran "an argument"
 refuse "two arguments" "usage: server-reboot" server-reboot --at 5
+
+echo "== server-reboot: the unit's script"
+# The script runs in sh with stubs for systemctl, logger and sleep, which write what they were called with
+# to $RB/log; the lock is real (flock). systemctl fails when RB_FAIL is set.
+# Linux only, as the unit: macOS's sh (bash 3.2) spins on the held lock, where dash and bash 5 don't.
+if [ "$(uname)" = Linux ] && command -v flock > /dev/null; then
+  RB="$WORK/reboot-unit"
+  mkdir -p "$RB/bin"
+  for stub in systemctl logger sleep; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s/log"\n' "$stub" "$RB" > "$RB/bin/$stub"
+  done
+  # shellcheck disable=SC2016 # for the stub's shell
+  echo '[ -z "${RB_FAIL:-}" ]' >> "$RB/bin/systemctl"
+  chmod 755 "$RB/bin/"*
+  # unit <lock> <name> <expected log>: the script with that lock and a 1-second wait; the log is all the
+  # stubs wrote, exactly.
+  unit() {
+    rm -f "$RB/log"
+    PATH="$RB/bin:$PATH" sh -c "$REBOOT_SH" sh "$1" 1 > /dev/null 2>&1
+    CODE=$?
+    OUT=$(cat "$RB/log" 2> /dev/null)
+    if [ "$OUT" = "$3" ]; then pass; else failure "unit: $2" "exit $CODE, expected:
+$3
+got:
+$OUT"; fi
+  }
+  unit "$RB/none.lock" "no lock: reboots, then holds on" $'systemctl reboot\nsleep infinity'
+  touch "$RB/free.lock"
+  unit "$RB/free.lock" "a free lock: taken, reboots, then holds on" $'systemctl reboot\nsleep infinity'
+  touch "$RB/held.lock"
+  flock "$RB/held.lock" sleep 3 &
+  held=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do flock -n "$RB/held.lock" true 2> /dev/null || break; sleep 0.1; done
+  unit "$RB/held.lock" "a held lock: no reboot, logged" 'logger -t eeploi-helper -- server-reboot: no reboot, the recipe-run lock was not free within 1 seconds'
+  check "unit: a held lock: fails" test "$CODE" = 1
+  kill "$held" 2> /dev/null
+  wait "$held" 2> /dev/null
+  touch "$RB/closed.lock"
+  chmod 000 "$RB/closed.lock"
+  unit "$RB/closed.lock" "a lock it can't open: no reboot, logged" 'logger -t eeploi-helper -- server-reboot: no reboot, the recipe-run lock was not free within 1 seconds'
+  RB_FAIL=1 unit "$RB/none.lock" "systemctl reboot fails: logged" $'systemctl reboot\nlogger -t eeploi-helper -- server-reboot: no reboot, systemctl reboot failed'
+  check "unit: systemctl reboot fails: fails" test "$CODE" = 1
+else
+  echo "note: not Linux or no flock, the unit's script is not run (CI runs it)"
+fi
 
 echo "== bin/release"
 # Tags and releases never change (D-26 in DECISIONS.md): bin/release in a copy, a repo with its own origin, stubs
