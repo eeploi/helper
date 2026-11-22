@@ -2718,7 +2718,10 @@ printf '#!/bin/sh\nexit 0\n' > "$REL/stubs/shellcheck"
 chmod 755 "$REL/stubs"/*
 cp "$ROOT/bin/release" "$REL/repo/bin/release"
 cp "$RKEY.pub" "$REL/repo/minisign.pub"
-printf "VERSION='1.2.3'\n" > "$REL/repo/eeploi-helper"
+REL_HELPER="VERSION='1.2.3'
+$(grep "^SEMVER_RE=" "$HELPER")
+"
+printf '%s' "$REL_HELPER" > "$REL/repo/eeploi-helper"
 REL_CHANGELOG=$'# Changelog\n\n## Unreleased\n\n## 1.2.3\n\n### Added\n\n- A change.\n\n## 1.2.2\n\n- An older change.\n'
 printf '%s' "$REL_CHANGELOG" > "$REL/repo/CHANGELOG.md"
 echo 'exit 0' > "$REL/repo/tests/run.sh"
@@ -2774,14 +2777,16 @@ GH_OLD=1 rel_check 1 "release: a gh without isImmutable stops the checks" \
   'release: could not ask GitHub for a release v1.2.3: Unknown JSON field: "isImmutable"'
 
 # The changelog has no dates, and the pull request that raises VERSION empties Unreleased (D-34).
-# rel_changelog <text>: CHANGELOG.md in the copy, committed and on its origin, as the checks need.
-rel_changelog() {
-  printf '%s' "$1" > "$REL/repo/CHANGELOG.md"
-  rel_git -C "$REL/repo" commit -qam changelog
-  rel_git -C "$REL/repo" push -q origin main
+# rel_commit <file> <text>: the file in the copy, committed and on its origin, as the checks need.
+rel_commit() {
+  printf '%s' "$2" > "$REL/repo/$1"
+  if ! { rel_git -C "$REL/repo" commit -qam "$1" && rel_git -C "$REL/repo" push -q origin main; }; then
+    failure "rel_commit: $1 not committed and pushed" "$2"
+  fi
 }
+rel_changelog() { rel_commit CHANGELOG.md "$1"; }
 # rel_swap <from> <to>: the good changelog with its first <from> replaced by <to>. bash 3.2 reads an unquoted
-# pattern's # as an anchor, and keeps the quotes of a quoted replacement.
+# pattern's # as an anchor, and keeps the quotes of a quoted replacement. No & in <to>: bash 5.2 replaces it.
 rel_swap() {
   local from=$1 to=$2 text
   text=${REL_CHANGELOG/"$from"/$to}
@@ -2811,7 +2816,17 @@ rel_swap $'## Unreleased\n' $'## Unreleased\n\n### Fixed\n'
 rel_check 1 "release: a heading under Unreleased" "release: CHANGELOG.md has lines under ## Unreleased"
 rel_swap $'## Unreleased\n' $'## Unreleased\n\n\n'
 rel_check 0 "release: blank lines under Unreleased" "CHANGELOG.md ready"
+rel_swap $'### Added\n\n- A change.\n\n' ''
+rel_check 1 "release: nothing under the version" "release: CHANGELOG.md has nothing under ## 1.2.3"
 rel_changelog "$REL_CHANGELOG"
+# Only a version self-update installs (D-35): its SEMVER_RE, read from the helper.
+for bad in 1.2.010 1.2.10000; do
+  rel_commit eeploi-helper "${REL_HELPER/1.2.3/$bad}"
+  rel_check 1 "release: VERSION $bad, which self-update refuses" "release: $bad is not a version self-update installs"
+done
+rel_commit eeploi-helper "$(grep -v '^SEMVER_RE=' <<< "$REL_HELPER")"
+rel_check 1 "release: no SEMVER_RE in the helper" "release: cannot read SEMVER_RE from eeploi-helper"
+rel_commit eeploi-helper "$REL_HELPER"
 REL_HEAD=$(rel_git -C "$REL/repo" rev-parse HEAD)
 
 # All of bin/release, signing with the test key, through a terminal (it asks for the key password).
@@ -2919,8 +2934,15 @@ rel_tag v2.0.0
 rel_check 1 "release: lower than a v* tag, by its major" "release: 1.2.3 is not higher than 2.0.0: releases only go up"
 rel_reset
 rel_tag v01.2.3
-rel_check 1 "release: the same version under another tag" "release: 1.2.3 is not higher than 01.2.3: releases only go up"
+rel_tag v1.2.99999
+rel_check 0 "release: a tag self-update would refuse doesn't count" "v1.2.3 is new and the highest"
 rel_reset
+rel_git -C "$REL/repo" tag v2.0.0
+rel_check 0 "release: a tag only here doesn't count" "v1.2.3 is new and the highest"
+rel_reset
+REL_LT=$(sed -n '/^version_lt() {/,/^}/p' "$ROOT/bin/release")
+check "release: has version_lt" test -n "$REL_LT"
+check "release: version_lt is the helper's" test "$REL_LT" = "$(sed -n '/^version_lt() {/,/^}/p' "$HELPER")"
 check "release: shellcheck on the same files as CI" test \
   "$(sed -n 's/^shellcheck \(.*\) || fail .*/\1/p' "$ROOT/bin/release")" = "$(sed -n 's/^ *run: shellcheck //p' "$ROOT/.github/workflows/ci.yml")"
 # What bin/release runs, its quoted text (the messages) left out; a "$(…)" stays, it runs.
@@ -2935,15 +2957,18 @@ echo "== changelog"
 # On every pull request, so the shape bin/release needs never drifts (D-34): ## Unreleased first, and no date
 # or "unreleased" in a version's heading. Whether Unreleased is empty only matters at release.
 # changelog_shape <file>: passes when the file has that shape.
+# A year is any 20xx; "unreleased" anywhere but in the one ## Unreleased heading.
 changelog_shape() {
   [ "$(awk '/^## / { print; exit }' "$1")" = "## Unreleased" ] \
-    && ! grep -qiE '^#+ .*([0-9]{4}-[0-9]{2}-[0-9]{2}|\(unreleased\))' "$1"
+    && [ "$(grep -ciE '^#.*unreleased' "$1")" = 1 ] && ! grep -qE '^#.*20[0-9]{2}' "$1"
 }
 check "CHANGELOG.md: Unreleased first, no dates" changelog_shape "$ROOT/CHANGELOG.md"
 printf '# Changelog\n\n## 1.2.3\n\n## Unreleased\n' > "$WORK/changelog-order"
 printf '# Changelog\n\n## Unreleased\n\n## 1.2.3 (2026-11-22)\n' > "$WORK/changelog-date"
+printf '# Changelog\n\n## Unreleased\n\n## 1.2.3 (22 Nov 2026)\n' > "$WORK/changelog-day"
 printf '# Changelog\n\n## Unreleased\n\n## 1.2.3 (Unreleased)\n' > "$WORK/changelog-unreleased"
-for bad in order date unreleased; do
+printf '# Changelog\n\n## Unreleased\n\n## 1.2.3 - unreleased\n' > "$WORK/changelog-dash"
+for bad in order date day unreleased dash; do
   if changelog_shape "$WORK/changelog-$bad"; then failure "CHANGELOG.md: refused, $bad" "passed"; else pass; fi
 done
 
