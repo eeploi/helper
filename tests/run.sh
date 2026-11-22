@@ -2652,7 +2652,6 @@ RSTATE="$WORK/recipes-replockw" report refuse "a lock it can't trust" "untrusted
 report lacks "no lock: no recipe-run ever ran" "lock: "
 
 echo "== server-reboot"
-REBOOT_RUN='run: systemd-run --quiet --unit=eeploi-reboot --description=eeploi-helper: reboot due '
 REBOOT_TIMER='--collect --on-active=5 --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no --setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin --'
 # shellcheck disable=SC2016 # the unit's shell script, as the helper passes it
 REBOOT_JOB='sh -c exec 8< "$1" && flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; systemctl reboot && exec sleep 600 sh'
@@ -2660,7 +2659,6 @@ ERR_TO=/dev/null ok "no lock: schedules the reboot, then says when" "$REBOOT_TIM
 reboot due " server-reboot
 DUE_RE='^run: systemd-run --quiet --unit=eeploi-reboot --description=eeploi-helper: reboot due ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) .*'$'\n''reboot due ([^ ]+)'$'\n''reboot-required no$'
 if [[ $OUT =~ $DUE_RE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then pass; else failure "server-reboot: due in the unit and in the answer, one UTC time" "$OUT"; fi
-ok "the unit and the reboot" "$REBOOT_RUN" server-reboot
 ok "logged" "log: eeploi-helper: eeploi: server-reboot" server-reboot
 RSTATE="$WORK/recipes-replock" ok "a lock: the reboot waits for it, 30 minutes at most" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-replock/.lock 1800
 reboot due " server-reboot

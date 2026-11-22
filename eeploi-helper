@@ -650,9 +650,10 @@ recipes_lock() {
 
 # A time in the state: UTC, to the second.
 DATE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+DATE_FORMAT='+%Y-%m-%dT%H:%M:%SZ'
 
 # now_utc: the time now, as the state writes it. A dry run takes EEPLOI_HELPER_NOW when set.
-now_utc() { if [ -n "$NOW" ]; then echo "$NOW"; else date -u +%Y-%m-%dT%H:%M:%SZ; fi; }
+now_utc() { if [ -n "$NOW" ]; then echo "$NOW"; else date -u "$DATE_FORMAT"; fi; }
 
 # recipes_state: the last good run from $RECIPES_STATE/state, root's, parsed line by line: R_LAST, its
 # release (empty before the first run), R_RAN, a "<sha256> <path>" line per step it left in place,
@@ -932,18 +933,25 @@ NOTE_LINES=20
 TIMEOUT=(timeout -k 5 60)
 [ -z "$DRY" ] || command -v timeout > /dev/null || TIMEOUT=()
 
+# recipes_lock_there: recipe-run's .lock is there, and trusted; one it can't trust is refused. Without
+# it, no recipe-run ever ran here (return 1). server-report and server-reboot wait for it.
+recipes_lock_there() {
+  local lock="$RECIPES_STATE/.lock"
+  [ -e "$lock" ] || [ -L "$lock" ] || return 1
+  trusted "$lock" || fail "untrusted recipe-run lock: $lock (must be a root-owned file, not writable by others)"
+  [ -n "$DRY" ] || command -v flock > /dev/null || fail "flock not found"
+}
+
 # report_lock: wait for a recipe-run that is running here (a shared lock on its .lock), so the report
 # never reads a state or kept set halfway through. Without a .lock, no recipe-run ever ran here.
 report_lock() {
   local lock="$RECIPES_STATE/.lock"
-  [ -e "$lock" ] || [ -L "$lock" ] || return 0
-  trusted "$lock" || fail "untrusted recipe-run lock: $lock (must be a root-owned file, not writable by others)"
+  recipes_lock_there || return 0
   if [ -n "$DRY" ]; then
     echo "lock: shared $lock" >&2
     ! dry_result locked || fail "a recipe-run is running here, try again when it is done"
     return 0
   fi
-  command -v flock > /dev/null || fail "flock not found"
   exec 8< "$lock" || fail "cannot open $lock"
   flock -s -w 120 8 || fail "a recipe-run is running here, try again when it is done"
 }
@@ -1283,7 +1291,8 @@ REBOOT_DELAY=5
 # D-41: the reboot waits at most 30 minutes for recipe-run's lock.
 REBOOT_WAIT=1800
 REBOOT_REQUIRED=/var/run/reboot-required
-REBOOT_DUE_RE='^eeploi-helper: reboot due ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$'
+REBOOT_DUE_RE=${DATE_RE#^}
+REBOOT_DUE_RE="^eeploi-helper: reboot due (${REBOOT_DUE_RE%$})\$"
 
 # unit_description <unit>: the description systemd has for the unit. A dry run reads the line
 # "description <unit> <text>" of EEPLOI_HELPER_SYSTEM.
@@ -1296,7 +1305,7 @@ unit_description() {
 utc_in() {
   local t
   t=$(($(date +%s) + $1))
-  date -u -d "@$t" +%Y-%m-%dT%H:%M:%SZ 2> /dev/null || date -u -r "$t" +%Y-%m-%dT%H:%M:%SZ
+  date -u -d "@$t" "$DATE_FORMAT" 2> /dev/null || date -u -r "$t" "$DATE_FORMAT"
 }
 
 # reboot_pending: a reboot server-reboot started is pending: its timer waits, or its service waits
@@ -2598,27 +2607,24 @@ case "$command" in
     if reboot_pending; then
       desc=$(unit_description "$REBOOT_UNIT.service") || desc=''
       if [[ $desc =~ $REBOOT_DUE_RE ]]; then due=${BASH_REMATCH[1]}; else due=unknown; fi
-      echo "reboot pending $due"
-      echo "reboot-required $(reboot_required)"
-      exit 0
-    fi
-    lock="$RECIPES_STATE/.lock"
-    if [ -e "$lock" ] || [ -L "$lock" ]; then
-      trusted "$lock" || fail "untrusted recipe-run lock: $lock (must be a root-owned file, not writable by others)"
-      # D-38: the reboot takes recipe-run's lock first, so a recipe-run or server-report finishes, and
-      # holds it until the system stops the unit, so none starts while the server goes down.
-      # shellcheck disable=SC2016 # $1 and $2 are for the unit's shell
-      job=(sh -c 'exec 8< "$1" && flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; systemctl reboot && exec sleep 600' sh "$lock" "$REBOOT_WAIT")
+      state="pending $due"
     else
-      # No lock: no recipe-run ever ran here.
-      job=(systemctl reboot)
+      if recipes_lock_there; then
+        # D-38: the reboot takes recipe-run's lock first, so a recipe-run or server-report finishes,
+        # and holds it until the system stops the unit, so none starts while the server goes down.
+        # shellcheck disable=SC2016 # $1 and $2 are for the unit's shell
+        job=(sh -c 'exec 8< "$1" && flock -w "$2" 8 || { logger -t eeploi-helper -- "server-reboot: no reboot, the recipe-run lock was not free within $2 seconds"; exit 1; }; systemctl reboot && exec sleep 600' sh "$RECIPES_STATE/.lock" "$REBOOT_WAIT")
+      else
+        job=(systemctl reboot)
+      fi
+      due=$(utc_in "$REBOOT_DELAY")
+      run systemd-run --quiet --unit="$REBOOT_UNIT" --description="eeploi-helper: reboot due $due" --collect \
+        --on-active="$REBOOT_DELAY" --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no \
+        --setenv=PATH="$PATH" -- "${job[@]}" || fail "could not schedule the reboot (is one pending already?)"
+      state="due $due"
     fi
-    due=$(utc_in "$REBOOT_DELAY")
-    run systemd-run --quiet --unit="$REBOOT_UNIT" --description="eeploi-helper: reboot due $due" --collect \
-      --on-active="$REBOOT_DELAY" --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no \
-      --setenv=PATH="$PATH" -- "${job[@]}" || fail "could not schedule the reboot (is one pending already?)"
     # D-39: <key> <value> lines; the reboot happens whether or not one is required.
-    echo "reboot due $due"
+    echo "reboot $state"
     echo "reboot-required $(reboot_required)" ;;
 
   *)
