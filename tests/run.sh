@@ -3022,6 +3022,8 @@ printf 'untrusted comment: minisign public key %s\n%s\n' 0000000000000000 "$(sed
 rel_check 1 "release: the key id from the key, not its comment" "Key                $REL_KEYID"
 printf 'untrusted comment: minisign public key %s\nnot a key\n' "$REL_KEYID" > "$REL/repo/minisign.pub"
 rel_check 1 "release: a minisign.pub without a key" "  ✗ cannot read the key id from minisign.pub"
+OUT=$(cd "$REL/repo" && env "${REL_ENV[@]}" PATH="$REL/stubs:$PATH" bash bin/release --check 9.9.9 2>&1) && CODE=0 || CODE=$?
+rel_expect 64 "release: --check with an argument" "usage: bin/release [--check]"
 cp "$RKEY.pub" "$REL/repo/minisign.pub"
 # CI's job named test on the exact commit, finished and passed: anything else stops the checks.
 # rel_ci <commit> <jobs...>: a run's JSON, for a push to main (REL_EVENT, REL_BRANCH: another).
@@ -3262,13 +3264,14 @@ rel_empty() {
 }
 rel_tag v1.2.2
 rel_empty "server-reboot: reboot the server → café.example (#37)"
-rel_empty $'a subject with \033[2Jcolour\tand a tab\r'
+rel_empty $'a subject with \033[2Jcolour\tand a tab\xc2\x9b\r'
 rel_commit eeploi-helper "$REL_HELPER"$'# one line more\n'
 rel_check 0 "release: the changes since the previous release, UTF-8 kept" "  ✓ Changes since v1.2.2: 3 commits, eeploi-helper +1 −0 lines
       #37 server-reboot: reboot the server → café.example
       a subject with [2Jcolourand a tab
       eeploi-helper"
 check "release: no control character from a subject" test -z "$(grep -F $'\033' <<< "$OUT")"
+check "release: no C1 control (CSI) from a subject" test -z "$(LC_ALL=C grep -F $'\xc2\x9b' <<< "$OUT")"
 for n in 1 2 3 4 5 6 7; do rel_empty "change $n"; done
 rel_check 0 "release: 10 commits are listed" "      change 7"
 rel_empty "change 8"

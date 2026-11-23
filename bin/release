@@ -12,8 +12,8 @@ cd "$(dirname "$0")/.."
 REPO=eeploi/helper
 KEY="${HELPER_KEY:-$HOME/.minisign/eeploi-helper.key}"
 CHECK_ONLY=
-[ "${1:-}" != --check ] || CHECK_ONLY=1
-[ $# -eq 0 ] || [ -n "$CHECK_ONLY" ] || { echo "usage: bin/release [--check]" >&2; exit 64; }
+if [ "${1:-}" = --check ]; then CHECK_ONLY=1; shift; fi
+[ $# -eq 0 ] || { echo "usage: bin/release [--check]" >&2; exit 64; }
 
 work=$(mktemp -d)
 # A run that stops while a draft may be on GitHub says so, also when it stops without fail() (set -e, Ctrl-C).
@@ -29,9 +29,10 @@ line() { printf '%s\n' "=========================================="; }
 field() { printf '%-18s %s\n' "$1" "$2"; }
 heading() { printf '\n%s\n' "$1"; }
 ok() { printf '  ✓ %s\n' "$*"; }
-# printable: no control character (ESC, CR, tab and the like; a newline stays), so text from GitHub or a
-# commit can't move the cursor or rewrite what the screen shows. Other UTF-8 stays.
-printable() { LC_ALL=C tr -d '\000-\011\013-\037\177'; }
+# printable: no control character (ESC, CR, tab and the like; a newline stays), also none of UTF-8's C1
+# controls (U+0080 to U+009F, such as CSI), so text from GitHub or a commit can't move the cursor or rewrite
+# what the screen shows. Other UTF-8 stays.
+printable() { LC_ALL=C tr -d '\000-\011\013-\037\177' | LC_ALL=C sed $'s/\xc2[\x80-\x9f]//g'; }
 # While a draft may be on GitHub, $left says so and how to delete it: every failure then ends with it.
 # A failure can carry gh's own output: printable only.
 left=
