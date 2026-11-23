@@ -307,3 +307,61 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **What:** `bin/release` stops at its checks unless `VERSION` is a version `self-update` installs (the helper's `SEMVER_RE`) and higher than every such `v<version>` tag on GitHub, by the helper's own `version_lt`. A tag only in the local clone doesn't count. The same version stays refused (D-26).
 - **Why:** `self-update` only installs a newer version, so a fix for an older line would reach no server. As in eeploi/recipes.
 - **Where:** `bin/release`
+
+## D-36: The helper may reboot the server
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** `server-reboot` reboots the server. Like every subcommand it is for the deploy user only, through the one sudo rule (D-2), takes no arguments (D-1) and writes one line to the system log (D-11).
+- **Why:** a new server is rebooted once after its updates, before it is ready, and the server's owner must be able to reboot it without logging in.
+- **Where:** `eeploi-helper`
+
+## D-37: The reboot comes a few seconds after the answer
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** `server-reboot` starts a transient systemd timer and service, `eeploi-reboot` (`systemd-run --on-active=5 --collect`, the timer gone once it fires), and returns at once. The service runs `systemctl reboot` about 5 seconds later.
+- **Why:** the caller gets its answer before the connection drops, and a reboot that didn't happen leaves no unit behind.
+- **Where:** `eeploi-helper`
+
+## D-38: Never in the middle of a recipe-run
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** when the service starts and `recipe-run`'s lock (`/var/lib/eeploi/recipes/.lock`) is there, it takes it, exclusive, before `systemctl reboot`, and holds it until the system stops the service. A `recipe-run` that is running, or starts in those seconds, finishes first; a `server-report`, which holds the lock shared, too. Without the lock then, no `recipe-run` ever ran here, and the reboot doesn't wait. A lock that is there at the call but is not a root-owned file, not writable by others, is refused, as `server-report` refuses it.
+- **Why:** a reboot that cuts off a step leaves the server half set up. Holding the lock while the server goes down keeps a new `recipe-run` from starting then.
+- **Where:** `eeploi-helper`
+
+## D-39: What server-reboot prints
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** `<key> <value>` lines, like the probes: `reboot due <UTC time>`, `reboot-required yes|no`, from `/var/run/reboot-required`, and `boot-id <id>`, the kernel's id of this boot (`/proc/sys/kernel/random/boot_id`, `unknown` when it can't be read). The reboot happens either way. The reboot is done when the boot id has changed, not when the time has passed: a reboot that waits for a running `recipe-run` (D-38) comes later.
+- **Why:** the caller knows when to reconnect and how to tell the reboot happened, so it never starts other work on a server that is still to go down. The owner sees whether an update asked for the reboot. A new server is always rebooted once, whatever the file says.
+- **Where:** `eeploi-helper`
+
+## D-40: One reboot at a time
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** while `eeploi-reboot`'s timer or service is active, `server-reboot` starts nothing and prints `reboot pending <UTC time>` (`unknown` when the unit's description has no time), `reboot-required yes|no` and `boot-id <id>`.
+- **Why:** a second call, from a retry or a second click, changes nothing about the reboot already on its way.
+- **Where:** `eeploi-helper`
+
+## D-41: The reboot waits 30 minutes at most
+
+- **Kind:** decision
+- **Decided:** 2026-11-22, #36
+- **What:** the service waits up to 30 minutes for `recipe-run`'s lock (`flock -w 1800`). After that, it doesn't reboot, logs "server-reboot: no reboot, the recipe-run lock was not free within 1800 seconds" and fails, and the next `server-reboot` can start a new one. A lock it can't open ("the recipe-run lock could not be opened"), a time it can't write (D-42) and a failed `systemctl reboot` each have their own line.
+- **Why:** as long as a first boot's report window: a run that takes longer is stuck, and a reboot then would cut it off.
+- **Accepted:** when the lock stays taken longer, the server isn't rebooted. The system log says why; the caller sees it only by the uptime.
+- **Where:** `eeploi-helper`
+
+## D-42: At most one reboot per 15 minutes
+
+- **Kind:** decision
+- **Decided:** 2026-11-22 and 2026-11-23, #36
+- **What:** right before `systemctl reboot`, the service writes the time to `/var/lib/eeploi/reboot`, root-owned (`rebooted <UTC time>`). `server-reboot` reads it line by line, as a root-owned file, not writable by others, in a root-owned folder, and refuses a call within 15 minutes of that time (exit 64), with the time from which a reboot is allowed again. A file it can't trust is refused. A time more than 15 minutes ahead of now is ignored, logged ("server-reboot: the last reboot time is in the future, ignored"), and the reboot is allowed; a time up to 15 minutes ahead is refused until 15 minutes after it. A trusted file it can't read (empty, no `rebooted <UTC time>` line, a line it doesn't know, the time twice, a time `date` can't read) is ignored and logged too, and the reboot is allowed. A reboot that didn't happen leaves no time: when the lock wait runs out, the lock can't be opened or the time can't be written, nothing is written and there is no reboot; when `systemctl reboot` fails, the time is removed. While a reboot is pending, a call still gets `reboot pending` (D-40). Not the uptime: a new server is often up less than 15 minutes when it gets its first reboot, and has no file then.
+- **Why:** a caller in a loop can't keep a server rebooting. A clock that was wrong when the time was written, or a damaged file, never keeps a server from rebooting; a file only root can change is the one that counts.
+- **Accepted:** a file that is damaged or far in the future allows one reboot within the 15 minutes; the system log says so.
+- **Where:** `eeploi-helper`

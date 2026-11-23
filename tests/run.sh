@@ -135,7 +135,8 @@ sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
 #   DRYRUN (1 or empty), DBSTATE (what db-create's checks find), SYS (what the server has, default system),
 #   VHOST (the vhost vhost-set-root rewrites), LOGS (nginx's log folder), OSREL (os-release),
 #   RSTATE (recipe-run's state folder), RDL (the recipes release, a folder), RRES (steps and checks that fail),
-#   NOW_AT (the time recipe-run writes), REP (what server-report reads from the system, a folder),
+#   NOW_AT (the time recipe-run writes, and now for server-reboot), REP (what server-report reads from the
+#   system, a folder), RBOOT (server-reboot's file with the last reboot, default none in a folder that is there),
 #   ERR_TO (where stderr goes, default with stdout: /dev/null to read stdout alone)
 call() {
   local dry=${DRYRUN-1}
@@ -154,6 +155,7 @@ call() {
     EEPLOI_HELPER_MINISIGN="$MINISIGN_BIN" \
     EEPLOI_HELPER_NOW="${NOW_AT:-}" \
     EEPLOI_HELPER_REPORT="${REP:-}" \
+    EEPLOI_HELPER_REBOOT_STATE="${RBOOT:-$WORK/reboot-none/reboot}" \
     bash "${BIN:-$HELPER}" "$@" 2> "${ERR_TO:-/dev/stdout}")
   CODE=$?
 }
@@ -198,6 +200,12 @@ $OUT"; fi
 # absent <name> <text>: the output of the last call does not contain the text.
 absent() {
   if [[ $OUT != *"$2"* ]]; then pass; else failure "$1" "has: $2
+$OUT"; fi
+}
+
+# has <name> <text>: the output of the last call contains the text.
+has() {
+  if [[ $OUT == *"$2"* ]]; then pass; else failure "$1" "lacks: $2
 $OUT"; fi
 }
 
@@ -1209,6 +1217,7 @@ for as in ploi forge; do
   IN=$'0 3 * * * ploi php /home/ploi/a/artisan x\n' AS=$as refuse "crontab-remove-lines from $as" "$GATE" crontab-remove-lines example.com
   AS=$as refuse "crontab-restore from $as" "$GATE" crontab-restore example.com
   AS=$as refuse "firewall-close-22 from $as" "$GATE" firewall-close-22
+  AS=$as refuse "server-reboot from $as" "$GATE" server-reboot
 done
 printf 'DOMAIN=other.example\nSUPERVISOR=/etc/supervisor/conf.d/eeploi-other.example-a.conf\n' > "$WORK/etc-sites/sites/shop_other"
 AS=ploi refuse "supervisor-remove of a listed program from ploi" "$GATE" supervisor-remove eeploi-other.example-a
@@ -2649,6 +2658,196 @@ touch "$WORK/recipes-replockw/.lock"
 chmod 666 "$WORK/recipes-replockw/.lock"
 RSTATE="$WORK/recipes-replockw" report refuse "a lock it can't trust" "untrusted recipe-run lock"
 report lacks "no lock: no recipe-run ever ran" "lock: "
+
+echo "== server-reboot"
+REBOOT_TIMER='--collect --on-active=5 --timer-property=AccuracySec=1s --timer-property=RemainAfterElapse=no --setenv=PATH=/usr/sbin:/usr/bin:/sbin:/bin --'
+# The unit's shell script, as the helper has it; the dry run prints it as one word among the others.
+# shellcheck disable=SC2016 # the helper's own text
+REBOOT_SH=$(sed -n 's/^ *job=(sh -c '"'"'\(.*\)'"'"' sh "$RECIPES_STATE\/.lock" "$REBOOT_WAIT" "$REBOOT_STATE" "$DATE_FORMAT")$/\1/p' "$HELPER")
+check "server-reboot: the unit's script, once" test "$(grep -c '^ *job=(sh -c ' "$HELPER")/${#REBOOT_SH}" != "1/0"
+REBOOT_JOB="sh -c $REBOOT_SH sh"
+mkdir -p "$WORK/reboot-none"
+ERR_TO=/dev/null ok "no lock: schedules the reboot, then says when" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-none/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due " server-reboot
+DUE_RE='^run: systemd-run --quiet --unit=eeploi-reboot --description=eeploi-helper: reboot due ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) .*'$'\n''reboot due ([^ ]+)'$'\n''reboot-required no'$'\n''boot-id unknown$'
+if [[ $OUT =~ $DUE_RE ]] && [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]; then pass; else failure "server-reboot: due in the unit and in the answer, one UTC time" "$OUT"; fi
+ok "logged" "log: eeploi-helper: eeploi: server-reboot" server-reboot
+RSTATE="$WORK/recipes-replock" ok "a lock: the reboot waits for it, 30 minutes at most" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-replock/.lock 1800 $WORK/reboot-none/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due " server-reboot
+absent "a lock: not taken here, the unit takes it" "lock: "
+RSTATE="$WORK/recipes-replockw" refuse "a lock it can't trust" "untrusted recipe-run lock: $WORK/recipes-replockw/.lock" server-reboot
+nothing_ran "a lock it can't trust"
+{ cat "$WORK/system"; echo 'path /var/run/reboot-required'; } > "$WORK/system-reboot-required"
+SYS="$WORK/system-reboot-required" ok "a reboot required: says so" "reboot-required yes" server-reboot
+SYS='' ok "no reboot required: reboots all the same" "$REBOOT_TIMER $REBOOT_JOB" server-reboot
+DESC='description eeploi-reboot.service eeploi-helper: reboot due 2026-11-22T19:00:05Z'
+printf 'active eeploi-reboot.timer\n%s\n' "$DESC" > "$WORK/system-reboot-timer"
+SYS="$WORK/system-reboot-timer" ok "pending, the timer waits: says when, starts nothing" "reboot pending 2026-11-22T19:00:05Z
+reboot-required no" server-reboot
+nothing_ran "pending, the timer waits"
+printf 'active eeploi-reboot.service\n%s\npath /var/run/reboot-required\n' "$DESC" > "$WORK/system-reboot-service"
+SYS="$WORK/system-reboot-service" ok "pending, the service waits for the lock" "reboot pending 2026-11-22T19:00:05Z
+reboot-required yes" server-reboot
+nothing_ran "pending, the service waits for the lock"
+# shellcheck disable=SC2016 # the literal $(id) is the point: it is no time
+printf 'active eeploi-reboot.timer\ndescription eeploi-reboot.service eeploi-helper: reboot due $(id)\n' > "$WORK/system-reboot-odd"
+SYS="$WORK/system-reboot-odd" ok "pending, a description it can't read: unknown" "reboot pending unknown" server-reboot
+nothing_ran "pending, a description it can't read"
+printf 'active eeploi-reboot.timer\n' > "$WORK/system-reboot-nodesc"
+SYS="$WORK/system-reboot-nodesc" ok "pending, no description: unknown" "reboot pending unknown" server-reboot
+printf '%s\n' "$DESC" > "$WORK/system-reboot-done"
+SYS="$WORK/system-reboot-done" ok "a description, no active unit: not pending" "$REBOOT_TIMER $REBOOT_JOB" server-reboot
+BOOT='3f2b8c1e-7d4a-4e9b-a6c5-0d1e2f3a4b5c'
+{ cat "$WORK/system"; echo "boot-id $BOOT"; } > "$WORK/system-boot"
+SYS="$WORK/system-boot" ok "the boot id, which a reboot changes" "reboot-required no
+boot-id $BOOT" server-reboot
+printf 'active eeploi-reboot.timer\n%s\nboot-id %s\n' "$DESC" "$BOOT" > "$WORK/system-boot-pending"
+SYS="$WORK/system-boot-pending" ok "pending: the boot id too" "reboot pending 2026-11-22T19:00:05Z
+reboot-required no
+boot-id $BOOT" server-reboot
+# shellcheck disable=SC2016 # the literal $(id) is the point: it is no boot id
+printf 'boot-id $(id)\n' > "$WORK/system-boot-odd"
+SYS="$WORK/system-boot-odd" ok "a boot id it can't read: unknown" "boot-id unknown" server-reboot
+printf 'boot-id 3F2B8C1E-7D4A-4E9B-A6C5-0D1E2F3A4B5C\n' > "$WORK/system-boot-upper"
+SYS="$WORK/system-boot-upper" ok "a boot id not as the kernel writes it: unknown" "boot-id unknown" server-reboot
+refuse "an argument" "usage: server-reboot" server-reboot now
+nothing_ran "an argument"
+refuse "two arguments" "usage: server-reboot" server-reboot --at 5
+
+echo "== server-reboot: one per 15 minutes"
+# rb <name> <file content>: $WORK/reboot-<name>/reboot with that content, the folder and file as root's.
+rb() {
+  mkdir -p "$WORK/reboot-$1"
+  printf '%s' "$2" > "$WORK/reboot-$1/reboot"
+  chmod 644 "$WORK/reboot-$1/reboot"
+}
+RB_HEAD='# Written by eeploi-helper (server-reboot): the last reboot it started. Do not edit.'
+rb last "$RB_HEAD"$'\nrebooted 2026-11-22T19:00:00Z\n'
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:10:00Z refuse "10 minutes after the last: refused, says when" \
+  "the last reboot was at 2026-11-22T19:00:00Z: the next is allowed from 2026-11-22T19:15:00Z" server-reboot
+nothing_ran "10 minutes after the last"
+absent "10 minutes after the last: a time it reads, nothing ignored" "ignored"
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:14:59Z refuse "a second short of 15 minutes: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:00:00Z refuse "at the same second: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T18:45:00Z refuse "a last reboot 15 minutes ahead: refused" "allowed from 2026-11-22T19:15:00Z" server-reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T18:44:59Z ok "a last reboot more than 15 minutes ahead: ignored, logged" \
+  "log: eeploi-helper: server-reboot: the last reboot time is in the future, ignored" server-reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T18:00:00Z ok "a last reboot an hour ahead: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-last/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due " server-reboot
+absent "a last reboot an hour ahead: not refused" "allowed from"
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:15:00Z ok "15 minutes after the last: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-last/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due " server-reboot
+RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-23T08:00:00Z ok "the next day: reboots" "reboot due " server-reboot
+SYS="$WORK/system-reboot-timer" RBOOT="$WORK/reboot-last/reboot" NOW_AT=2026-11-22T19:10:00Z ok "pending, in the 15 minutes: pending, not refused" \
+  "reboot pending 2026-11-22T19:00:05Z" server-reboot
+RBOOT="$WORK/reboot-nofile/reboot" ok "no file: no reboot yet, reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-nofile/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due " server-reboot
+RBOOT="$WORK/reboot-newdir/reboot" ok "no folder: made root's first" "run: install -d -o root -g root -m 755 $WORK/reboot-newdir
+run: systemd-run" server-reboot
+rb writable $'rebooted 2026-11-22T19:00:00Z\n'
+chmod 666 "$WORK/reboot-writable/reboot"
+RBOOT="$WORK/reboot-writable/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "a file writable by others: refused" "untrusted reboot state: $WORK/reboot-writable/reboot" server-reboot
+nothing_ran "a file writable by others"
+mkdir -p "$WORK/reboot-link"
+ln -s "$WORK/reboot-last/reboot" "$WORK/reboot-link/reboot"
+RBOOT="$WORK/reboot-link/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "a file that is a link: refused" "untrusted reboot state" server-reboot
+rb opendir $'rebooted 2026-11-22T19:00:00Z\n'
+chmod 777 "$WORK/reboot-opendir"
+RBOOT="$WORK/reboot-opendir/reboot" NOW_AT=2026-11-23T08:00:00Z refuse "a folder writable by others: refused" "untrusted reboot state" server-reboot
+chmod 755 "$WORK/reboot-opendir"
+rb nonewline 'rebooted 2026-11-22T19:00:00Z'
+RBOOT="$WORK/reboot-nonewline/reboot" NOW_AT=2026-11-22T19:10:00Z refuse "a last line without a newline: read" "allowed from 2026-11-22T19:15:00Z" server-reboot
+# A trusted file it can't read is ignored and logged, and the reboot goes ahead, even 10 minutes after
+# the time in it.
+# dropped <name> <file content>: that content, 10 minutes after 19:00: reboots, and says it ignored the file.
+dropped() {
+  rb "$1" "$2"
+  RBOOT="$WORK/reboot-$1/reboot" NOW_AT=2026-11-22T19:10:00Z ok "$1: ignored, logged" \
+    "log: eeploi-helper: server-reboot: the last reboot time in $WORK/reboot-$1/reboot can't be read, ignored" server-reboot
+  has "$1: reboots" "$REBOOT_TIMER $REBOOT_JOB $WORK/recipes-none/.lock 1800 $WORK/reboot-$1/reboot +%Y-%m-%dT%H:%M:%SZ
+reboot due "
+}
+dropped empty ''
+dropped notime "$RB_HEAD"$'\n'
+dropped twice $'rebooted 2026-11-22T19:00:00Z\nrebooted 2026-11-22T19:05:00Z\n'
+dropped damaged $'rebooted 2026-11-22T19:00:00Z\nreboo\n'
+dropped baddate $'rebooted 2026-13-45T19:00:00Z\n'
+n=0
+# shellcheck disable=SC2016 # the literal $(id) is the point: it is no time
+for bad in 'rebooted 2026-11-22T19:00:00' 'rebooted 2026-11-22 19:00:00' 'rebooted 2026-11-22T19:00:00+01:00' 'rebooted $(id)' 'last=2026-11-22T19:00:00Z' ' rebooted 2026-11-22T19:00:00Z'; do
+  n=$((n + 1))
+  dropped "bad$n" "$bad"$'\n'
+done
+
+echo "== server-reboot: the unit's script"
+# The script runs in sh with stubs for systemctl, logger and sleep, which write what they were called with
+# to $RB/log; the lock is real (flock). systemctl fails when RB_FAIL is set.
+# Linux only, as the unit: macOS's sh (bash 3.2) spins on the held lock, where dash and bash 5 don't.
+if [ "$(uname)" = Linux ] && command -v flock > /dev/null; then
+  RB="$WORK/reboot-unit"
+  mkdir -p "$RB/bin"
+  for stub in systemctl logger sleep; do
+    printf '#!/bin/sh\necho "%s $*" >> "%s/log"\n' "$stub" "$RB" > "$RB/bin/$stub"
+  done
+  # shellcheck disable=SC2016 # for the stub's shell
+  echo '[ -z "${RB_FAIL:-}" ]' >> "$RB/bin/systemctl"
+  chmod 755 "$RB/bin/"*
+  # unit <lock> <name> <expected log>: the script with that lock, a 1-second wait and the reboot time in
+  # $RB_TIME (default $RB/state/reboot); the log is all the stubs wrote, exactly.
+  mkdir -p "$RB/state"
+  unit() {
+    rm -f "$RB/log" "$RB/state/reboot"
+    PATH="$RB/bin:$PATH" sh -c "$REBOOT_SH" sh "$1" 1 "${RB_TIME:-$RB/state/reboot}" "${RB_FMT:-+%Y-%m-%dT%H:%M:%SZ}" > /dev/null 2>&1
+    CODE=$?
+    OUT=$(cat "$RB/log" 2> /dev/null)
+    if [ "$OUT" = "$3" ]; then pass; else failure "unit: $2" "exit $CODE, expected:
+$3
+got:
+$OUT"; fi
+  }
+  # no_time <name>: the last run left no reboot time, and no half-written one.
+  no_time() {
+    if [ ! -e "$RB/state/reboot" ] && [ ! -e "$RB/state/reboot.new" ]; then pass; else failure "unit: $1: no time written" "$(ls -l "$RB/state")"; fi
+  }
+  unit "$RB/none.lock" "no lock: reboots, then holds on" $'systemctl reboot\nsleep infinity'
+  # The time, right before the reboot, as the helper reads it (D-42).
+  UNIT_TIME_RE='^# Written by eeploi-helper \(server-reboot\): the last reboot it started\. Do not edit\.'$'\n''rebooted [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+  if [[ $(cat "$RB/state/reboot") =~ $UNIT_TIME_RE ]]; then pass; else failure "unit: the time written, right before the reboot" "$(cat "$RB/state/reboot")"; fi
+  check "unit: the time, root's alone" test "$(find "$RB/state/reboot" \( -perm -020 -o -perm -002 \))" = ""
+  umask_was=$(umask)
+  umask 000
+  unit "$RB/none.lock" "a umask that lets others write: reboots" $'systemctl reboot\nsleep infinity'
+  umask "$umask_was"
+  check "unit: a umask that lets others write: the time, root's alone" test "$(find "$RB/state/reboot" \( -perm -020 -o -perm -002 \))" = ""
+  touch "$RB/free.lock"
+  unit "$RB/free.lock" "a free lock: taken, reboots, then holds on" $'systemctl reboot\nsleep infinity'
+  check "unit: a free lock: the time written" test -f "$RB/state/reboot"
+  touch "$RB/held.lock"
+  flock "$RB/held.lock" sleep 3 &
+  held=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do flock -n "$RB/held.lock" true 2> /dev/null || break; sleep 0.1; done
+  unit "$RB/held.lock" "a held lock: no reboot, logged" 'logger -t eeploi-helper -- server-reboot: no reboot, the recipe-run lock was not free within 1 seconds'
+  check "unit: a held lock: fails" test "$CODE" = 1
+  no_time "a held lock"
+  kill "$held" 2> /dev/null
+  wait "$held" 2> /dev/null
+  touch "$RB/closed.lock"
+  chmod 000 "$RB/closed.lock"
+  unit "$RB/closed.lock" "a lock it can't open: no reboot, its own log line" 'logger -t eeploi-helper -- server-reboot: no reboot, the recipe-run lock could not be opened'
+  check "unit: a lock it can't open: fails" test "$CODE" = 1
+  no_time "a lock it can't open"
+  RB_FAIL=1 unit "$RB/none.lock" "systemctl reboot fails: logged" $'systemctl reboot\nlogger -t eeploi-helper -- server-reboot: no reboot, systemctl reboot failed'
+  check "unit: systemctl reboot fails: fails" test "$CODE" = 1
+  no_time "systemctl reboot fails"
+  RB_TIME="$RB/nofolder/reboot" unit "$RB/none.lock" "the time can't be written: no reboot, logged" "logger -t eeploi-helper -- server-reboot: no reboot, the time could not be written to $RB/nofolder/reboot"
+  check "unit: the time can't be written: fails" test "$CODE" = 1
+  # date fails (a format it can't use): no time, no reboot.
+  RB_FMT=bad unit "$RB/none.lock" "no time from date: no reboot, logged" "logger -t eeploi-helper -- server-reboot: no reboot, the time could not be written to $RB/state/reboot"
+  check "unit: no time from date: fails" test "$CODE" = 1
+  no_time "no time from date"
+else
+  echo "note: not Linux or no flock, the unit's script is not run (CI runs it)"
+fi
 
 echo "== bin/release"
 # Tags and releases never change (D-26 in DECISIONS.md): bin/release in a copy, a repo with its own origin, stubs

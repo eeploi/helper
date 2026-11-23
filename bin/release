@@ -102,7 +102,6 @@ if found=$(gh release view "$tag" -R "$REPO" --json isDraft,isImmutable --jq .is
 fi
 # Only gh's "release not found" means none: any other error stops here, before anything is published.
 [ "$found" = "release not found" ] || fail "could not ask GitHub for a release $tag: $found"
-# D-35: releases only go up: no fix for an older line, which self-update refuses anyway. The tags are GitHub's (fetched above).
 # D-35: releases only go up: no fix for an older line, which self-update refuses anyway. Only versions
 # self-update takes (its SEMVER_RE, read from eeploi-helper line by line) count, and only GitHub's tags.
 semver=$(sed -n "s/^SEMVER_RE='\(.*\)'\$/\1/p" eeploi-helper)

@@ -66,6 +66,7 @@ Every site runs as its own Linux user, a site user, with its home in `/srv/eeplo
 | `self-update <version>` | Installs a signed release (see below). Only a newer one |
 | `recipe-run <version> <provider>` | Runs the `always` steps of a signed [eeploi recipes](https://github.com/eeploi/recipes) release that are new or changed on this server, then every check. See [Recipes](#recipes). Deploy user only |
 | `server-report [--json]` | Shows what eeploi did, whether every kept check passes, and how the server is set up now. Reads only. See [Server report](#server-report) |
+| `server-reboot` | Reboots the server about 5 seconds after it answers, never in the middle of a `recipe-run`. See [Reboot](#reboot). Deploy user only |
 
 Allowed home folders: `/home/ploi`, `/home/forge`, `/home/eeploi`, the deploy user's, and `/srv/eeploi/<user>` of a site user.
 
@@ -267,6 +268,26 @@ failed         first-boot/00-lock-root.check.sh
 
 Exit `0`: the report is whole, whether the checks pass or not. `1`: the checks or probes could not run. `64`: refused (an argument, a state or lock it can't trust, a `recipe-run` that keeps running).
 
+## Reboot
+
+```bash
+sudo eeploi-helper server-reboot
+```
+
+```
+reboot due 2026-11-22T19:00:05Z
+reboot-required yes
+boot-id 3f2b8c1e-7d4a-4e9b-a6c5-0d1e2f3a4b5c
+```
+
+It starts a transient systemd timer and service, `eeploi-reboot`, and answers at once, so the answer reaches the caller before the connection drops. About 5 seconds later the service runs `systemctl reboot`. `reboot-required` says whether `/var/run/reboot-required` is there; the server reboots either way. `boot-id` is the kernel's id of this boot (`/proc/sys/kernel/random/boot_id`, `unknown` when it can't be read): the reboot is done when a later call shows another one, not when the time has passed, since a reboot that waits for a `recipe-run` comes later.
+
+- When the service starts and `recipe-run`'s lock (`/var/lib/eeploi/recipes/.lock`) is there, it first takes it, so a `recipe-run` or `server-report` that runs, or started in those seconds, finishes first, and holds it until the system stops the service. It waits 30 minutes at most: then it doesn't reboot, and says why in the system log, as it does when the lock can't be opened or `systemctl reboot` fails. Without the lock, no `recipe-run` ever ran here, and it doesn't wait.
+- At most one reboot per 15 minutes, so a caller in a loop can't keep a server rebooting. Right before `systemctl reboot`, the service writes the time to `/var/lib/eeploi/reboot`; a call within 15 minutes of it is refused and says from when a reboot is allowed again. A reboot that didn't happen writes no time. A file that isn't root's alone is refused; a time more than 15 minutes ahead, or a file it can't read, is ignored and logged.
+- While a reboot is pending, a second call starts nothing and prints `reboot pending <time>` (`unknown` when it can't tell), `reboot-required` and `boot-id`.
+
+Exit `0`: the reboot is due or pending. `64`: refused (an argument, a lock it can't trust, a reboot within 15 minutes of the last, a reboot time it can't trust, a reboot it could not schedule).
+
 ## Dry run
 
 `EEPLOI_HELPER_DRY_RUN=1` checks every argument and prints what the helper would run or write. It changes nothing. sudo drops the variable, so it is for tests only.
@@ -277,11 +298,13 @@ EEPLOI_HELPER_DRY_RUN=1 SUDO_USER=eeploi bash eeploi-helper php-fpm-reload 8.4
 
 In dry-run mode only, `EEPLOI_HELPER_ETC` and `EEPLOI_HELPER_NGINX_CONF` point to test copies of `/etc/eeploi` and `nginx.conf`, and `EEPLOI_HELPER_DB_STATE` to a file with what `db-create`'s checks would find (`key=count` lines). A dry run of `db-create` prints the SQL with `<password>` in place of the password. `EEPLOI_HELPER_VHOST` points to a vhost for `vhost-set-root`, which then prints the vhost it would write, and for the include and log check of `vhost-set-socket`. Their includes count from the folder of `EEPLOI_HELPER_NGINX_CONF`, and `EEPLOI_HELPER_NGINX_LOGS` points to a test copy of `/var/log/nginx`.
 
-`EEPLOI_HELPER_SYSTEM` points to a file with what the site-user checks would find on the server: `passwd <getent passwd line>`, `group <getent group line>`, `id <user>:<id -G output>`, `path <path that exists>` and `active <running unit>`. Without it, none of them exist. A dry run prints every file it would write, the registry included.
+`EEPLOI_HELPER_SYSTEM` points to a file with what the site-user checks would find on the server: `passwd <getent passwd line>`, `group <getent group line>`, `id <user>:<id -G output>`, `path <path that exists>`, `active <running unit>` and `description <unit> <text>` (what `systemctl show` gives as its description, for `server-reboot`). Without it, none of them exist. A dry run prints every file it would write, the registry included.
 
 For `recipe-run`: `EEPLOI_HELPER_OS_RELEASE` points to a test `os-release`, `EEPLOI_HELPER_RECIPES_STATE` to a test state folder, `EEPLOI_HELPER_RECIPES_DOWNLOAD` to a folder with the release's files (copied in place of the download, then checked as usual), `EEPLOI_HELPER_RECIPES_RESULTS` to a file of `fail <path>` lines for the steps and checks that fail (and a `locked` line when another run holds the lock), and `EEPLOI_HELPER_MINISIGN` to a `minisign` outside `PATH`, and `EEPLOI_HELPER_NOW` sets the time written in the state. A dry run never runs a step or check: it prints each script.
 
 For `server-report`: `EEPLOI_HELPER_REPORT` points to a folder with what the system would show: `kernel` (`uname -r`), `uptime` (`/proc/uptime`), `failed` (`systemctl --failed`) and `ss` (`ss -tlnpH`); a file that is not there reads as unknown. Unlike `recipe-run`'s, a dry run of `server-report` runs the kept checks and probes in the test state folder, so the tests see what the report makes of their output.
+
+For `server-reboot`: `EEPLOI_HELPER_REBOOT_STATE` points to a test file with the last reboot's time, and `EEPLOI_HELPER_NOW` sets the time now.
 
 ## Tests
 
