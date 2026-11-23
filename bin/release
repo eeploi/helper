@@ -152,6 +152,11 @@ read -r ci_sha ci_event ci_branch ci_state jobs <<< "$ci" || true
 [ "$jobs" = completed/success ] || fail "CI's test job on $commit has not passed ($jobs)"
 ok "CI \`test\` passed on $commit"
 
+# D-26: publishing makes the release immutable only when the repository has immutable releases on.
+immutable_on=$(gh api "repos/$REPO/immutable-releases" --jq .enabled) || fail "GitHub did not say whether $REPO has immutable releases"
+[ "$immutable_on" = true ] || fail "$REPO does not have immutable releases on"
+ok "immutable releases on, $tag is free"
+
 # What is released: the commits since the previous release, and how much of eeploi-helper changed.
 # Subjects only while they fit on a screen, never a diff.
 if [ -n "$previous" ]; then

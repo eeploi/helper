@@ -2890,6 +2890,10 @@ case "$1 $2" in
     while [ $# -gt 0 ]; do [ "$1" != --jq ] || filter=$2; shift; done
     [ "$json" != fail ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
     jq -r "$filter" <<< "${json//HEAD/$(git --git-dir="$GH_ORIGIN" rev-parse main)}" ;;
+  "api repos/eeploi/helper/immutable-releases")
+    [ "$*" = "api repos/eeploi/helper/immutable-releases --jq .enabled" ] || exit 1
+    [ "${GH_IMMUTABLE_ON-}" != fail ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+    echo "${GH_IMMUTABLE_ON-true}" ;;
   "release view")
     case "$*" in *isImmutable*) [ -z "${GH_OLD:-}" ] || { echo 'Unknown JSON field: "isImmutable"' >&2; exit 1; } ;; esac
     [ "${GH_FAIL:-}" != noview ] || [ ! -f "$s/tried" ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
@@ -2993,6 +2997,7 @@ rel_check 0 "release: a new version passes the checks" "  ✓ main is clean and 
   ✓ 1.2.3 is higher than every released version
   ✓ CHANGELOG: ## 1.2.3, Unreleased empty
   ✓ CI \`test\` passed on ${REL_HEAD:0:7}
+  ✓ immutable releases on, v1.2.3 is free
   ✓ First release: no earlier version
 
 Every check passed. Nothing signed (--check)."
@@ -3003,6 +3008,9 @@ done
 check "release: the key id read from the key" test -n "$REL_KEYID"
 check "release: no colour in a pipe" test -z "$(grep -F $'\033' <<< "$OUT")"
 check "release: --check stops before signing" test -z "$(grep -F 'Sign' <<< "$OUT")"
+check "release: asks GitHub whether immutable releases are on" grep -qx 'api repos/eeploi/helper/immutable-releases --jq .enabled' "$REL/gh/log"
+GH_IMMUTABLE_ON=false rel_check 1 "release: immutable releases off" "  ✗ eeploi/helper does not have immutable releases on"
+GH_IMMUTABLE_ON=fail rel_check 1 "release: GitHub can't say" "  ✗ GitHub did not say whether eeploi/helper has immutable releases"
 check "release: no local tests" test ! -e "$REL/gh/ran-tests"
 check "release: no local shellcheck" test ! -e "$REL/gh/ran-shellcheck"
 check "release: asks CI for ci.yml's runs for the push of the exact commit to main" \
@@ -3124,13 +3132,13 @@ rel_commit eeploi-helper "$REL_HELPER"
 REL_HEAD=$(rel_git -C "$REL/repo" rev-parse HEAD)
 
 # All of bin/release, signing with the test key, through a terminal (it asks for the key password).
-# rel_script: bin/release in the copy, through script for a terminal (util-linux or BSD).
+# rel_script [--check]: bin/release in the copy, through script for a terminal (util-linux or BSD).
 rel_script() {
   local run=(env "${REL_ENV[@]}" PATH="$REL/stubs:$PATH" HELPER_KEY="$RKEY.sec" timeout 20 script)
   if script --version 2> /dev/null | grep -q util-linux; then
-    "${run[@]}" -qec "bash bin/release" /dev/null
+    "${run[@]}" -qec "bash bin/release $*" /dev/null
   else
-    "${run[@]}" -q /dev/null bash bin/release
+    "${run[@]}" -q /dev/null bash bin/release "$@"
   fi
 }
 # rel_run <answer> <exit code> <name> <expected output>: bin/release, the answer typed at its question.
@@ -3164,6 +3172,14 @@ if command -v script > /dev/null && command -v timeout > /dev/null; then
   check "release: no gh release call after a no" test -z "$(grep -E '^release (create|edit)' "$REL/gh/log")"
   NO_COLOR=1 rel_run n 1 "release: NO_COLOR on a terminal" " stopped: nothing signed, nothing published"
   check "release: NO_COLOR, no colour" test -z "$(grep -F $'\033[' <<< "$OUT")"
+  # The overview alone (--check) under a real terminal: in colour; in a pipe (rel_check) it is plain.
+  OUT=$(cd "$REL/repo" && rel_script --check < /dev/null 2>&1) && CODE=0 || CODE=$?
+  for want in $'\033[1mEEPLOI HELPER\033[0m' $'\033[1mChecks\033[0m' $'\033[32m✓\033[0m CHANGELOG'; do
+    rel_expect 0 "release: --check on a terminal, in colour: $want" "$want"
+  done
+  OUT=$(cd "$REL/repo" && NO_COLOR=1 rel_script --check < /dev/null 2>&1) && CODE=0 || CODE=$?
+  rel_expect 0 "release: --check on a terminal with NO_COLOR" "✓ CHANGELOG"
+  check "release: --check with NO_COLOR, no colour" test -z "$(grep -F $'\033[' <<< "$OUT")"
   rel_reset
 
   rel_left create "release: the draft's files don't upload" "could not create the draft"
@@ -3283,7 +3299,12 @@ check "release: version_lt is the helper's" test "$REL_LT" = "$(sed -n '/^versio
 # What bin/release runs, its quoted text (the messages) left out; a "$(…)" stays, it runs.
 REL_CODE=$(sed -E 's/"([^"$]|\$[^("])*"//g' "$ROOT/bin/release")
 check "release: nothing pushed, no tag moved, no release file replaced or deleted" \
-  test "$(grep -cE -e 'git push' -e 'git tag' -e 'gh release (upload|delete)' -e 'gh api' -e '--clobber' <<< "$REL_CODE")" -eq 0
+  test "$(grep -cE -e 'git push' -e 'git tag' -e 'gh release (upload|delete)' -e '--clobber' <<< "$REL_CODE")" -eq 0
+# gh api only once, to read whether immutable releases are on: a GET, no method, fields or input.
+check "release: gh api only reads immutable-releases" test "$(grep -c 'gh api' "$ROOT/bin/release")" = 1
+# shellcheck disable=SC2016 # bin/release's own line, as written
+check "release: that read is a plain GET" \
+  grep -qxF 'immutable_on=$(gh api "repos/$REPO/immutable-releases" --jq .enabled) || fail "GitHub did not say whether $REPO has immutable releases"' "$ROOT/bin/release"
 check "release: it starts as a draft on the checked commit" grep -qE '^gh release create .* --draft --target  \\$' <<< "$REL_CODE"
 check "release: one gh release edit, which publishes the draft" \
   test "$(grep -E 'gh release edit' <<< "$REL_CODE" | grep -cE 'gh release edit +-R +--draft=false( |$)')/$(grep -cE 'gh release edit' <<< "$REL_CODE")" = 1/1
