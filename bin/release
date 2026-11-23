@@ -32,9 +32,9 @@ line() { printf '%s\n' "=========================================="; }
 field() { printf '%-18s %s\n' "$1" "$2"; }
 heading() { printf '\n%s\n' "$(paint 1 1 "$1")"; }
 ok() { printf '  %s %s\n' "$(paint 1 32 ✓)" "$*"; }
-# printable: only printable ASCII, so text from GitHub or a commit can't move the cursor or rewrite what the
-# screen shows.
-printable() { LC_ALL=C tr -cd '\040-\176\n'; }
+# printable: no control character (ESC, CR, tab and the like; a newline stays), so text from GitHub or a
+# commit can't move the cursor or rewrite what the screen shows. Other UTF-8 stays.
+printable() { LC_ALL=C tr -d '\000-\011\013-\037\177'; }
 # While a draft may be on GitHub, $left says so and how to delete it: every failure then ends with it.
 # A failure can carry gh's own output: printable only.
 left=
@@ -127,18 +127,20 @@ sections=$(awk '/^## / { if (h != "") print n, h; h = $0; n = 0; next } NF { n++
 [ "$(sed -n '2s/ .*//p' <<< "$sections")" -gt 0 ] || fail "CHANGELOG.md has nothing under ## $version"
 ok "CHANGELOG: ## $version, Unreleased empty"
 
-# CI's own run on this exact commit stands for the tests and shellcheck: the latest run of ci.yml on it,
-# and its job named test, finished and passed.
-run=$(gh run list -R "$REPO" --commit "$head" --workflow ci.yml --limit 1 --json databaseId --jq '.[0].databaseId // ""') \
-  || fail "could not ask GitHub for CI on $commit"
-[ -n "$run" ] || fail "CI has no run on $commit yet"
+# CI's own run on this exact commit stands for the tests and shellcheck: the latest run of ci.yml for the
+# push to main (a pull request's run on the same commit tests its merge with another branch), and its job
+# named test, finished and passed.
+run=$(gh run list -R "$REPO" --commit "$head" --workflow ci.yml --event push --branch main --limit 1 \
+  --json databaseId --jq '.[0].databaseId // ""') || fail "could not ask GitHub for CI on $commit"
+[ -n "$run" ] || fail "CI has no run for the push of $commit to main yet"
 [[ $run =~ ^[0-9]+$ ]] || fail "could not read CI's run on $commit ($run)"
-ci=$(gh run view "$run" -R "$REPO" --json headSha,jobs \
-  --jq '"\(.headSha) " + ([.jobs[] | select(.name == "test") | "\(.status)/\(.conclusion)"] | join(","))') \
+ci=$(gh run view "$run" -R "$REPO" --json headSha,event,headBranch,jobs \
+  --jq '"\(.headSha) \(.event) \(.headBranch) " + ([.jobs[] | select(.name == "test") | "\(.status)/\(.conclusion)"] | join(","))') \
   || fail "could not read CI's run $run on $commit"
-[ "${ci%% *}" = "$head" ] || fail "CI's run $run is not on $commit (${ci%% *})"
-jobs=${ci#* }
-[ -n "$jobs" ] || fail "CI's run $run on $commit has no job named test"
+read -r ci_sha ci_event ci_branch jobs <<< "$ci" || true
+[ "$ci_sha" = "$head" ] || fail "CI's run $run is not on $commit ($ci_sha)"
+[ "$ci_event $ci_branch" = "push main" ] || fail "CI's run $run is not for the push to main ($ci_event $ci_branch)"
+[ -n "${jobs:-}" ] || fail "CI's run $run on $commit has no job named test"
 [ "$jobs" = completed/success ] || fail "CI's test job on $commit has not passed ($jobs)"
 ok "CI \`test\` passed on $commit"
 
@@ -146,7 +148,10 @@ ok "CI \`test\` passed on $commit"
 # Subjects only while they fit on a screen, never a diff.
 if [ -n "$previous" ]; then
   since="refs/tags/v$previous"
-  git merge-base --is-ancestor "$since" "$head" || fail "v$previous is not in the history of $commit"
+  ancestor=0
+  git merge-base --is-ancestor "$since" "$head" || ancestor=$?
+  [ "$ancestor" != 1 ] || fail "v$previous is not in the history of $commit"
+  [ "$ancestor" = 0 ] || fail "git could not compare v$previous with $commit"
   count=$(git rev-list --count "$since..$head")
   read -r added removed _ < <(git diff --numstat "$since" "$head" -- eeploi-helper) || true
   commits="$count commits"
@@ -174,7 +179,8 @@ case "$KEY" in /*) ;; *) fail "HELPER_KEY must be an absolute path: $KEY" ;; esa
 [ -f "$KEY" ] || fail "no secret key at $KEY (set HELPER_KEY to use another)"
 
 printf '\n'
-read -r -p "$(paint 1 1 "Sign $version?") [y/N] " answer
+# read -p asks on stderr. An end of input is a no.
+read -r -p "$(paint 2 1 "Sign $version?") [y/N] " answer || answer=
 [ "$answer" = y ] || fail "stopped: nothing signed, nothing published"
 rm -f eeploi-helper.minisig
 minisign -S -s "$KEY" -m eeploi-helper -t "eeploi-helper $version"
@@ -241,5 +247,7 @@ ok "published: $tag, immutable"
 printf '\n'
 line
 printf '%s  eeploi-helper %s\n' "$(paint 1 '1;32' RELEASED)" "$version"
+field "Tag" "$tag  on $commit"
+field "Key" "$keyid"
 field "SHA-256" "$(sha256 "$work/signed")"
 line

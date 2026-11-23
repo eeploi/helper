@@ -1711,6 +1711,7 @@ refuse "redis-stop extra argument" "usage" redis-stop shop_example now
 
 echo "== recipe-run: arguments and the recipes key"
 check "minisign, for the recipe-run tests" command -v minisign
+check "jq, for the bin/release tests" command -v jq
 # A test key pair for recipes releases, made here (never the real one), and a copy of the helper with it.
 RKEY="$WORK/recipes-key"
 minisign -G -W -p "$RKEY.pub" -s "$RKEY.sec" > /dev/null
@@ -2883,7 +2884,7 @@ case "$1 $2" in
     if [ "$2" = list ]; then
       json=${GH_RUNS-'[{"databaseId":42},{"databaseId":41}]'}
     else
-      json=${GH_CI-'{"headSha":"HEAD","jobs":[{"name":"lint","status":"completed","conclusion":"failure"},{"name":"test","status":"completed","conclusion":"success"}]}'}
+      json=${GH_CI-'{"headSha":"HEAD","event":"push","headBranch":"main","jobs":[{"name":"lint","status":"completed","conclusion":"failure"},{"name":"test","status":"completed","conclusion":"success"}]}'}
     fi
     filter=
     while [ $# -gt 0 ]; do [ "$1" != --jq ] || filter=$2; shift; done
@@ -2949,7 +2950,6 @@ $(grep "^SEMVER_RE=" "$HELPER")
 printf '%s' "$REL_HELPER" > "$REL/repo/eeploi-helper"
 REL_CHANGELOG=$'# Changelog\n\n## Unreleased\n\n## 1.2.3\n\n### Added\n\n- A change.\n\n## 1.2.2\n\n- An older change.\n'
 printf '%s' "$REL_CHANGELOG" > "$REL/repo/CHANGELOG.md"
-echo 'exit 0' > "$REL/repo/tests/run.sh"
 # git without the user's own config (signing, hooks), and never on the real repo (GIT_DIR from a hook, say).
 REL_ENV=(-u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
   GH_STATE="$REL/gh" GH_ORIGIN="$REL/origin.git")
@@ -3005,9 +3005,9 @@ check "release: no colour in a pipe" test -z "$(grep -F $'\033' <<< "$OUT")"
 check "release: --check stops before signing" test -z "$(grep -F 'Sign' <<< "$OUT")"
 check "release: no local tests" test ! -e "$REL/gh/ran-tests"
 check "release: no local shellcheck" test ! -e "$REL/gh/ran-shellcheck"
-check "release: asks CI for ci.yml's runs on the exact commit" \
-  grep -qxF "run list -R eeploi/helper --commit $REL_HEAD --workflow ci.yml --limit 1 --json databaseId --jq .[0].databaseId // \"\"" "$REL/gh/log"
-check "release: reads run 42's commit and its jobs" grep -q '^run view 42 -R eeploi/helper --json headSha,jobs ' "$REL/gh/log"
+check "release: asks CI for ci.yml's runs for the push of the exact commit to main" \
+  grep -qxF "run list -R eeploi/helper --commit $REL_HEAD --workflow ci.yml --event push --branch main --limit 1 --json databaseId --jq .[0].databaseId // \"\"" "$REL/gh/log"
+check "release: reads run 42's commit, event, branch and jobs" grep -q '^run view 42 -R eeploi/helper --json headSha,event,headBranch,jobs ' "$REL/gh/log"
 check "release: CI's job is named test" grep -qx '  test:' "$ROOT/.github/workflows/ci.yml"
 printf 'untrusted comment: minisign public key %s\n%s\n' 0000000000000000 "$(sed -n 2p "$RKEY.pub")" > "$REL/repo/minisign.pub"
 # Uncommitted, so the checks stop, after the overview.
@@ -3016,11 +3016,20 @@ printf 'untrusted comment: minisign public key %s\nnot a key\n' "$REL_KEYID" > "
 rel_check 1 "release: a minisign.pub without a key" "  ✗ cannot read the key id from minisign.pub"
 cp "$RKEY.pub" "$REL/repo/minisign.pub"
 # CI's job named test on the exact commit, finished and passed: anything else stops the checks.
-# rel_ci <commit> <jobs...>: a run's JSON. rel_job <name> <status> <conclusion as JSON>: one of its jobs.
-rel_ci() { local sha=$1; shift; printf '{"headSha":"%s","jobs":[%s]}' "$sha" "$(IFS=,; echo "$*")"; }
+# rel_ci <commit> <jobs...>: a run's JSON, for a push to main (REL_EVENT, REL_BRANCH: another).
+# rel_job <name> <status> <conclusion as JSON>: one of its jobs.
+rel_ci() {
+  local sha=$1
+  shift
+  printf '{"headSha":"%s","event":"%s","headBranch":"%s","jobs":[%s]}' "$sha" "${REL_EVENT:-push}" "${REL_BRANCH:-main}" "$(IFS=,; echo "$*")"
+}
 rel_job() { printf '{"name":"%s","status":"%s","conclusion":%s}' "$1" "$2" "$3"; }
 REL_PASSED=$(rel_job test completed '"success"')
-GH_RUNS='[]' rel_check 1 "release: no CI run on the commit" "  ✗ CI has no run on ${REL_HEAD:0:7} yet"
+GH_RUNS='[]' rel_check 1 "release: no CI run on the commit" "  ✗ CI has no run for the push of ${REL_HEAD:0:7} to main yet"
+GH_CI=$(REL_EVENT=pull_request rel_ci HEAD "$REL_PASSED") rel_check 1 "release: a pull request's run doesn't count" \
+  "  ✗ CI's run 42 is not for the push to main (pull_request main)"
+GH_CI=$(REL_BRANCH=release rel_ci HEAD "$REL_PASSED") rel_check 1 "release: a push to another branch doesn't count" \
+  "  ✗ CI's run 42 is not for the push to main (push release)"
 GH_RUNS=fail rel_check 1 "release: CI can't be asked" "  ✗ could not ask GitHub for CI on ${REL_HEAD:0:7}"
 GH_RUNS='[{"databaseId":"42 43"}]' rel_check 1 "release: a run id that is no number" "  ✗ could not read CI's run on ${REL_HEAD:0:7} (42 43)"
 GH_CI=fail rel_check 1 "release: CI's run can't be read" "  ✗ could not read CI's run 42 on ${REL_HEAD:0:7}"
@@ -3238,11 +3247,11 @@ rel_empty() {
   fi
 }
 rel_tag v1.2.2
-rel_empty "server-reboot: reboot the server (#37)"
-rel_empty $'a subject with \033[2Jcolour\tand a tab'
+rel_empty "server-reboot: reboot the server → café.example (#37)"
+rel_empty $'a subject with \033[2Jcolour\tand a tab\r'
 rel_commit eeploi-helper "$REL_HELPER"$'# one line more\n'
-rel_check 0 "release: the changes since the previous release" "  ✓ Changes since v1.2.2: 3 commits, eeploi-helper +1 −0 lines
-      #37 server-reboot: reboot the server
+rel_check 0 "release: the changes since the previous release, UTF-8 kept" "  ✓ Changes since v1.2.2: 3 commits, eeploi-helper +1 −0 lines
+      #37 server-reboot: reboot the server → café.example
       a subject with [2Jcolourand a tab
       eeploi-helper"
 check "release: no control character from a subject" test -z "$(grep -F $'\033' <<< "$OUT")"
