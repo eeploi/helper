@@ -129,6 +129,20 @@ MINISIGN_BIN=$(command -v minisign || echo minisign)
 # A copy with a well-formed (fake) release key, to test self-update past the key check.
 FAKE_KEY='RWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 sed "s#^PUBKEY=.*#PUBKEY='$FAKE_KEY'#" "$HELPER" > "$WORK/keyed-helper"
+# Versions relative to the helper's own, derived from VERSION, so a release never needs a test change.
+# A fixed version is only ever an older one: releases only go up (D-35).
+CUR=$(sed -n "s/^VERSION='\([0-9]*\.[0-9]*\.[0-9]*\)'$/\1/p" "$HELPER")
+case $CUR in
+  [0-9]*.[0-9]*.[0-9]*) ;;
+  *) echo "tests: no VERSION='X.Y.Z' in $HELPER" >&2; exit 1 ;;
+esac
+IFS=. read -r V_MAJ V_MIN V_PAT <<EOF
+$CUR
+EOF
+NEXT_PATCH="$V_MAJ.$V_MIN.$((V_PAT + 1))"
+NEXT_MINOR="$V_MAJ.$((V_MIN + 1)).0"
+NEXT_MAJOR="$((V_MAJ + 1)).0.0"
+NEWER=$NEXT_MAJOR
 
 # call <args...>: run the helper in dry-run mode. Settings (temporary per call):
 #   IN (stdin), AS (SUDO_USER, default eeploi), ETC_DIR (default etc-sites), NGINX (nginx.conf), BIN (helper file),
@@ -337,7 +351,7 @@ rm "$WORK/dec/DECISIONS.md"
 dec_refuse "decisions: no DECISIONS.md" "no DECISIONS.md"
 
 echo "== existing subcommands"
-ok "version" "1.2.0" version
+ok "version" "$CUR" version
 ok "nginx-test" "run: nginx -t" nginx-test
 ok "nginx-reload" "run: service nginx reload" nginx-reload
 ok "php-fpm" "run: service php8.4-fpm reload" php-fpm-reload 8.4
@@ -457,12 +471,12 @@ lacks "env not read by root" "run: dd " env-install /home/ploi/a/.env $SITE/.env
 lacks "storage not read by root" "run: tar " storage-copy /home/forge/a/storage $SITE/storage shop_example
 ok "storage read as forge" "run: runuser -u forge -- tar -C /home/forge/a/storage -cf - ." storage-copy /home/forge/a/storage $SITE/storage shop_example
 # self-update: strictly newer, compared by number.
-BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update 1.2.0
+BIN="$WORK/keyed-helper" refuse "same version" "only a newer version" self-update "$CUR"
 BIN="$WORK/keyed-helper" refuse "older version" "only a newer version" self-update 0.99.99
-BIN="$WORK/keyed-helper" refuse "older patch" "only a newer version" self-update 1.1.5
-BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update 1.2.1
-BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update 1.3.0
-BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update 2.0.0
+BIN="$WORK/keyed-helper" refuse "older patch" "only a newer version" self-update 1.2.5
+BIN="$WORK/keyed-helper" ok "newer patch" "download:" self-update "$NEXT_PATCH"
+BIN="$WORK/keyed-helper" ok "newer minor" "download:" self-update "$NEXT_MINOR"
+BIN="$WORK/keyed-helper" ok "newer major" "download:" self-update "$NEXT_MAJOR"
 # Pinned versions, so these hold whatever VERSION is: as text, 1.0.10 sorts before 1.0.9.
 sed "s#^VERSION=.*#VERSION='1.0.9'#" "$WORK/keyed-helper" > "$WORK/v109-helper"
 BIN="$WORK/v109-helper" ok "numbers, not text" "download:" self-update 1.0.10
@@ -475,12 +489,12 @@ ok "ssl-csr key private from the start" "run: sh -c umask 077 && exec openssl ge
 ok "ssl-csr key mode" "run: chmod 600 /etc/nginx/ssl/eeploi-example.com.key" ssl-csr eeploi-example.com
 # HOME and locale pinned; curl reads no curlrc.
 check "HOME and LC_ALL pinned" grep -qx 'export TMPDIR=/tmp HOME=/root LC_ALL=C' "$HELPER"
-BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-update 1.2.3
+BIN="$WORK/keyed-helper" ok "curl without curlrc" "run: curl -q --fail" self-update "$NEWER"
 
 echo "== deploy user from helper.conf"
 lacks "default homes have no deploy" "deploy" version
 AS=deploy refuse "deploy without config" "run through sudo" version
-AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "1.2.0" version
+AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy from config" "$CUR" version
 AS=deploy ETC_DIR="$WORK/etc-conf" ok "deploy copies into a site home" "runuser -u shop_example -- sh -c" env-install /home/ploi/a/.env $SITE/.env shop_example
 AS=deploy ETC_DIR="$WORK/etc-conf" refuse "the deploy user is not a site user" "reserved name, not a site user: deploy" env-install /home/ploi/a/.env /home/deploy/a/.env deploy
 ETC_DIR="$WORK/etc-conf" refuse "eeploi refused when another user deploys" "run through sudo as the deploy user deploy" version
@@ -609,8 +623,8 @@ refuse "socket arguments" "usage" vhost-set-socket example.com /run/php/php8.4-f
 
 echo "== self-update"
 sed "s#^PUBKEY=.*#PUBKEY='RWS...REPLACE_WITH_RELEASE_KEY'#" "$HELPER" > "$WORK/placeholder-helper"
-BIN="$WORK/placeholder-helper" refuse "placeholder key" "PUBKEY is the placeholder" self-update 1.2.3
-ok "verify with the release key" "run: minisign -V -H -q -P $(sed -n "s/^PUBKEY='\\(.*\\)'$/\\1/p" "$HELPER")" self-update 1.2.3
+BIN="$WORK/placeholder-helper" refuse "placeholder key" "PUBKEY is the placeholder" self-update "$NEWER"
+ok "verify with the release key" "run: minisign -V -H -q -P $(sed -n "s/^PUBKEY='\\(.*\\)'$/\\1/p" "$HELPER")" self-update "$NEWER"
 refuse "bad version" "invalid version" self-update 1.2
 refuse "version with v" "invalid version" self-update v1.2.3
 refuse "version with leading zero" "invalid version" self-update 01.2.3
@@ -618,9 +632,9 @@ refuse "version with suffix" "invalid version" self-update 1.2.3-beta
 refuse "version with a path" "invalid version" self-update '1.2.3/../../x'
 refuse "version with a newline" "invalid version" self-update $'1.2.3\nid'
 refuse "no version" "usage" self-update
-BIN="$WORK/keyed-helper" ok "download url" "download: https://github.com/eeploi/helper/releases/download/v1.2.3/eeploi-helper" self-update 1.2.3
-BIN="$WORK/keyed-helper" ok "signature url" "download: https://github.com/eeploi/helper/releases/download/v1.2.3/eeploi-helper.minisig" self-update 1.2.3
-BIN="$WORK/keyed-helper" ok "verify with the built-in key" "run: minisign -V -H -q -P $FAKE_KEY" self-update 1.2.3
+BIN="$WORK/keyed-helper" ok "download url" "download: https://github.com/eeploi/helper/releases/download/v$NEWER/eeploi-helper" self-update "$NEWER"
+BIN="$WORK/keyed-helper" ok "signature url" "download: https://github.com/eeploi/helper/releases/download/v$NEWER/eeploi-helper.minisig" self-update "$NEWER"
+BIN="$WORK/keyed-helper" ok "verify with the built-in key" "run: minisign -V -H -q -P $FAKE_KEY" self-update "$NEWER"
 # Only a prehashed (ED) signature: every check runs minisign with VERIFY (-H), which the dry runs print and
 # recipe-run's legacy signature test runs for real; bin/release checks through its own verify, with -H too.
 check "one set of minisign flags, with -H" grep -qxF 'VERIFY=(-V -H -q)' "$HELPER"
@@ -630,11 +644,11 @@ check "every minisign run uses it" test "$(grep -F "\"${D}MINISIGN\"" "$HELPER" 
 check "no minisign flags outside VERIFY" test "$(grep -cE '(^|[^A-Za-z_])minisign +-' "$HELPER")" -eq 0
 check "bin/release verifies with -H" grep -qF 'verify() { minisign -V -H -p minisign.pub "$@"; }' "$ROOT/bin/release"
 check "bin/release has no other check" test "$(grep -cE 'minisign( +-[A-Za-z]+)* +-[A-Za-z]*V' "$ROOT/bin/release")" -eq 1
-BIN="$WORK/keyed-helper" ok "version check" "check: <download>/eeploi-helper version = 1.2.3" self-update 1.2.3
-BIN="$WORK/keyed-helper" ok "install" "install: /usr/local/sbin/eeploi-helper (root:root 755)" self-update 1.2.3
+BIN="$WORK/keyed-helper" ok "version check" "check: <download>/eeploi-helper version = $NEWER" self-update "$NEWER"
+BIN="$WORK/keyed-helper" ok "install" "install: /usr/local/sbin/eeploi-helper (root:root 755)" self-update "$NEWER"
 BIN="$WORK/keyed-helper" refuse "bad version with a key" "invalid version" self-update 1.2.3.4
 sed "s#^PUBKEY=.*#PUBKEY='RWQshort'#" "$HELPER" > "$WORK/badkey-helper"
-BIN="$WORK/badkey-helper" refuse "malformed key" "invalid release key" self-update 1.2.3
+BIN="$WORK/badkey-helper" refuse "malformed key" "invalid release key" self-update "$NEWER"
 
 echo "== db-create"
 PW='test-password-1234567890'
@@ -1999,7 +2013,7 @@ RDL="$WORK/rel-good" recipe refuse "a release that is not there" "download faile
 echo "== recipe-run: the manifest"
 remanifest release sed 's/^release 0.4.0$/release 0.4.1/'
 remanifest provider sed 's/^target hetzner /target other /'
-remanifest min-high sed 's/^min-helper .*/min-helper 1.3.0/'
+remanifest min-high sed "s/^min-helper .*/min-helper $NEXT_MINOR/"
 remanifest min-low sed 's/^min-helper .*/min-helper 0.9.0/'
 remanifest min-bad sed 's/^min-helper .*/min-helper 1.1/'
 remanifest format2 sed 's/^format 1$/format 2/'
@@ -2032,7 +2046,7 @@ remanifest cr awk '{ if ($0 == "release 0.4.0") printf "%s\r\n", $0; else print 
 RDL="$WORK/rel-min-low" recipe ok "min-helper lower than this helper" "result ok" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-release" recipe refuse "manifest of another release" "the manifest is for release 0.4.1, not 0.4.0" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-provider" recipe refuse "manifest of another provider" "the manifest is for other ubuntu-26.04, not hetzner ubuntu-26.04" recipe-run 0.4.0 hetzner
-RDL="$WORK/rel-min-high" recipe refuse "min-helper higher than this helper" "recipes 0.4.0 needs eeploi-helper 1.3.0 or newer, this is 1.2.0" recipe-run 0.4.0 hetzner
+RDL="$WORK/rel-min-high" recipe refuse "min-helper higher than this helper" "recipes 0.4.0 needs eeploi-helper $NEXT_MINOR or newer, this is $CUR" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-min-bad" recipe refuse "min-helper not a version" "invalid min-helper in the manifest: 1.1" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-nomin" recipe refuse "no min-helper" "invalid min-helper in the manifest" recipe-run 0.4.0 hetzner
 RDL="$WORK/rel-norelease" recipe refuse "no release line" "the manifest is for release , not 0.4.0" recipe-run 0.4.0 hetzner
@@ -2460,7 +2474,7 @@ report() {
   ETC_DIR=${ETC_DIR:-$WORK/etc-recipes-rep} RSTATE=${RSTATE:-$WORK/recipes-rep} REP=${REP-$WORK/rep-sys} "$kind" "$name" "$text" server-report "$@"
 }
 report ok "part 1: the helper" "Part 1: what eeploi did
-$(r helper 1.2.0)
+$(r helper "$CUR")
 $(r setup eeploi)
 $(r recipes 0.4.0)
 $(r last-run 2026-11-22T10:00:00Z)
