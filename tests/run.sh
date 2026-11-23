@@ -542,6 +542,9 @@ ok "ondemand" "pm = ondemand
   pm.process_idle_timeout = 10s
   pm.max_requests = 500
   request_terminate_timeout = 60" "${POOL[@]}"
+ok "upload progress locked off" "  request_terminate_timeout = 60
+  php_admin_flag[session.upload_progress.enabled] = off" "${POOL[@]}"
+if [ "$(grep -c 'session.upload_progress' <<< "$OUT")" -eq 1 ]; then pass; else failure "upload progress once, in the pool" "$OUT"; fi
 ok "opcache ini" "write: /etc/php/8.4/fpm/conf.d/90-eeploi.ini (644)
   ; Written by eeploi-helper (php-pool-write). eeploi rewrites this file, do not edit.
   opcache.validate_permission = 1" "${POOL[@]}"

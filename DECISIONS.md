@@ -365,3 +365,11 @@ Choices made on purpose, and the risks and limits accepted with them, so an audi
 - **Why:** a caller in a loop can't keep a server rebooting. A clock that was wrong when the time was written, or a damaged file, never keeps a server from rebooting; a file only root can change is the one that counts.
 - **Accepted:** a file that is damaged or far in the future allows one reboot within the 15 minutes; the system log says so.
 - **Where:** `eeploi-helper`
+
+## D-43: Session upload progress is locked off in every pool
+
+- **Kind:** decision
+- **Decided:** 2026-11-23, #24
+- **What:** every pool `php-pool-write` writes holds `php_admin_flag[session.upload_progress.enabled] = off`. Fixed, not a setting. A pool written before gets it the next time `php-pool-write` runs for its site; there is no migration.
+- **Why:** the server turns it off for all of PHP, but it is a per-directory setting, so one line in a site's `.user.ini` would turn it back on for that site. A `php_admin_flag` can't be changed by `.user.ini` or `ini_set()`. Current frameworks don't use it: their upload progress comes from the browser.
+- **Where:** `eeploi-helper`

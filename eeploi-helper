@@ -1577,6 +1577,7 @@ vhost_paths() {
 
 # pool_conf <version> <user>: the site's own PHP-FPM pool, running as the site user. Only the nginx user
 # may use its socket (0600, no group access).
+# D-43: session upload progress is locked off; a site's .user.ini or ini_set() can't change a php_admin_flag.
 pool_conf() {
   cat <<POOL
 ; Written by eeploi-helper (php-pool-write). eeploi rewrites this file, do not edit.
@@ -1591,6 +1592,7 @@ pm.max_children = 5
 pm.process_idle_timeout = 10s
 pm.max_requests = 500
 request_terminate_timeout = 60
+php_admin_flag[session.upload_progress.enabled] = off
 POOL
 }
 

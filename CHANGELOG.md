@@ -7,6 +7,7 @@ A pull request adds its line under Unreleased. The pull request that raises `VER
 ## Unreleased
 
 - New subcommand `server-reboot`: reboots the server about 5 seconds after it answers, through a transient systemd unit, `eeploi-reboot`. The unit first takes `recipe-run`'s lock, so a `recipe-run` or `server-report` finishes first, and waits 30 minutes at most. Prints `reboot due <time>`, `reboot-required yes|no` and `boot-id <id>`, which a reboot changes; while a reboot is pending, a second call starts nothing and prints `reboot pending <time>`. At most one reboot per 15 minutes, so a caller in a loop can't keep a server rebooting: the unit writes the time to `/var/lib/eeploi/reboot` right before it reboots, and a call within 15 minutes of it is refused with the time a reboot is allowed again. A time more than 15 minutes ahead, or a file it can't read, is ignored and logged. See README, Reboot.
+- Changed: every pool `php-pool-write` writes locks session upload progress off (`php_admin_flag[session.upload_progress.enabled] = off`), so a site's `.user.ini` or `ini_set()` can't turn it on. A pool gets it the next time `php-pool-write` runs for its site.
 
 ## 1.2.0
 
