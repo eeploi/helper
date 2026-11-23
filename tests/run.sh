@@ -18,15 +18,9 @@ FAILURES=""
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-# With TESTS_PROGRESS set, that file holds the counts so far: bin/release shows them while the tests run.
-progress() { [ -z "${TESTS_PROGRESS:-}" ] || printf '%s passed, %s failed\n' "$PASS" "$FAILED" > "$TESTS_PROGRESS"; }
-pass() {
-  PASS=$((PASS + 1))
-  progress
-}
+pass() { PASS=$((PASS + 1)); }
 failure() {
   FAILED=$((FAILED + 1))
-  progress
   FAILURES="$FAILURES
   - $1"
   printf 'FAIL %s\n%s\n\n' "$1" "$2"
@@ -1717,6 +1711,7 @@ refuse "redis-stop extra argument" "usage" redis-stop shop_example now
 
 echo "== recipe-run: arguments and the recipes key"
 check "minisign, for the recipe-run tests" command -v minisign
+check "jq, for the bin/release tests" command -v jq
 # A test key pair for recipes releases, made here (never the real one), and a copy of the helper with it.
 RKEY="$WORK/recipes-key"
 minisign -G -W -p "$RKEY.pub" -s "$RKEY.sec" > /dev/null
@@ -2867,15 +2862,16 @@ else
 fi
 
 echo "== bin/release"
-# Tags and releases never change (D-26 in DECISIONS.md): bin/release in a copy, a repo with its own origin, stubs
-# for gh and shellcheck, and minisign with the recipes test key. The copy's tests/run.sh only passes, so the tests
-# don't run again inside it. The gh stub keeps the release in $GH_STATE/release ("<draft> <commit>", true for a
-# draft) and its files in $GH_STATE/assets; publishing makes the tag in $GH_ORIGIN, as GitHub does. GH_ERROR: gh
-# fails with that message instead of "release not found". GH_FAIL: create (the draft is made, its files don't
-# upload), extra (a third file), corrupt or badsig (what the download gives), tagrace (a tag made on GitHub during
-# the download), publish (the draft stays), noview (publish, and GitHub can't be asked after), late (published,
-# then an error), swap (a file changed while it was a draft, seen once published). GH_IMMUTABLE=false: the
-# published release is not immutable. GH_OLD: a gh that doesn't know isImmutable. $GH_STATE/log lists the gh calls.
+# Tags and releases never change (D-26 in DECISIONS.md): bin/release in a copy, a repo with its own origin, a stub
+# for gh, and minisign with the recipes test key. The gh stub keeps the release in $GH_STATE/release ("<draft>
+# <commit>", true for a draft) and its files in $GH_STATE/assets; publishing makes the tag in $GH_ORIGIN, as GitHub
+# does. CI: run list gives runs 42 and 41, newest first (GH_RUNS: that JSON instead; fail: an error), run view
+# gives run 42 on the commit on GitHub's main, with a failed job lint and a passed job test (GH_CI: that JSON
+# instead, HEAD for that commit; fail: an error). Both through bin/release's own --jq, with jq. GH_ERROR: gh fails with that message instead of "release not found". GH_FAIL: create (the draft is made,
+# its files don't upload), extra (a third file), corrupt or badsig (what the download gives), tagrace (a tag made on
+# GitHub during the download), publish (the draft stays), noview (publish, and GitHub can't be asked after), late
+# (published, then an error), swap (a file changed while it was a draft, seen once published). GH_IMMUTABLE=false:
+# the published release is not immutable. GH_OLD: a gh that doesn't know isImmutable. $GH_STATE/log lists the gh calls.
 REL="$WORK/release"
 mkdir -p "$REL/stubs" "$REL/repo/bin" "$REL/repo/tests" "$REL/gh"
 cat > "$REL/stubs/gh" << 'EOF'
@@ -2883,7 +2879,21 @@ cat > "$REL/stubs/gh" << 'EOF'
 s=$GH_STATE tag=${3:-}
 echo "$*" >> "$s/log"
 case "$1 $2" in
-  "run list") echo "completed success" ;;
+  "run list" | "run view")
+    # GitHub's JSON, through the caller's own --jq, as gh does. HEAD stands for the commit on GitHub's main.
+    if [ "$2" = list ]; then
+      json=${GH_RUNS-'[{"databaseId":42},{"databaseId":41}]'}
+    else
+      json=${GH_CI-'{"headSha":"HEAD","event":"push","headBranch":"main","status":"completed","conclusion":"success","jobs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"success"}]}'}
+    fi
+    filter=
+    while [ $# -gt 0 ]; do [ "$1" != --jq ] || filter=$2; shift; done
+    [ "$json" != fail ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+    jq -r "$filter" <<< "${json//HEAD/$(git --git-dir="$GH_ORIGIN" rev-parse main)}" ;;
+  "api repos/eeploi/helper/immutable-releases")
+    [ "$*" = "api repos/eeploi/helper/immutable-releases --jq .enabled" ] || exit 1
+    [ "${GH_IMMUTABLE_ON-}" != fail ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+    echo "${GH_IMMUTABLE_ON-true}" ;;
   "release view")
     case "$*" in *isImmutable*) [ -z "${GH_OLD:-}" ] || { echo 'Unknown JSON field: "isImmutable"' >&2; exit 1; } ;; esac
     [ "${GH_FAIL:-}" != noview ] || [ ! -f "$s/tried" ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
@@ -2930,8 +2940,12 @@ case "$1 $2" in
   *) exit 1 ;;
 esac
 EOF
-printf '#!/bin/sh\nexit 0\n' > "$REL/stubs/shellcheck"
+# CI's test job stands for shellcheck and the tests: these leave a mark when bin/release runs them anyway.
+# shellcheck disable=SC2016 # expanded when the stub runs
+printf '#!/bin/sh\n: > "$GH_STATE/ran-shellcheck"\n' > "$REL/stubs/shellcheck"
 chmod 755 "$REL/stubs"/*
+# shellcheck disable=SC2016 # expanded when the copy's tests run
+printf ': > "$GH_STATE/ran-tests"\n' > "$REL/repo/tests/run.sh"
 cp "$ROOT/bin/release" "$REL/repo/bin/release"
 cp "$RKEY.pub" "$REL/repo/minisign.pub"
 REL_HELPER="VERSION='1.2.3'
@@ -2940,7 +2954,6 @@ $(grep "^SEMVER_RE=" "$HELPER")
 printf '%s' "$REL_HELPER" > "$REL/repo/eeploi-helper"
 REL_CHANGELOG=$'# Changelog\n\n## Unreleased\n\n## 1.2.3\n\n### Added\n\n- A change.\n\n## 1.2.2\n\n- An older change.\n'
 printf '%s' "$REL_CHANGELOG" > "$REL/repo/CHANGELOG.md"
-echo 'exit 0' > "$REL/repo/tests/run.sh"
 # git without the user's own config (signing, hooks), and never on the real repo (GIT_DIR from a hook, say).
 REL_ENV=(-u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
   GH_STATE="$REL/gh" GH_ORIGIN="$REL/origin.git")
@@ -2978,19 +2991,94 @@ rel_untag() {
     rel_git "$@" update-ref -d "$ref"
   done
 }
-rel_check 0 "release: a new version passes the checks" \
-  "eeploi-helper 1.2.3 at ${REL_HEAD:0:7}: v1.2.3 is new and the highest, CHANGELOG.md ready"
+# The overview: what is released, with what key, then every check. The key id from the key's comment line.
+REL_KEYID=$(sed -n '1s/.* //p' "$RKEY.pub")
+rel_check 0 "release: a new version passes the checks" "  ✓ main is clean and matches GitHub
+  ✓ 1.2.3 is higher than every released version
+  ✓ CHANGELOG: ## 1.2.3, Unreleased empty
+  ✓ CI \`test\` passed on ${REL_HEAD:0:7}
+  ✓ immutable releases on, v1.2.3 is free
+  ✓ First release: no earlier version
+
+Every check passed. Nothing signed (--check)."
+for want in "Previous version   none" "New version        1.2.3" "Commit             ${REL_HEAD:0:7}  main" \
+  "Key                $REL_KEYID"; do
+  rel_expect 0 "release: the overview has $want" "$want"
+done
+check "release: the key id read from the key" test -n "$REL_KEYID"
+check "release: plain text, no escape codes" test -z "$(grep -F $'\033' <<< "$OUT")"
+check "release: --check stops before signing" test -z "$(grep -F 'Sign' <<< "$OUT")"
+check "release: asks GitHub whether immutable releases are on" grep -qx 'api repos/eeploi/helper/immutable-releases --jq .enabled' "$REL/gh/log"
+GH_IMMUTABLE_ON=false rel_check 1 "release: immutable releases off" "  ✗ eeploi/helper does not have immutable releases on"
+GH_IMMUTABLE_ON=fail rel_check 1 "release: GitHub can't say" "  ✗ GitHub did not say whether eeploi/helper has immutable releases"
+check "release: no local tests" test ! -e "$REL/gh/ran-tests"
+check "release: no local shellcheck" test ! -e "$REL/gh/ran-shellcheck"
+check "release: asks CI for ci.yml's runs for the push of the exact commit to main" \
+  grep -qxF "run list -R eeploi/helper --commit $REL_HEAD --workflow ci.yml --event push --branch main --limit 1 --json databaseId --jq .[0].databaseId // \"\"" "$REL/gh/log"
+check "release: reads run 42's commit, event, branch, result and jobs" grep -q '^run view 42 -R eeploi/helper --json headSha,event,headBranch,status,conclusion,jobs ' "$REL/gh/log"
+check "release: CI's job is named test" grep -qx '  test:' "$ROOT/.github/workflows/ci.yml"
+printf 'untrusted comment: minisign public key %s\n%s\n' 0000000000000000 "$(sed -n 2p "$RKEY.pub")" > "$REL/repo/minisign.pub"
+# Uncommitted, so the checks stop, after the overview.
+rel_check 1 "release: the key id from the key, not its comment" "Key                $REL_KEYID"
+printf 'untrusted comment: minisign public key %s\nnot a key\n' "$REL_KEYID" > "$REL/repo/minisign.pub"
+rel_check 1 "release: a minisign.pub without a key" "  ✗ cannot read the key id from minisign.pub"
+OUT=$(cd "$REL/repo" && env "${REL_ENV[@]}" PATH="$REL/stubs:$PATH" bash bin/release --check 9.9.9 2>&1) && CODE=0 || CODE=$?
+rel_expect 64 "release: --check with an argument" "usage: bin/release [--check]"
+cp "$RKEY.pub" "$REL/repo/minisign.pub"
+# CI's job named test on the exact commit, finished and passed: anything else stops the checks.
+# rel_ci <commit> <jobs...>: a run's JSON, for a push to main (REL_EVENT, REL_BRANCH: another).
+# rel_job <name> <status> <conclusion as JSON>: one of its jobs.
+rel_ci() {
+  local sha=$1
+  shift
+  printf '{"headSha":"%s","event":"%s","headBranch":"%s","status":"%s","conclusion":%s,"jobs":[%s]}' "$sha" \
+    "${REL_EVENT:-push}" "${REL_BRANCH:-main}" "${REL_STATUS:-completed}" "${REL_CONCLUSION:-\"success\"}" "$(IFS=,; echo "$*")"
+}
+rel_job() { printf '{"name":"%s","status":"%s","conclusion":%s}' "$1" "$2" "$3"; }
+REL_PASSED=$(rel_job test completed '"success"')
+GH_RUNS='[]' rel_check 1 "release: no CI run on the commit" "  ✗ CI has no run on main at ${REL_HEAD:0:7} yet"
+GH_CI=$(REL_EVENT=pull_request rel_ci HEAD "$REL_PASSED") rel_check 1 "release: a pull request's run doesn't count" \
+  "  ✗ CI's run 42 is not for the push to main (pull_request main)"
+GH_CI=$(REL_BRANCH=release rel_ci HEAD "$REL_PASSED") rel_check 1 "release: a push to another branch doesn't count" \
+  "  ✗ CI's run 42 is not for the push to main (push release)"
+GH_RUNS=fail rel_check 1 "release: CI can't be asked" "  ✗ could not ask GitHub for CI on ${REL_HEAD:0:7}"
+GH_RUNS='[{"databaseId":"42 43"}]' rel_check 1 "release: a run id that is no number" "  ✗ could not read CI's run on ${REL_HEAD:0:7} (42 43)"
+GH_CI=fail rel_check 1 "release: CI's run can't be read" "  ✗ could not read CI's run 42 on ${REL_HEAD:0:7}"
+REL_OTHER=0123456789abcdef0123456789abcdef01234567
+GH_CI=$(rel_ci $REL_OTHER "$REL_PASSED") rel_check 1 "release: CI's run on another commit" \
+  "  ✗ CI's run 42 is not on ${REL_HEAD:0:7} ($REL_OTHER)"
+GH_CI=$(rel_ci HEAD "$(rel_job lint completed '"success"')" "$(rel_job 'test (bash 3.2)' completed '"success"')") \
+  rel_check 1 "release: only a job named exactly test counts" "  ✗ CI's run 42 on ${REL_HEAD:0:7} has no job named test"
+GH_CI=$(rel_ci HEAD "$(rel_job test completed '"failure"')") rel_check 1 "release: CI's test job failed" \
+  "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (completed/failure)"
+GH_CI=$(rel_ci HEAD "$(rel_job test completed '"cancelled"')") rel_check 1 "release: CI's test job cancelled" \
+  "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (completed/cancelled)"
+GH_CI=$(rel_ci HEAD "$(rel_job test in_progress null)") rel_check 1 "release: CI's test job still running" \
+  "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (in_progress/null)"
+GH_CI=$(rel_ci HEAD "$REL_PASSED" "$(rel_job test completed '"failure"')") rel_check 1 "release: two jobs named test, one failed" \
+  "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (completed/success,completed/failure)"
+# The run as a whole too: a passed test job in a failed or unfinished run is no pass.
+GH_CI=$(REL_CONCLUSION='"failure"' rel_ci HEAD "$(rel_job lint completed '"failure"')" "$REL_PASSED") \
+  rel_check 1 "release: a failed run with a passed test job" "  ✗ CI's run 42 on ${REL_HEAD:0:7} has not passed (completed/failure)"
+GH_CI=$(REL_STATUS=in_progress REL_CONCLUSION=null rel_ci HEAD "$REL_PASSED") \
+  rel_check 1 "release: a run still going with a passed test job" "  ✗ CI's run 42 on ${REL_HEAD:0:7} has not passed (in_progress/null)"
+GH_CI=$(rel_ci HEAD "$(rel_job lint completed '"success"')" "$REL_PASSED") rel_check 0 "release: a passed run with a passed test job" \
+  "  ✓ CI \`test\` passed on ${REL_HEAD:0:7}"
+# gh's own text in a failure: printable only.
+GH_CI=$(rel_ci HEAD "$(rel_job test completed '"fail\u001b[2Jure"')") rel_check 1 "release: no control character from GitHub" \
+  "has not passed (completed/fail[2Jure)"
+check "release: no escape in the failure" test -z "$(grep -F $'\033' <<< "$OUT")"
 echo "false $REL_HEAD" > "$REL/gh/release"
 rel_check 1 "release: a release of this version stops the checks" \
-  "release: eeploi/helper already has a release v1.2.3: releases are immutable, release a new version"
+  "  ✗ eeploi/helper already has a release v1.2.3: releases are immutable, release a new version"
 echo "true $REL_HEAD" > "$REL/gh/release"
 rel_check 1 "release: a draft of this version stops the checks, with how to delete it" \
-  "release: eeploi/helper has a draft release v1.2.3, left by a run that stopped: $REL_UNDO"
+  "  ✗ eeploi/helper has a draft release v1.2.3, left by a run that stopped: $REL_UNDO"
 rel_reset
 GH_ERROR="HTTP 502: Bad Gateway" rel_check 1 "release: a gh error is no answer" \
-  "release: could not ask GitHub for a release v1.2.3: HTTP 502: Bad Gateway"
+  "  ✗ could not ask GitHub for a release v1.2.3: HTTP 502: Bad Gateway"
 GH_OLD=1 rel_check 1 "release: a gh without isImmutable stops the checks" \
-  'release: could not ask GitHub for a release v1.2.3: Unknown JSON field: "isImmutable"'
+  '  ✗ could not ask GitHub for a release v1.2.3: Unknown JSON field: "isImmutable"'
 
 # The changelog has no dates, and the pull request that raises VERSION empties Unreleased (D-34).
 # rel_commit <file> <text>: the file in the copy, committed and on its origin, as the checks need.
@@ -3009,7 +3097,7 @@ rel_swap() {
   [ "$text" != "$REL_CHANGELOG" ] || failure "rel_swap: no $from in the changelog" "$REL_CHANGELOG"
   rel_changelog "$text"
 }
-REL_NOHEADING="release: CHANGELOG.md does not start with ## Unreleased, then ## 1.2.3 (without a date): move the Unreleased lines under it"
+REL_NOHEADING="  ✗ CHANGELOG.md does not start with ## Unreleased, then ## 1.2.3 (without a date): move the Unreleased lines under it"
 rel_swap $'## 1.2.3\n\n### Added\n\n- A change.\n\n' ''
 rel_check 1 "release: no heading for this version" "$REL_NOHEADING"
 rel_swap '## 1.2.3' '## 1.2.3 (2026-11-22)'
@@ -3027,21 +3115,21 @@ rel_check 1 "release: another version right below Unreleased" "$REL_NOHEADING"
 rel_changelog ''
 rel_check 1 "release: an empty changelog" "$REL_NOHEADING"
 rel_swap $'## Unreleased\n' $'## Unreleased\n\n- A change for later.\n'
-rel_check 1 "release: a line under Unreleased" "release: CHANGELOG.md has lines under ## Unreleased: move them under ## 1.2.3"
+rel_check 1 "release: a line under Unreleased" "  ✗ CHANGELOG.md has lines under ## Unreleased: move them under ## 1.2.3"
 rel_swap $'## Unreleased\n' $'## Unreleased\n\n### Fixed\n'
-rel_check 1 "release: a heading under Unreleased" "release: CHANGELOG.md has lines under ## Unreleased"
+rel_check 1 "release: a heading under Unreleased" "  ✗ CHANGELOG.md has lines under ## Unreleased"
 rel_swap $'## Unreleased\n' $'## Unreleased\n\n\n'
-rel_check 0 "release: blank lines under Unreleased" "CHANGELOG.md ready"
+rel_check 0 "release: blank lines under Unreleased" "  ✓ CHANGELOG: ## 1.2.3, Unreleased empty"
 rel_swap $'### Added\n\n- A change.\n\n' ''
-rel_check 1 "release: nothing under the version" "release: CHANGELOG.md has nothing under ## 1.2.3"
+rel_check 1 "release: nothing under the version" "  ✗ CHANGELOG.md has nothing under ## 1.2.3"
 rel_changelog "$REL_CHANGELOG"
 # Only a version self-update installs (D-35): its SEMVER_RE, read from the helper.
 for bad in 1.2.010 1.2.10000; do
   rel_commit eeploi-helper "${REL_HELPER/1.2.3/$bad}"
-  rel_check 1 "release: VERSION $bad, which self-update refuses" "release: $bad is not a version self-update installs"
+  rel_check 1 "release: VERSION $bad, which self-update refuses" "  ✗ $bad is not a version self-update installs"
 done
 rel_commit eeploi-helper "$(grep -v '^SEMVER_RE=' <<< "$REL_HELPER")"
-rel_check 1 "release: no SEMVER_RE in the helper" "release: cannot read SEMVER_RE from eeploi-helper"
+rel_check 1 "release: no SEMVER_RE in the helper" "  ✗ cannot read SEMVER_RE from eeploi-helper"
 rel_commit eeploi-helper "$REL_HELPER"
 REL_HEAD=$(rel_git -C "$REL/repo" rev-parse HEAD)
 
@@ -3075,17 +3163,19 @@ rel_draft() {
 # rel_left <mode> <name> <expected output>: bin/release with GH_FAIL=<mode> stops while the release is a draft,
 # says so with how to delete it, and v1.2.3 is on neither side.
 rel_left() {
-  GH_FAIL=$1 rel_run y 1 "$2" "release: $3: nothing was published and v1.2.3 was not made. A draft release v1.2.3 may be left on GitHub: $REL_UNDO"
+  GH_FAIL=$1 rel_run y 1 "$2" " $3: nothing was published and v1.2.3 was not made. A draft release v1.2.3 may be left on GitHub: $REL_UNDO"
   rel_draft "$2"
   check "$2: no tag on GitHub" test -z "$(rel_git --git-dir="$REL/origin.git" tag -l v1.2.3)"
 }
 if command -v script > /dev/null && command -v timeout > /dev/null; then
-  rel_run n 1 "release: no at the question" "release: stopped, nothing changed after this point"
+  rel_run n 1 "release: no at the question" " stopped: nothing signed, nothing published"
+  check "release: the question comes after the checks" grep -qF "Sign 1.2.3?" <<< "$OUT"
+  check "release: nothing signed after a no" test -z "$(grep -F -e 'signed, signature' -e 'Password' <<< "$OUT")"
   check "release: no gh release call after a no" test -z "$(grep -E '^release (create|edit)' "$REL/gh/log")"
   rel_reset
 
   rel_left create "release: the draft's files don't upload" "could not create the draft"
-  rel_check 1 "release: the draft left by a failed run stops the next one" "release: eeploi/helper has a draft release v1.2.3, left by a run that stopped"
+  rel_check 1 "release: the draft left by a failed run stops the next one" "  ✗ eeploi/helper has a draft release v1.2.3, left by a run that stopped"
   rel_reset
   rel_left extra "release: a third file in the draft" \
     "the draft is not a draft on ${REL_HEAD:0:7} with only eeploi-helper and eeploi-helper.minisig (true $REL_HEAD eeploi-helper,eeploi-helper.minisig,notes.txt)"
@@ -3095,7 +3185,7 @@ if command -v script > /dev/null && command -v timeout > /dev/null; then
   rel_left badsig "release: the draft's signature doesn't verify" "the draft's signature does not verify"
   rel_reset
   name="release: a tag made on GitHub since the checks"
-  GH_FAIL=tagrace rel_run y 1 "$name" "release: v1.2.3 was made on GitHub since the checks, so this version can't be released: the draft was not published; delete it with gh release delete v1.2.3 -R eeploi/helper and release a new version"
+  GH_FAIL=tagrace rel_run y 1 "$name" " v1.2.3 was made on GitHub since the checks, so this version can't be released: the draft was not published; delete it with gh release delete v1.2.3 -R eeploi/helper and release a new version"
   rel_draft "$name"
   check "$name: no run again" test -z "$(grep -F 'run this again' <<< "$OUT")"
   rel_reset
@@ -3103,24 +3193,28 @@ if command -v script > /dev/null && command -v timeout > /dev/null; then
   rel_reset
 
   name="release: publishing fails, and GitHub can't be asked after"
-  GH_FAIL=noview rel_run y 1 "$name" "release: publishing v1.2.3 gave an error, and GitHub could not say whether it is published (HTTP 502: Bad Gateway): check gh release view v1.2.3 -R eeploi/helper. Still a draft: $REL_UNDO. Published: the version is released"
+  GH_FAIL=noview rel_run y 1 "$name" " publishing v1.2.3 gave an error, and GitHub could not say whether it is published (HTTP 502: Bad Gateway): check gh release view v1.2.3 -R eeploi/helper. Still a draft: $REL_UNDO. Published: the version is released"
   rel_draft "$name"
   rel_reset
 
   GH_FAIL=late rel_run y 1 "release: an error after GitHub published it" \
-    "release: publishing v1.2.3 gave an error, but GitHub shows it published: check gh release view v1.2.3 -R eeploi/helper before anything else"
+    " publishing v1.2.3 gave an error, but GitHub shows it published: check gh release view v1.2.3 -R eeploi/helper before anything else"
   rel_reset
 
   GH_IMMUTABLE=false rel_run y 1 "release: a release that is not immutable" \
-    "release: v1.2.3 is published, but not as an immutable release with only eeploi-helper and eeploi-helper.minisig (false false eeploi-helper,eeploi-helper.minisig): check it and the repository's settings"
+    " v1.2.3 is published, but not as an immutable release with only eeploi-helper and eeploi-helper.minisig (false false eeploi-helper,eeploi-helper.minisig): check it and the repository's settings"
   rel_reset
 
   GH_FAIL=swap rel_run y 1 "release: a file changed before publishing, seen in the published release" \
-    "release: the published eeploi-helper is not the signed file"
+    " the published eeploi-helper is not the signed file"
   rel_reset
 
   name="release: a new version"
-  rel_run y 0 "$name" "eeploi-helper 1.2.3, v1.2.3 at ${REL_HEAD:0:7}, SHA-256"
+  rel_run y 0 "$name" " published: v1.2.3, immutable"
+  for want in "RELEASED" "  eeploi-helper 1.2.3" "SHA-256            $(rsha "$REL/repo/eeploi-helper")" " signed, signature checks out" \
+    " draft created, files match" "Tag                v1.2.3  on ${REL_HEAD:0:7}" "Key                $REL_KEYID"; do
+    rel_expect 0 "$name: shows $want" "$want"
+  done
   check "$name: the draft on the checked commit" grep -qx "release create v1.2.3 eeploi-helper eeploi-helper.minisig -R eeploi/helper --draft --target $REL_HEAD --title eeploi-helper 1.2.3 --notes See CHANGELOG.md." "$REL/gh/log"
   check "$name: published after its files were checked" test "$(sed -nE 's/^release (create|download|edit) .*/\1/p' "$REL/gh/log" | paste -sd ' ' -)" = "create download edit download"
   check "$name: the only edit publishes the draft" test "$(grep '^release edit' "$REL/gh/log")" = "release edit v1.2.3 -R eeploi/helper --draft=false"
@@ -3134,7 +3228,7 @@ fi
 rel_git -C "$REL/repo" tag -a v1.2.3 -m v1.2.3
 rel_git -C "$REL/repo" push -q origin refs/tags/v1.2.3
 rel_git -C "$REL/repo" tag -d v1.2.3 > /dev/null
-rel_check 1 "release: the tag of this version stops the checks" "release: v1.2.3 already exists: releases are immutable, release a new version"
+rel_check 1 "release: the tag of this version stops the checks" "  ✗ v1.2.3 already exists: releases are immutable, release a new version"
 rel_reset
 # Releases only go up, each part compared as a number (D-35). rel_tag <tag>: a tag only on GitHub, as above.
 rel_tag() { rel_git --git-dir="$REL/origin.git" update-ref "refs/tags/$1" "$REL_HEAD"; }
@@ -3142,29 +3236,64 @@ rel_tag v1.2.2
 rel_tag v1.1.10
 rel_tag v9.0.0-rc1
 rel_tag vnext
-rel_check 0 "release: higher than every v* tag" "v1.2.3 is new and the highest"
+rel_check 0 "release: higher than every v* tag" "  ✓ 1.2.3 is higher than every released version"
+# The previous release: the highest of those, by number.
+rel_expect 0 "release: the previous version, the highest tag" "Previous version   1.2.2   (v1.2.2)"
 rel_tag v1.10.0
-rel_check 1 "release: lower than a v* tag, by number" "release: 1.2.3 is not higher than 1.10.0: releases only go up"
+rel_check 1 "release: lower than a v* tag, by number" "  ✗ 1.2.3 is not higher than 1.10.0: releases only go up"
+rel_expect 1 "release: the previous version by number, not text" "Previous version   1.10.0   (v1.10.0)"
 rel_reset
 rel_tag v2.0.0
-rel_check 1 "release: lower than a v* tag, by its major" "release: 1.2.3 is not higher than 2.0.0: releases only go up"
+rel_check 1 "release: lower than a v* tag, by its major" "  ✗ 1.2.3 is not higher than 2.0.0: releases only go up"
 rel_reset
 rel_tag v01.2.3
 rel_tag v1.2.99999
-rel_check 0 "release: a tag self-update would refuse doesn't count" "v1.2.3 is new and the highest"
+rel_check 0 "release: a tag self-update would refuse doesn't count" "  ✓ 1.2.3 is higher than every released version"
+rel_expect 0 "release: nor as the previous version" "Previous version   none"
 rel_reset
 rel_git -C "$REL/repo" tag v2.0.0
-rel_check 0 "release: a tag only here doesn't count" "v1.2.3 is new and the highest"
+rel_check 0 "release: a tag only here doesn't count" "  ✓ 1.2.3 is higher than every released version"
+rel_reset
+
+# What changed since the previous release: its commits and eeploi-helper's lines, never a diff.
+# rel_empty <subject>: a commit with no change, on GitHub too.
+rel_empty() {
+  if ! { rel_git -C "$REL/repo" commit -q --allow-empty -m "$1" && rel_git -C "$REL/repo" push -q origin main; }; then
+    failure "rel_empty: $1 not committed and pushed" ""
+  fi
+}
+rel_tag v1.2.2
+rel_empty "server-reboot: reboot the server → café.example (#37)"
+rel_empty $'a subject with \033[2Jcolour\tand a tab\xc2\x9b\r'
+rel_commit eeploi-helper "$REL_HELPER"$'# one line more\n'
+rel_check 0 "release: the changes since the previous release, UTF-8 kept" "  ✓ Changes since v1.2.2: 3 commits, eeploi-helper +1 −0 lines
+      #37 server-reboot: reboot the server → café.example
+      a subject with [2Jcolourand a tab
+      eeploi-helper"
+check "release: no control character from a subject" test -z "$(grep -F $'\033' <<< "$OUT")"
+check "release: no C1 control (CSI) from a subject" test -z "$(LC_ALL=C grep -F $'\xc2\x9b' <<< "$OUT")"
+for n in 1 2 3 4 5 6 7; do rel_empty "change $n"; done
+rel_check 0 "release: 10 commits are listed" "      change 7"
+rel_empty "change 8"
+rel_check 0 "release: more than 10 are counted, not listed" "  ✓ Changes since v1.2.2: 11 commits, eeploi-helper +1 −0 lines
+      see them with: git log --oneline v1.2.2..$(rel_git -C "$REL/repo" rev-parse --short HEAD)"
+check "release: no subject of the 11" test -z "$(grep -F 'change 8' <<< "$OUT")"
+rel_reset
+rel_git -C "$REL/repo" push -q origin "$(rel_git -C "$REL/repo" commit-tree -m elsewhere "HEAD^{tree}"):refs/tags/v1.2.2"
+rel_check 1 "release: a previous release outside main's history" "  ✗ v1.2.2 is not in the history of $(rel_git -C "$REL/repo" rev-parse --short HEAD)"
 rel_reset
 REL_LT=$(sed -n '/^version_lt() {/,/^}/p' "$ROOT/bin/release")
 check "release: has version_lt" test -n "$REL_LT"
 check "release: version_lt is the helper's" test "$REL_LT" = "$(sed -n '/^version_lt() {/,/^}/p' "$HELPER")"
-check "release: shellcheck on the same files as CI" test \
-  "$(sed -n 's/^shellcheck \(.*\) || fail .*/\1/p' "$ROOT/bin/release")" = "$(sed -n 's/^ *run: shellcheck //p' "$ROOT/.github/workflows/ci.yml")"
 # What bin/release runs, its quoted text (the messages) left out; a "$(…)" stays, it runs.
 REL_CODE=$(sed -E 's/"([^"$]|\$[^("])*"//g' "$ROOT/bin/release")
 check "release: nothing pushed, no tag moved, no release file replaced or deleted" \
-  test "$(grep -cE -e 'git push' -e 'git tag' -e 'gh release (upload|delete)' -e 'gh api' -e '--clobber' <<< "$REL_CODE")" -eq 0
+  test "$(grep -cE -e 'git push' -e 'git tag' -e 'gh release (upload|delete)' -e '--clobber' <<< "$REL_CODE")" -eq 0
+# gh api only once, to read whether immutable releases are on: a GET, no method, fields or input.
+check "release: gh api only reads immutable-releases" test "$(grep -c 'gh api' "$ROOT/bin/release")" = 1
+# shellcheck disable=SC2016 # bin/release's own line, as written
+check "release: that read is a plain GET" \
+  grep -qxF 'immutable_on=$(gh api "repos/$REPO/immutable-releases" --jq .enabled) || fail "GitHub did not say whether $REPO has immutable releases"' "$ROOT/bin/release"
 check "release: it starts as a draft on the checked commit" grep -qE '^gh release create .* --draft --target  \\$' <<< "$REL_CODE"
 check "release: one gh release edit, which publishes the draft" \
   test "$(grep -E 'gh release edit' <<< "$REL_CODE" | grep -cE 'gh release edit +-R +--draft=false( |$)')/$(grep -cE 'gh release edit' <<< "$REL_CODE")" = 1/1
