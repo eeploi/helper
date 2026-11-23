@@ -32,14 +32,16 @@ line() { printf '%s\n' "=========================================="; }
 field() { printf '%-18s %s\n' "$1" "$2"; }
 heading() { printf '\n%s\n' "$(paint 1 1 "$1")"; }
 ok() { printf '  %s %s\n' "$(paint 1 32 ✓)" "$*"; }
+# printable: only printable ASCII, so text from GitHub or a commit can't move the cursor or rewrite what the
+# screen shows.
+printable() { LC_ALL=C tr -cd '\040-\176\n'; }
 # While a draft may be on GitHub, $left says so and how to delete it: every failure then ends with it.
+# A failure can carry gh's own output: printable only.
 left=
-fail() { printf '  %s %s\n' "$(paint 2 31 ✗)" "$*${left:+: $left}" >&2; left=; exit 1; }
+fail() { printf '  %s %s\n' "$(paint 2 31 ✗)" "$(printf '%s' "$*${left:+: $left}" | printable)" >&2; left=; exit 1; }
 # verify <minisign args...>: against minisign.pub.
 # D-13: a prehashed (ED) signature only, as the helper checks it.
 verify() { minisign -V -H -p minisign.pub "$@"; }
-# printable: only printable ASCII, so a commit subject can't move the cursor or rewrite what the screen shows.
-printable() { LC_ALL=C tr -cd '\040-\176\n'; }
 sha256() { if command -v sha256sum > /dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
 # version_lt <a> <b>: version a is lower than b, each part compared as a number. The same function as in
 # eeploi-helper, which self-update uses (tests/run.sh checks that the two are the same).
@@ -77,18 +79,19 @@ while read -r _ ref; do
 done <<< "$released"
 head=$(git rev-parse HEAD)
 commit=$(git rev-parse --short HEAD)
+branch=$(git branch --show-current)
 
 line
 printf '%s  ·  release\n' "$(paint 1 1 "EEPLOI HELPER")"
 line
 field "Previous version" "${previous:-none}${previous:+   (v$previous)}"
 field "New version" "$version"
-field "Commit" "$commit  $(git branch --show-current)"
+field "Commit" "$commit  $branch"
 field "Key" "$keyid"
 line
 
 heading "Checks"
-[ "$(git branch --show-current)" = main ] || fail "not on main"
+[ "$branch" = main ] || fail "not on main"
 [ -z "$(git status --porcelain)" ] || fail "uncommitted changes"
 git fetch -q origin main || fail "could not fetch main from GitHub"
 git fetch -q --force origin 'refs/tags/*:refs/tags/*' || fail "could not fetch the tags from GitHub"
@@ -106,14 +109,10 @@ if found=$(gh release view "$tag" -R "$REPO" --json isDraft,isImmutable --jq .is
 fi
 # Only gh's "release not found" means none: any other error stops here, before anything is published.
 [ "$found" = "release not found" ] || fail "could not ask GitHub for a release $tag: $found"
-# D-35: releases only go up: no fix for an older line, which self-update refuses anyway. Only versions
-# self-update takes count, and only GitHub's tags.
+# D-35: releases only go up: no fix for an older line, which self-update refuses anyway. Higher than the
+# previous release is higher than every one.
 [[ $version =~ $semver ]] || fail "$version is not a version self-update installs"
-while read -r _ ref; do
-  ref=${ref#refs/tags/v}
-  [[ $ref =~ $semver ]] || continue
-  version_lt "$ref" "$version" || fail "$version is not higher than $ref: releases only go up"
-done <<< "$released"
+[ -z "$previous" ] || version_lt "$previous" "$version" || fail "$version is not higher than $previous: releases only go up"
 ok "$version is higher than every released version"
 
 # D-34: the changelog has no dates, GitHub's release has the date. The pull request that raises VERSION

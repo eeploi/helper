@@ -18,9 +18,7 @@ FAILURES=""
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-pass() {
-  PASS=$((PASS + 1))
-}
+pass() { PASS=$((PASS + 1)); }
 failure() {
   FAILED=$((FAILED + 1))
   FAILURES="$FAILURES
@@ -2866,26 +2864,31 @@ echo "== bin/release"
 # Tags and releases never change (D-26 in DECISIONS.md): bin/release in a copy, a repo with its own origin, a stub
 # for gh, and minisign with the recipes test key. The gh stub keeps the release in $GH_STATE/release ("<draft>
 # <commit>", true for a draft) and its files in $GH_STATE/assets; publishing makes the tag in $GH_ORIGIN, as GitHub
-# does. CI: run list gives run 42 (GH_RUN: that instead, empty for none; GH_RUN=fail: an error), run view gives
-# "<commit> <test jobs>", the commit on GitHub's main and completed/success (GH_CI: that instead; GH_CI=fail: an
-# error). GH_ERROR: gh fails with that message instead of "release not found". GH_FAIL: create (the draft is made,
+# does. CI: run list gives runs 42 and 41, newest first (GH_RUNS: that JSON instead; fail: an error), run view
+# gives run 42 on the commit on GitHub's main, with a failed job lint and a passed job test (GH_CI: that JSON
+# instead, HEAD for that commit; fail: an error). Both through bin/release's own --jq, with jq. GH_ERROR: gh fails with that message instead of "release not found". GH_FAIL: create (the draft is made,
 # its files don't upload), extra (a third file), corrupt or badsig (what the download gives), tagrace (a tag made on
 # GitHub during the download), publish (the draft stays), noview (publish, and GitHub can't be asked after), late
 # (published, then an error), swap (a file changed while it was a draft, seen once published). GH_IMMUTABLE=false:
 # the published release is not immutable. GH_OLD: a gh that doesn't know isImmutable. $GH_STATE/log lists the gh calls.
 REL="$WORK/release"
-mkdir -p "$REL/stubs" "$REL/repo/bin" "$REL/gh"
+mkdir -p "$REL/stubs" "$REL/repo/bin" "$REL/repo/tests" "$REL/gh"
 cat > "$REL/stubs/gh" << 'EOF'
 #!/usr/bin/env bash
 s=$GH_STATE tag=${3:-}
 echo "$*" >> "$s/log"
 case "$1 $2" in
-  "run list")
-    [ "${GH_RUN-}" != fail ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
-    echo "${GH_RUN-42}" ;;
-  "run view")
-    [ "${GH_CI-}" != fail ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
-    echo "${GH_CI-$(git --git-dir="$GH_ORIGIN" rev-parse main) completed/success}" ;;
+  "run list" | "run view")
+    # GitHub's JSON, through the caller's own --jq, as gh does. HEAD stands for the commit on GitHub's main.
+    if [ "$2" = list ]; then
+      json=${GH_RUNS-'[{"databaseId":42},{"databaseId":41}]'}
+    else
+      json=${GH_CI-'{"headSha":"HEAD","jobs":[{"name":"lint","status":"completed","conclusion":"failure"},{"name":"test","status":"completed","conclusion":"success"}]}'}
+    fi
+    filter=
+    while [ $# -gt 0 ]; do [ "$1" != --jq ] || filter=$2; shift; done
+    [ "$json" != fail ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+    jq -r "$filter" <<< "${json//HEAD/$(git --git-dir="$GH_ORIGIN" rev-parse main)}" ;;
   "release view")
     case "$*" in *isImmutable*) [ -z "${GH_OLD:-}" ] || { echo 'Unknown JSON field: "isImmutable"' >&2; exit 1; } ;; esac
     [ "${GH_FAIL:-}" != noview ] || [ ! -f "$s/tried" ] || { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
@@ -2936,7 +2939,6 @@ EOF
 # shellcheck disable=SC2016 # expanded when the stub runs
 printf '#!/bin/sh\n: > "$GH_STATE/ran-shellcheck"\n' > "$REL/stubs/shellcheck"
 chmod 755 "$REL/stubs"/*
-mkdir -p "$REL/repo/tests"
 # shellcheck disable=SC2016 # expanded when the copy's tests run
 printf ': > "$GH_STATE/ran-tests"\n' > "$REL/repo/tests/run.sh"
 cp "$ROOT/bin/release" "$REL/repo/bin/release"
@@ -3005,27 +3007,42 @@ check "release: no local tests" test ! -e "$REL/gh/ran-tests"
 check "release: no local shellcheck" test ! -e "$REL/gh/ran-shellcheck"
 check "release: asks CI for ci.yml's runs on the exact commit" \
   grep -qxF "run list -R eeploi/helper --commit $REL_HEAD --workflow ci.yml --limit 1 --json databaseId --jq .[0].databaseId // \"\"" "$REL/gh/log"
-check "release: reads run 42's commit and its test jobs" grep -q '^run view 42 -R eeploi/helper --json headSha,jobs ' "$REL/gh/log"
-check "release: only the job named test" grep -qF 'select(.name == "test")' "$ROOT/bin/release"
+check "release: reads run 42's commit and its jobs" grep -q '^run view 42 -R eeploi/helper --json headSha,jobs ' "$REL/gh/log"
 check "release: CI's job is named test" grep -qx '  test:' "$ROOT/.github/workflows/ci.yml"
-cp "$RKEY.pub" "$WORK/rel-key.pub"
 printf 'untrusted comment: minisign public key %s\n%s\n' 0000000000000000 "$(sed -n 2p "$RKEY.pub")" > "$REL/repo/minisign.pub"
 # Uncommitted, so the checks stop, after the overview.
 rel_check 1 "release: the key id from the key, not its comment" "Key                $REL_KEYID"
 printf 'untrusted comment: minisign public key %s\nnot a key\n' "$REL_KEYID" > "$REL/repo/minisign.pub"
 rel_check 1 "release: a minisign.pub without a key" "  ✗ cannot read the key id from minisign.pub"
-cp "$WORK/rel-key.pub" "$REL/repo/minisign.pub"
-# CI's test job on the exact commit, finished and passed: anything else stops the checks.
-GH_RUN='' rel_check 1 "release: no CI run on the commit" "  ✗ CI has no run on ${REL_HEAD:0:7} yet"
-GH_RUN=fail rel_check 1 "release: CI can't be asked" "  ✗ could not ask GitHub for CI on ${REL_HEAD:0:7}"
-GH_RUN="42 43" rel_check 1 "release: a run id that is no number" "  ✗ could not read CI's run on ${REL_HEAD:0:7} (42 43)"
+cp "$RKEY.pub" "$REL/repo/minisign.pub"
+# CI's job named test on the exact commit, finished and passed: anything else stops the checks.
+# rel_ci <commit> <jobs...>: a run's JSON. rel_job <name> <status> <conclusion as JSON>: one of its jobs.
+rel_ci() { local sha=$1; shift; printf '{"headSha":"%s","jobs":[%s]}' "$sha" "$(IFS=,; echo "$*")"; }
+rel_job() { printf '{"name":"%s","status":"%s","conclusion":%s}' "$1" "$2" "$3"; }
+REL_PASSED=$(rel_job test completed '"success"')
+GH_RUNS='[]' rel_check 1 "release: no CI run on the commit" "  ✗ CI has no run on ${REL_HEAD:0:7} yet"
+GH_RUNS=fail rel_check 1 "release: CI can't be asked" "  ✗ could not ask GitHub for CI on ${REL_HEAD:0:7}"
+GH_RUNS='[{"databaseId":"42 43"}]' rel_check 1 "release: a run id that is no number" "  ✗ could not read CI's run on ${REL_HEAD:0:7} (42 43)"
 GH_CI=fail rel_check 1 "release: CI's run can't be read" "  ✗ could not read CI's run 42 on ${REL_HEAD:0:7}"
 REL_OTHER=0123456789abcdef0123456789abcdef01234567
-GH_CI="$REL_OTHER completed/success" rel_check 1 "release: CI's run on another commit" "  ✗ CI's run 42 is not on ${REL_HEAD:0:7} ($REL_OTHER)"
-GH_CI="$REL_HEAD " rel_check 1 "release: no job named test" "  ✗ CI's run 42 on ${REL_HEAD:0:7} has no job named test"
-for jobs in completed/failure completed/cancelled in_progress/ completed/success,completed/failure completed/success,completed/success; do
-  GH_CI="$REL_HEAD $jobs" rel_check 1 "release: CI's test job $jobs" "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed ($jobs)"
-done
+GH_CI=$(rel_ci $REL_OTHER "$REL_PASSED") rel_check 1 "release: CI's run on another commit" \
+  "  ✗ CI's run 42 is not on ${REL_HEAD:0:7} ($REL_OTHER)"
+GH_CI=$(rel_ci HEAD "$(rel_job lint completed '"success"')" "$(rel_job 'test (bash 3.2)' completed '"success"')") \
+  rel_check 1 "release: only a job named exactly test counts" "  ✗ CI's run 42 on ${REL_HEAD:0:7} has no job named test"
+GH_CI=$(rel_ci HEAD "$(rel_job test completed '"failure"')") rel_check 1 "release: CI's test job failed" \
+  "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (completed/failure)"
+GH_CI=$(rel_ci HEAD "$(rel_job test completed '"cancelled"')") rel_check 1 "release: CI's test job cancelled" \
+  "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (completed/cancelled)"
+GH_CI=$(rel_ci HEAD "$(rel_job test in_progress null)") rel_check 1 "release: CI's test job still running" \
+  "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (in_progress/null)"
+GH_CI=$(rel_ci HEAD "$REL_PASSED" "$(rel_job test completed '"failure"')") rel_check 1 "release: two jobs named test, one failed" \
+  "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (completed/success,completed/failure)"
+GH_CI=$(rel_ci HEAD "$(rel_job lint completed '"failure"')" "$REL_PASSED") rel_check 0 "release: another job's result doesn't count" \
+  "  ✓ CI \`test\` passed on ${REL_HEAD:0:7}"
+# gh's own text in a failure: printable only.
+GH_CI=$(rel_ci HEAD "$(rel_job test completed '"fail\u001b[2Jure"')") rel_check 1 "release: no control character from GitHub" \
+  "has not passed (completed/fail[2Jure)"
+check "release: no escape in the failure" test -z "$(grep -F $'\033' <<< "$OUT")"
 echo "false $REL_HEAD" > "$REL/gh/release"
 rel_check 1 "release: a release of this version stops the checks" \
   "  ✗ eeploi/helper already has a release v1.2.3: releases are immutable, release a new version"
@@ -3169,8 +3186,7 @@ if command -v script > /dev/null && command -v timeout > /dev/null; then
 
   name="release: a new version"
   rel_run y 0 "$name" " published: v1.2.3, immutable"
-  sum=$({ sha256sum "$REL/repo/eeploi-helper" 2> /dev/null || shasum -a 256 "$REL/repo/eeploi-helper"; } | cut -d' ' -f1)
-  for want in "RELEASED" "  eeploi-helper 1.2.3" "SHA-256            $sum" " signed, signature checks out" \
+  for want in "RELEASED" "  eeploi-helper 1.2.3" "SHA-256            $(rsha "$REL/repo/eeploi-helper")" " signed, signature checks out" \
     " draft created, files match"; do
     rel_expect 0 "$name: shows $want" "$want"
   done
@@ -3216,7 +3232,11 @@ rel_reset
 
 # What changed since the previous release: its commits and eeploi-helper's lines, never a diff.
 # rel_empty <subject>: a commit with no change, on GitHub too.
-rel_empty() { rel_git -C "$REL/repo" commit -q --allow-empty -m "$1" && rel_git -C "$REL/repo" push -q origin main; }
+rel_empty() {
+  if ! { rel_git -C "$REL/repo" commit -q --allow-empty -m "$1" && rel_git -C "$REL/repo" push -q origin main; }; then
+    failure "rel_empty: $1 not committed and pushed" ""
+  fi
+}
 rel_tag v1.2.2
 rel_empty "server-reboot: reboot the server (#37)"
 rel_empty $'a subject with \033[2Jcolour\tand a tab'
