@@ -3006,7 +3006,7 @@ for want in "Previous version   none" "New version        1.2.3" "Commit        
   rel_expect 0 "release: the overview has $want" "$want"
 done
 check "release: the key id read from the key" test -n "$REL_KEYID"
-check "release: no colour in a pipe" test -z "$(grep -F $'\033' <<< "$OUT")"
+check "release: plain text, no escape codes" test -z "$(grep -F $'\033' <<< "$OUT")"
 check "release: --check stops before signing" test -z "$(grep -F 'Sign' <<< "$OUT")"
 check "release: asks GitHub whether immutable releases are on" grep -qx 'api repos/eeploi/helper/immutable-releases --jq .enabled' "$REL/gh/log"
 GH_IMMUTABLE_ON=false rel_check 1 "release: immutable releases off" "  ✗ eeploi/helper does not have immutable releases on"
@@ -3132,13 +3132,13 @@ rel_commit eeploi-helper "$REL_HELPER"
 REL_HEAD=$(rel_git -C "$REL/repo" rev-parse HEAD)
 
 # All of bin/release, signing with the test key, through a terminal (it asks for the key password).
-# rel_script [--check]: bin/release in the copy, through script for a terminal (util-linux or BSD).
+# rel_script: bin/release in the copy, through script for a terminal (util-linux or BSD).
 rel_script() {
   local run=(env "${REL_ENV[@]}" PATH="$REL/stubs:$PATH" HELPER_KEY="$RKEY.sec" timeout 20 script)
   if script --version 2> /dev/null | grep -q util-linux; then
-    "${run[@]}" -qec "bash bin/release $*" /dev/null
+    "${run[@]}" -qec "bash bin/release" /dev/null
   else
-    "${run[@]}" -q /dev/null bash bin/release "$@"
+    "${run[@]}" -q /dev/null bash bin/release
   fi
 }
 # rel_run <answer> <exit code> <name> <expected output>: bin/release, the answer typed at its question.
@@ -3170,16 +3170,6 @@ if command -v script > /dev/null && command -v timeout > /dev/null; then
   check "release: the question comes after the checks" grep -qF "Sign 1.2.3?" <<< "$OUT"
   check "release: nothing signed after a no" test -z "$(grep -F -e 'signed, signature' -e 'Password' <<< "$OUT")"
   check "release: no gh release call after a no" test -z "$(grep -E '^release (create|edit)' "$REL/gh/log")"
-  NO_COLOR=1 rel_run n 1 "release: NO_COLOR on a terminal" " stopped: nothing signed, nothing published"
-  check "release: NO_COLOR, no colour" test -z "$(grep -F $'\033[' <<< "$OUT")"
-  # The overview alone (--check) under a real terminal: in colour; in a pipe (rel_check) it is plain.
-  OUT=$(cd "$REL/repo" && rel_script --check < /dev/null 2>&1) && CODE=0 || CODE=$?
-  for want in $'\033[1mEEPLOI HELPER\033[0m' $'\033[1mChecks\033[0m' $'\033[32m✓\033[0m CHANGELOG'; do
-    rel_expect 0 "release: --check on a terminal, in colour: $want" "$want"
-  done
-  OUT=$(cd "$REL/repo" && NO_COLOR=1 rel_script --check < /dev/null 2>&1) && CODE=0 || CODE=$?
-  rel_expect 0 "release: --check on a terminal with NO_COLOR" "✓ CHANGELOG"
-  check "release: --check with NO_COLOR, no colour" test -z "$(grep -F $'\033[' <<< "$OUT")"
   rel_reset
 
   rel_left create "release: the draft's files don't upload" "could not create the draft"
@@ -3222,10 +3212,6 @@ if command -v script > /dev/null && command -v timeout > /dev/null; then
   for want in "RELEASED" "  eeploi-helper 1.2.3" "SHA-256            $(rsha "$REL/repo/eeploi-helper")" " signed, signature checks out" \
     " draft created, files match" "Tag                v1.2.3  on ${REL_HEAD:0:7}" "Key                $REL_KEYID"; do
     rel_expect 0 "$name: shows $want" "$want"
-  done
-  # Colour on a terminal: a ✓ and a heading on stdout, the question on stderr.
-  for want in $'\033[32m✓\033[0m main is clean' $'\033[1mChecks\033[0m' $'\033[1mSign 1.2.3?\033[0m [y/N]'; do
-    rel_expect 0 "$name: in colour, $want" "$want"
   done
   check "$name: the draft on the checked commit" grep -qx "release create v1.2.3 eeploi-helper eeploi-helper.minisig -R eeploi/helper --draft --target $REL_HEAD --title eeploi-helper 1.2.3 --notes See CHANGELOG.md." "$REL/gh/log"
   check "$name: published after its files were checked" test "$(sed -nE 's/^release (create|download|edit) .*/\1/p' "$REL/gh/log" | paste -sd ' ' -)" = "create download edit download"
