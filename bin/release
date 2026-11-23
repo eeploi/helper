@@ -25,8 +25,15 @@ on_exit() {
 trap on_exit EXIT
 
 # Colour only on a terminal, never in a pipe or a log, and never inside a message: it reads the same without.
-# NO_COLOR turns it off.
-paint() { if [ -t "$1" ] && [ -z "${NO_COLOR:-}" ]; then printf '\033[%sm%s\033[0m' "$2" "$3"; else printf '%s' "$3"; fi; }
+# NO_COLOR turns it off. Each output is looked at once, here: inside a $(…) stdout is a pipe.
+tty1=; [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ] || tty1=1
+tty2=; [ ! -t 2 ] || [ -n "${NO_COLOR:-}" ] || tty2=1
+# paint <fd, 1 or 2> <SGR code> <text>
+paint() {
+  local on=$tty1
+  [ "$1" = 1 ] || on=$tty2
+  if [ -n "$on" ]; then printf '\033[%sm%s\033[0m' "$2" "$3"; else printf '%s' "$3"; fi
+}
 line() { printf '%s\n' "=========================================="; }
 # field <label> <value>: one line of the overview.
 field() { printf '%-18s %s\n' "$1" "$2"; }
@@ -128,18 +135,19 @@ sections=$(awk '/^## / { if (h != "") print n, h; h = $0; n = 0; next } NF { n++
 ok "CHANGELOG: ## $version, Unreleased empty"
 
 # CI's own run on this exact commit stands for the tests and shellcheck: the latest run of ci.yml for the
-# push to main (a pull request's run on the same commit tests its merge with another branch), and its job
-# named test, finished and passed.
+# push to main (a pull request's run on the same commit tests its merge with another branch), passed as a
+# whole, and its job named test there once, finished and passed.
 run=$(gh run list -R "$REPO" --commit "$head" --workflow ci.yml --event push --branch main --limit 1 \
   --json databaseId --jq '.[0].databaseId // ""') || fail "could not ask GitHub for CI on $commit"
-[ -n "$run" ] || fail "CI has no run for the push of $commit to main yet"
+[ -n "$run" ] || fail "CI has no run on main at $commit yet"
 [[ $run =~ ^[0-9]+$ ]] || fail "could not read CI's run on $commit ($run)"
-ci=$(gh run view "$run" -R "$REPO" --json headSha,event,headBranch,jobs \
-  --jq '"\(.headSha) \(.event) \(.headBranch) " + ([.jobs[] | select(.name == "test") | "\(.status)/\(.conclusion)"] | join(","))') \
+ci=$(gh run view "$run" -R "$REPO" --json headSha,event,headBranch,status,conclusion,jobs \
+  --jq '"\(.headSha) \(.event) \(.headBranch) \(.status)/\(.conclusion) " + ([.jobs[] | select(.name == "test") | "\(.status)/\(.conclusion)"] | join(","))') \
   || fail "could not read CI's run $run on $commit"
-read -r ci_sha ci_event ci_branch jobs <<< "$ci" || true
+read -r ci_sha ci_event ci_branch ci_state jobs <<< "$ci" || true
 [ "$ci_sha" = "$head" ] || fail "CI's run $run is not on $commit ($ci_sha)"
 [ "$ci_event $ci_branch" = "push main" ] || fail "CI's run $run is not for the push to main ($ci_event $ci_branch)"
+[ "$ci_state" = completed/success ] || fail "CI's run $run on $commit has not passed ($ci_state)"
 [ -n "${jobs:-}" ] || fail "CI's run $run on $commit has no job named test"
 [ "$jobs" = completed/success ] || fail "CI's test job on $commit has not passed ($jobs)"
 ok "CI \`test\` passed on $commit"

@@ -2884,7 +2884,7 @@ case "$1 $2" in
     if [ "$2" = list ]; then
       json=${GH_RUNS-'[{"databaseId":42},{"databaseId":41}]'}
     else
-      json=${GH_CI-'{"headSha":"HEAD","event":"push","headBranch":"main","jobs":[{"name":"lint","status":"completed","conclusion":"failure"},{"name":"test","status":"completed","conclusion":"success"}]}'}
+      json=${GH_CI-'{"headSha":"HEAD","event":"push","headBranch":"main","status":"completed","conclusion":"success","jobs":[{"name":"lint","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"success"}]}'}
     fi
     filter=
     while [ $# -gt 0 ]; do [ "$1" != --jq ] || filter=$2; shift; done
@@ -3007,7 +3007,7 @@ check "release: no local tests" test ! -e "$REL/gh/ran-tests"
 check "release: no local shellcheck" test ! -e "$REL/gh/ran-shellcheck"
 check "release: asks CI for ci.yml's runs for the push of the exact commit to main" \
   grep -qxF "run list -R eeploi/helper --commit $REL_HEAD --workflow ci.yml --event push --branch main --limit 1 --json databaseId --jq .[0].databaseId // \"\"" "$REL/gh/log"
-check "release: reads run 42's commit, event, branch and jobs" grep -q '^run view 42 -R eeploi/helper --json headSha,event,headBranch,jobs ' "$REL/gh/log"
+check "release: reads run 42's commit, event, branch, result and jobs" grep -q '^run view 42 -R eeploi/helper --json headSha,event,headBranch,status,conclusion,jobs ' "$REL/gh/log"
 check "release: CI's job is named test" grep -qx '  test:' "$ROOT/.github/workflows/ci.yml"
 printf 'untrusted comment: minisign public key %s\n%s\n' 0000000000000000 "$(sed -n 2p "$RKEY.pub")" > "$REL/repo/minisign.pub"
 # Uncommitted, so the checks stop, after the overview.
@@ -3021,11 +3021,12 @@ cp "$RKEY.pub" "$REL/repo/minisign.pub"
 rel_ci() {
   local sha=$1
   shift
-  printf '{"headSha":"%s","event":"%s","headBranch":"%s","jobs":[%s]}' "$sha" "${REL_EVENT:-push}" "${REL_BRANCH:-main}" "$(IFS=,; echo "$*")"
+  printf '{"headSha":"%s","event":"%s","headBranch":"%s","status":"%s","conclusion":%s,"jobs":[%s]}' "$sha" \
+    "${REL_EVENT:-push}" "${REL_BRANCH:-main}" "${REL_STATUS:-completed}" "${REL_CONCLUSION:-\"success\"}" "$(IFS=,; echo "$*")"
 }
 rel_job() { printf '{"name":"%s","status":"%s","conclusion":%s}' "$1" "$2" "$3"; }
 REL_PASSED=$(rel_job test completed '"success"')
-GH_RUNS='[]' rel_check 1 "release: no CI run on the commit" "  ✗ CI has no run for the push of ${REL_HEAD:0:7} to main yet"
+GH_RUNS='[]' rel_check 1 "release: no CI run on the commit" "  ✗ CI has no run on main at ${REL_HEAD:0:7} yet"
 GH_CI=$(REL_EVENT=pull_request rel_ci HEAD "$REL_PASSED") rel_check 1 "release: a pull request's run doesn't count" \
   "  ✗ CI's run 42 is not for the push to main (pull_request main)"
 GH_CI=$(REL_BRANCH=release rel_ci HEAD "$REL_PASSED") rel_check 1 "release: a push to another branch doesn't count" \
@@ -3046,7 +3047,12 @@ GH_CI=$(rel_ci HEAD "$(rel_job test in_progress null)") rel_check 1 "release: CI
   "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (in_progress/null)"
 GH_CI=$(rel_ci HEAD "$REL_PASSED" "$(rel_job test completed '"failure"')") rel_check 1 "release: two jobs named test, one failed" \
   "  ✗ CI's test job on ${REL_HEAD:0:7} has not passed (completed/success,completed/failure)"
-GH_CI=$(rel_ci HEAD "$(rel_job lint completed '"failure"')" "$REL_PASSED") rel_check 0 "release: another job's result doesn't count" \
+# The run as a whole too: a passed test job in a failed or unfinished run is no pass.
+GH_CI=$(REL_CONCLUSION='"failure"' rel_ci HEAD "$(rel_job lint completed '"failure"')" "$REL_PASSED") \
+  rel_check 1 "release: a failed run with a passed test job" "  ✗ CI's run 42 on ${REL_HEAD:0:7} has not passed (completed/failure)"
+GH_CI=$(REL_STATUS=in_progress REL_CONCLUSION=null rel_ci HEAD "$REL_PASSED") \
+  rel_check 1 "release: a run still going with a passed test job" "  ✗ CI's run 42 on ${REL_HEAD:0:7} has not passed (in_progress/null)"
+GH_CI=$(rel_ci HEAD "$(rel_job lint completed '"success"')" "$REL_PASSED") rel_check 0 "release: a passed run with a passed test job" \
   "  ✓ CI \`test\` passed on ${REL_HEAD:0:7}"
 # gh's own text in a failure: printable only.
 GH_CI=$(rel_ci HEAD "$(rel_job test completed '"fail\u001b[2Jure"')") rel_check 1 "release: no control character from GitHub" \
@@ -3154,8 +3160,10 @@ rel_left() {
 if command -v script > /dev/null && command -v timeout > /dev/null; then
   rel_run n 1 "release: no at the question" " stopped: nothing signed, nothing published"
   check "release: the question comes after the checks" grep -qF "Sign 1.2.3?" <<< "$OUT"
-  check "release: nothing signed after a no" test -z "$(grep -F -e '✓ signed' -e 'Password' <<< "$OUT")"
+  check "release: nothing signed after a no" test -z "$(grep -F -e 'signed, signature' -e 'Password' <<< "$OUT")"
   check "release: no gh release call after a no" test -z "$(grep -E '^release (create|edit)' "$REL/gh/log")"
+  NO_COLOR=1 rel_run n 1 "release: NO_COLOR on a terminal" " stopped: nothing signed, nothing published"
+  check "release: NO_COLOR, no colour" test -z "$(grep -F $'\033[' <<< "$OUT")"
   rel_reset
 
   rel_left create "release: the draft's files don't upload" "could not create the draft"
@@ -3196,8 +3204,12 @@ if command -v script > /dev/null && command -v timeout > /dev/null; then
   name="release: a new version"
   rel_run y 0 "$name" " published: v1.2.3, immutable"
   for want in "RELEASED" "  eeploi-helper 1.2.3" "SHA-256            $(rsha "$REL/repo/eeploi-helper")" " signed, signature checks out" \
-    " draft created, files match"; do
+    " draft created, files match" "Tag                v1.2.3  on ${REL_HEAD:0:7}" "Key                $REL_KEYID"; do
     rel_expect 0 "$name: shows $want" "$want"
+  done
+  # Colour on a terminal: a ✓ and a heading on stdout, the question on stderr.
+  for want in $'\033[32m✓\033[0m main is clean' $'\033[1mChecks\033[0m' $'\033[1mSign 1.2.3?\033[0m [y/N]'; do
+    rel_expect 0 "$name: in colour, $want" "$want"
   done
   check "$name: the draft on the checked commit" grep -qx "release create v1.2.3 eeploi-helper eeploi-helper.minisig -R eeploi/helper --draft --target $REL_HEAD --title eeploi-helper 1.2.3 --notes See CHANGELOG.md." "$REL/gh/log"
   check "$name: published after its files were checked" test "$(sed -nE 's/^release (create|download|edit) .*/\1/p' "$REL/gh/log" | paste -sd ' ' -)" = "create download edit download"
